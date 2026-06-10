@@ -1,0 +1,25 @@
+/millrace-agents/
+/ideas/
+/ref-forge/
+
+# Local Python environments
+/.venv/
+/.venv-*/
+/venv/
+
+# Python caches and compiled artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and package output
+/build/
+/dist/
+*.egg-info/
+
+# Test, type-check, and lint caches
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.coverage
+/htmlcov/
