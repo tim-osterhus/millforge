@@ -7,22 +7,38 @@ protocol methods accept/return the expected contract types.
 
 from __future__ import annotations
 
-from typing import Protocol
+from pathlib import Path
 
 import pytest
 
 from millforge.contracts import (
+    CancellationRef,
+    CapabilityEnvelope,
+    CompiledHarnessHash,
     CompiledHarnessIdentity,
+    CompiledHarnessRef,
+    Deadline,
+    ExecutionResultClass,
+    ExecutionStatus,
     GuardedSessionRequest,
     GuardedSessionResult,
+    GuardedSessionStatus,
+    HarnessExecutionRequest,
     HarnessExecutionResult,
-    StageExecutionRequest,
-    ValidatedModelRequest,
-    ValidatedModelResponse,
+    ModelCompletionRequest,
+    ModelCompletionResponse,
+    ModelProfileRef,
+    RunDirRef,
+    StageIdentity,
+    TimeoutRef,
+    TimingMetadata,
+    ToolExecutionContext,
+    ToolExecutionResult,
     ValidatedToolCall,
-    ValidatedToolResult,
 )
 from millforge.protocols import (
+    CancellationResolver,
+    CancellationToken,
     GuardrailBackend,
     HarnessRuntime,
     ModelClient,
@@ -38,6 +54,8 @@ def test_all_protocols_exported() -> None:
     from millforge import __all__ as exported
 
     protocol_names = {
+        "CancellationResolver",
+        "CancellationToken",
         "GuardrailBackend",
         "HarnessRuntime",
         "ModelClient",
@@ -50,6 +68,81 @@ def test_all_protocols_exported() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Helper factories
+# ---------------------------------------------------------------------------
+
+
+def _make_stage_identity() -> StageIdentity:
+    return StageIdentity(plane="execution", node_id="builder", stage_kind_id="builder")
+
+
+def _make_run_dir() -> RunDirRef:
+    return RunDirRef(run_id="run-1", path=Path("/tmp/runs/run-1"))
+
+
+def _make_capability_envelope() -> CapabilityEnvelope:
+    return CapabilityEnvelope(grants=())
+
+
+def _make_timeout() -> TimeoutRef:
+    return TimeoutRef(timeout_seconds=60.0)
+
+
+def _make_cancellation() -> CancellationRef:
+    return CancellationRef(cancellation_id="cancel-1")
+
+
+def _make_compiled_harness_ref() -> CompiledHarnessRef:
+    return CompiledHarnessRef(
+        identity=CompiledHarnessIdentity(
+            compiled_plan_id="plan-1",
+            harness_id="harness-1",
+            harness_version=1,
+        ),
+        path=Path("/tmp/harnesses/plan-1"),
+        expected_hash=CompiledHarnessHash(
+            algorithm="sha256",
+            digest="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        ),
+    )
+
+
+def _make_tool_context() -> ToolExecutionContext:
+    return ToolExecutionContext(
+        request_id="req-1",
+        run_id="run-1",
+        stage=_make_stage_identity(),
+        run_directory=_make_run_dir(),
+        capability_envelope=_make_capability_envelope(),
+        timeout=_make_timeout(),
+        cancellation=_make_cancellation(),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=60.0,
+            effective_deadline_monotonic=60.0,
+            source="request",
+        ),
+    )
+
+
+def _make_harness_request() -> HarnessExecutionRequest:
+    return HarnessExecutionRequest(
+        request_id="req-1",
+        run_id="run-1",
+        work_item_id="task-1",
+        stage=_make_stage_identity(),
+        compiled_harness=_make_compiled_harness_ref(),
+        capability_envelope=_make_capability_envelope(),
+        input_artifacts=(),
+        run_directory=_make_run_dir(),
+        timeout=_make_timeout(),
+        cancellation=_make_cancellation(),
+        secret_refs=(),
+        model_profile=ModelProfileRef(profile_id="p"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Conforming implementations per protocol
 # ---------------------------------------------------------------------------
 
@@ -57,38 +150,38 @@ def test_all_protocols_exported() -> None:
 class _ConformingHarnessRuntime:
     """Minimal conforming implementation of HarnessRuntime."""
 
-    async def execute(self, request: StageExecutionRequest) -> HarnessExecutionResult:
+    async def execute(self, request: HarnessExecutionRequest) -> HarnessExecutionResult:
         return HarnessExecutionResult(
-            exit_code=0,
-            stdout="ok",
-            stderr="",
-            success=True,
-        )
-
-    def get_identity(self) -> CompiledHarnessIdentity:
-        return CompiledHarnessIdentity(
-            compiled_plan_id="plan-123",
-            harness_id="harness-a",
-            version="1.0.0",
+            status=ExecutionStatus.COMPLETED,
+            result_class=ExecutionResultClass.DOMAIN_TERMINAL,
+            request_id=request.request_id,
+            run_id=request.run_id,
+            stage=request.stage,
+            artifact_refs=(),
+            compiled_harness=request.compiled_harness,
+            timing=TimingMetadata(
+                started_at="now", completed_at="later", duration_ms=100.0
+            ),
         )
 
 
 class _ConformingGuardrailBackend:
     """Minimal conforming implementation of GuardrailBackend."""
 
-    async def check(self, request: GuardedSessionRequest) -> GuardedSessionResult:
+    async def run_session(self, request: GuardedSessionRequest) -> GuardedSessionResult:
         return GuardedSessionResult(
             session_id=request.session_id,
-            result_type="allowed",
-            payload={},
+            status=GuardedSessionStatus.TERMINAL,
         )
 
 
 class _ConformingModelClient:
     """Minimal conforming implementation of ModelClient."""
 
-    async def send(self, request: ValidatedModelRequest) -> ValidatedModelResponse:
-        return ValidatedModelResponse(
+    async def complete(
+        self, request: ModelCompletionRequest
+    ) -> ModelCompletionResponse:
+        return ModelCompletionResponse(
             model=request.model,
             content="Hello!",
         )
@@ -97,14 +190,37 @@ class _ConformingModelClient:
 class _ConformingToolExecutor:
     """Minimal conforming implementation of ToolExecutor."""
 
-    async def execute(self, call: ValidatedToolCall) -> ValidatedToolResult:
-        return ValidatedToolResult(
+    async def execute(
+        self, call: ValidatedToolCall, context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult(
             call_id=call.id,
             output=f"Executed {call.name}",
         )
 
     def supports_tool(self, name: str) -> bool:
         return name in {"get_weather", "search"}
+
+
+class _ConformingCancellationToken:
+    @property
+    def cancellation_id(self) -> str:
+        return "cancel-1"
+
+    def is_cancelled(self) -> bool:
+        return False
+
+    async def wait(self) -> None:
+        return None
+
+    @property
+    def reason(self) -> str | None:
+        return None
+
+
+class _ConformingCancellationResolver:
+    def resolve(self, ref: CancellationRef) -> CancellationToken:
+        return _ConformingCancellationToken()
 
 
 # ---------------------------------------------------------------------------
@@ -117,25 +233,15 @@ class _HarnessRuntimeMissingExecute:
         return CompiledHarnessIdentity(
             compiled_plan_id="plan-x",
             harness_id="harness-x",
-            version="1.0.0",
+            harness_version=1,
         )
 
 
-class _HarnessRuntimeMissingGetIdentity:
-    async def execute(self, request: StageExecutionRequest) -> HarnessExecutionResult:
-        return HarnessExecutionResult(
-            exit_code=0,
-            stdout="",
-            stderr="",
-            success=True,
-        )
-
-
-class _GuardrailBackendMissingCheck:
+class _GuardrailBackendMissingRunSession:
     pass
 
 
-class _ModelClientMissingSend:
+class _ModelClientMissingComplete:
     pass
 
 
@@ -145,8 +251,10 @@ class _ToolExecutorMissingExecute:
 
 
 class _ToolExecutorMissingSupportsTool:
-    async def execute(self, call: ValidatedToolCall) -> ValidatedToolResult:
-        return ValidatedToolResult(call_id=call.id, output="ok")
+    async def execute(
+        self, call: ValidatedToolCall, context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        return ToolExecutionResult(call_id=call.id, output="ok")
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +271,20 @@ class _ToolExecutorMissingSupportsTool:
         ),
         pytest.param(ModelClient, _ConformingModelClient(), id="ModelClient"),
         pytest.param(ToolExecutor, _ConformingToolExecutor(), id="ToolExecutor"),
+        pytest.param(
+            CancellationToken,
+            _ConformingCancellationToken(),
+            id="CancellationToken",
+        ),
+        pytest.param(
+            CancellationResolver,
+            _ConformingCancellationResolver(),
+            id="CancellationResolver",
+        ),
     ],
 )
 def test_conforming_class_passes_isinstance(
-    protocol: type[Protocol],
+    protocol: type,
     instance: object,
 ) -> None:
     assert isinstance(instance, protocol), (
@@ -190,22 +308,16 @@ def test_conforming_class_passes_isinstance(
             id="HarnessRuntime-missing-execute",
         ),
         pytest.param(
-            HarnessRuntime,
-            _HarnessRuntimeMissingGetIdentity(),
-            "get_identity",
-            id="HarnessRuntime-missing-get_identity",
-        ),
-        pytest.param(
             GuardrailBackend,
-            _GuardrailBackendMissingCheck(),
-            "check",
-            id="GuardrailBackend-missing-check",
+            _GuardrailBackendMissingRunSession(),
+            "run_session",
+            id="GuardrailBackend-missing-run_session",
         ),
         pytest.param(
             ModelClient,
-            _ModelClientMissingSend(),
-            "send",
-            id="ModelClient-missing-send",
+            _ModelClientMissingComplete(),
+            "complete",
+            id="ModelClient-missing-complete",
         ),
         pytest.param(
             ToolExecutor,
@@ -222,7 +334,7 @@ def test_conforming_class_passes_isinstance(
     ],
 )
 def test_non_conforming_class_fails_isinstance(
-    protocol: type[Protocol],
+    protocol: type,
     instance: object,
     missing: str,
 ) -> None:
@@ -234,10 +346,6 @@ def test_non_conforming_class_fails_isinstance(
 
 # ---------------------------------------------------------------------------
 # Tests: protocol methods accept/return expected contract types
-#
-# These tests verify that the method signatures compile correctly by
-# exercising them through a conforming implementation and checking the
-# returned types are the expected Millforge contract types.
 # ---------------------------------------------------------------------------
 
 
@@ -250,10 +358,20 @@ def test_non_conforming_class_fails_isinstance(
         ),
         pytest.param(ModelClient, _ConformingModelClient(), id="ModelClient"),
         pytest.param(ToolExecutor, _ConformingToolExecutor(), id="ToolExecutor"),
+        pytest.param(
+            CancellationToken,
+            _ConformingCancellationToken(),
+            id="CancellationToken",
+        ),
+        pytest.param(
+            CancellationResolver,
+            _ConformingCancellationResolver(),
+            id="CancellationResolver",
+        ),
     ],
 )
 def test_protocol_is_runtime_checkable(
-    protocol: type[Protocol],
+    protocol: type,
     instance: object,
 ) -> None:
     """Ensure the protocol is decorated with @runtime_checkable."""
@@ -265,50 +383,40 @@ def test_protocol_is_runtime_checkable(
 @pytest.mark.asyncio
 async def test_harness_runtime_execute_returns_expected_type() -> None:
     impl = _ConformingHarnessRuntime()
-    request = StageExecutionRequest(
-        request_id="req-1",
-        run_id="run-1",
-        stage="builder",
-        task_id="task-1",
-        mode_id="mode-1",
-        compiled_plan_id="plan-1",
-    )
+    request = _make_harness_request()
     result = await impl.execute(request)
     assert isinstance(result, HarnessExecutionResult)
-    assert result.exit_code == 0
-    assert result.success is True
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
 
 
 @pytest.mark.asyncio
-async def test_harness_runtime_get_identity_returns_expected_type() -> None:
-    impl = _ConformingHarnessRuntime()
-    identity = impl.get_identity()
-    assert isinstance(identity, CompiledHarnessIdentity)
-    assert identity.compiled_plan_id == "plan-123"
-
-
-@pytest.mark.asyncio
-async def test_guardrail_backend_check_returns_expected_type() -> None:
+async def test_guardrail_backend_run_session_returns_expected_type() -> None:
     impl = _ConformingGuardrailBackend()
     request = GuardedSessionRequest(
         session_id="session-1",
-        request_type="inference",
-        payload={},
+        execution_request=_make_harness_request(),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=300.0,
+            effective_deadline_monotonic=300.0,
+            source="request",
+        ),
     )
-    result = await impl.check(request)
+    result = await impl.run_session(request)
     assert isinstance(result, GuardedSessionResult)
     assert result.session_id == "session-1"
 
 
 @pytest.mark.asyncio
-async def test_model_client_send_returns_expected_type() -> None:
+async def test_model_client_complete_returns_expected_type() -> None:
     impl = _ConformingModelClient()
-    request = ValidatedModelRequest(
+    request = ModelCompletionRequest(
         model="gpt-4",
         messages=[{"role": "user", "content": "Hello"}],
     )
-    response = await impl.send(request)
-    assert isinstance(response, ValidatedModelResponse)
+    response = await impl.complete(request)
+    assert isinstance(response, ModelCompletionResponse)
     assert response.model == "gpt-4"
     assert response.content == "Hello!"
 
@@ -321,8 +429,8 @@ async def test_tool_executor_execute_returns_expected_type() -> None:
         name="get_weather",
         arguments={"city": "London"},
     )
-    result = await impl.execute(call)
-    assert isinstance(result, ValidatedToolResult)
+    result = await impl.execute(call, _make_tool_context())
+    assert isinstance(result, ToolExecutionResult)
     assert result.call_id == "call-1"
 
 
@@ -330,3 +438,74 @@ def test_tool_executor_supports_tool_returns_bool() -> None:
     impl = _ConformingToolExecutor()
     assert impl.supports_tool("get_weather") is True
     assert impl.supports_tool("unknown_tool") is False
+
+
+def test_cancellation_resolver_resolves_ref_synchronously() -> None:
+    resolver = _ConformingCancellationResolver()
+    token = resolver.resolve(CancellationRef(cancellation_id="cancel-1"))
+    assert token.cancellation_id == "cancel-1"
+    assert token.is_cancelled() is False
+    assert token.reason is None
+
+
+# ---------------------------------------------------------------------------
+# Old names absent from conforming implementations
+# ---------------------------------------------------------------------------
+
+
+def test_conforming_harness_runtime_has_no_old_execute_name() -> None:
+    """HarnessRuntime conforming class must not have a one-arg 'execute'."""
+    impl = _ConformingHarnessRuntime()
+    # The new execute expects HarnessExecutionRequest and returns HarnessExecutionResult
+    assert hasattr(impl, "execute")
+    # Ensure there is no old name like 'get_identity' masquerading
+    assert not hasattr(impl, "get_identity")
+
+
+def test_conforming_guardrail_backend_has_no_check_method() -> None:
+    """GuardrailBackend conforming class must not have a 'check' method."""
+    impl = _ConformingGuardrailBackend()
+    assert hasattr(impl, "run_session")
+    assert not hasattr(impl, "check"), "Old name 'check' must be absent"
+
+
+def test_conforming_model_client_has_no_send_method() -> None:
+    """ModelClient conforming class must not have a 'send' method."""
+    impl = _ConformingModelClient()
+    assert hasattr(impl, "complete")
+    assert not hasattr(impl, "send"), "Old name 'send' must be absent"
+
+
+def test_conforming_tool_executor_has_no_old_execute_signature() -> None:
+    """ToolExecutor.execute must accept two arguments (call + context)."""
+    impl = _ConformingToolExecutor()
+    assert hasattr(impl, "execute")
+    # Verify the executing method takes exactly 2 positional args beyond self
+    import inspect
+
+    sig = inspect.signature(impl.execute)
+    params = list(sig.parameters.keys())
+    assert "call" in params, "'call' argument required"
+    assert "context" in params, "'context' argument required"
+
+
+def test_conforming_tool_executor_has_supports_tool() -> None:
+    """ToolExecutor must retain supports_tool."""
+    impl = _ConformingToolExecutor()
+    assert hasattr(impl, "supports_tool")
+
+
+def test_obsolete_import_chain_verified() -> None:
+    """Verify no protocol files export old names."""
+    import millforge.protocols as mp
+
+    for old in ("check", "send"):
+        assert not hasattr(mp, old), f"Old name {old!r} still exported from protocols"
+
+
+def test_old_names_not_available_via_millforge() -> None:
+    """Old names (check, send, get_identity) must not be re-exported from millforge."""
+    import millforge as mf
+
+    for old in ("check", "send", "get_identity"):
+        assert not hasattr(mf, old), f"Old name {old!r} still exported from millforge"

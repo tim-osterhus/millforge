@@ -7,19 +7,189 @@ Millforge-owned contract types — Forge types are never exposed.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from datetime import datetime
+from typing import Any, Protocol, runtime_checkable
 
+from millforge.compiled_plan import CompiledHarnessPlan
 from millforge.contracts import (
-    CompiledHarnessIdentity,
+    ArtifactRef,
+    CancellationRef,
+    CompiledHarnessRef,
     GuardedSessionRequest,
     GuardedSessionResult,
+    HarnessExecutionRequest,
     HarnessExecutionResult,
-    StageExecutionRequest,
-    ValidatedModelRequest,
-    ValidatedModelResponse,
+    ModelCompletionRequest,
+    ModelCompletionResponse,
+    ToolExecutionContext,
+    ToolExecutionResult,
     ValidatedToolCall,
-    ValidatedToolResult,
 )
+
+
+@runtime_checkable
+class CancellationToken(Protocol):
+    """Protocol for cancellation tokens.
+
+    Provides an invocation-scoped identifier and synchronous check for
+    whether cancellation has been requested. Implementations may back
+    this with in-memory state, a remote signal, or a composite
+    of multiple sources.
+
+    This is intentionally a plain Protocol (not a Pydantic model)
+    to keep it independent of the Pydantic hierarchy — cancellation
+    state spans across run boundaries and should not be serialised
+    as a contract value.
+    """
+
+    @property
+    def cancellation_id(self) -> str:
+        """Return the cancellation identifier."""
+        ...
+
+    def is_cancelled(self) -> bool:
+        """Check whether cancellation has been requested."""
+        ...
+
+    async def wait(self) -> None:
+        """Wait until cancellation is requested."""
+        ...
+
+    @property
+    def reason(self) -> str | None:
+        """Return a bounded cancellation reason, when present."""
+        ...
+
+
+@runtime_checkable
+class CancellationResolver(Protocol):
+    """Protocol for resolving cancellation tokens by reference.
+
+    Given a cancellation reference, returns a CancellationToken
+    that can be polled for cancellation status.  This allows
+    passing lightweight string refs through serialisation boundaries
+    and resolving them into checkable tokens at the point of use.
+    """
+
+    def resolve(self, ref: CancellationRef) -> CancellationToken:
+        """Resolve a cancellation reference into a CancellationToken.
+
+        Parameters
+        ----------
+        ref : CancellationRef
+            The cancellation reference to resolve.
+
+        Returns
+        -------
+        CancellationToken
+            A checkable cancellation token.
+        """
+        ...
+
+
+@runtime_checkable
+class CompiledHarnessLoader(Protocol):
+    """Interface for loading compiled harness plans.
+
+    Implementations load a CompiledHarnessPlan from a CompiledHarnessRef,
+    performing any necessary deserialization and cryptographic verification
+    of the plan body before returning it.
+    """
+
+    async def load(self, ref: CompiledHarnessRef) -> CompiledHarnessPlan:
+        """Load a compiled harness plan from the given reference.
+
+        Parameters
+        ----------
+        ref : CompiledHarnessRef
+            Reference to the compiled harness, including its identity,
+            filesystem path, and expected cryptographic hash.
+
+        Returns
+        -------
+        CompiledHarnessPlan
+            The loaded and verified compiled harness plan.
+        """
+        ...
+
+
+@runtime_checkable
+class RuntimeArtifactWriter(Protocol):
+    """Interface for writing runtime artifacts.
+
+    Implementations write the seven standard artifact types that
+    the runtime produces during a harness run: terminal result,
+    execution summary, events, tool trace, metrics, artifact
+    manifest, and diagnostic output.
+
+    Each method accepts an ``ArtifactRef`` identifying the target
+    location and a ``data`` payload.  Implementations handle
+    serialisation, atomic writes, and error reporting internally.
+    """
+
+    async def write_terminal_result(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the terminal result artifact."""
+        ...
+
+    async def write_execution_summary(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the execution summary artifact."""
+        ...
+
+    async def write_events(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the events artifact (JSONL format)."""
+        ...
+
+    async def write_tool_trace(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the tool trace artifact (JSONL format)."""
+        ...
+
+    async def write_metrics(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the metrics artifact."""
+        ...
+
+    async def write_artifact_manifest(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the artifact manifest artifact."""
+        ...
+
+    async def write_diagnostic(self, ref: ArtifactRef, data: Any) -> None:
+        """Write the diagnostic artifact."""
+        ...
+
+
+@runtime_checkable
+class RuntimeClock(Protocol):
+    """Interface for deterministic clock operations.
+
+    Provides UTC datetime and monotonic float access in a fully
+    deterministic manner.  Implementations are synchronous by
+    design — no async dependencies — so that the clock can be
+    used in fake implementations without requiring an event loop.
+    """
+
+    def utc_now(self) -> datetime:
+        """Return the current UTC datetime.
+
+        Returns
+        -------
+        datetime
+            The current UTC datetime.
+        """
+        ...
+
+    def monotonic(self) -> float:
+        """Return a monotonic float value (fractional seconds).
+
+        The returned value is strictly increasing across calls and
+        is suitable for measuring elapsed time.  The absolute value
+        has no meaning; only differences between successive calls
+        are meaningful.
+
+        Returns
+        -------
+        float
+            Monotonic time value in fractional seconds.
+        """
+        ...
 
 
 @runtime_checkable
@@ -31,31 +201,20 @@ class HarnessRuntime(Protocol):
     signatures are Millforge-owned contract types.
     """
 
-    async def execute(self, request: StageExecutionRequest) -> HarnessExecutionResult:
+    async def execute(self, request: HarnessExecutionRequest) -> HarnessExecutionResult:
         """Execute a compiled-harness stage.
 
         Parameters
         ----------
-        request : StageExecutionRequest
-            The stage execution request describing which stage to run
-            and under what identity.
+        request : HarnessExecutionRequest
+            The harness execution request describing which stage to run
+            and under what identity, with capability grants and artifacts.
 
         Returns
         -------
         HarnessExecutionResult
-            The result of the harness execution, including exit code,
-            captured output, and success indicator.
-        """
-        ...
-
-    def get_identity(self) -> CompiledHarnessIdentity:
-        """Return the identity of the compiled harness.
-
-        Returns
-        -------
-        CompiledHarnessIdentity
-            Immutable identity containing the compiled plan ID, harness
-            ID, and version.
+            The result of the harness execution, including execution
+            status, result classification, timing, and diagnostics.
         """
         ...
 
@@ -69,7 +228,7 @@ class GuardrailBackend(Protocol):
     in method signatures are Millforge-owned contract types.
     """
 
-    async def check(self, request: GuardedSessionRequest) -> GuardedSessionResult:
+    async def run_session(self, request: GuardedSessionRequest) -> GuardedSessionResult:
         """Evaluate guardrails against a session request.
 
         Parameters
@@ -80,8 +239,8 @@ class GuardrailBackend(Protocol):
         Returns
         -------
         GuardedSessionResult
-            The guardrail evaluation result, including whether the
-            session was blocked and the blocking reason (if any).
+            The guardrail evaluation result, including session status,
+            terminal intent, events, and tool trace records.
         """
         ...
 
@@ -91,24 +250,26 @@ class ModelClient(Protocol):
     """Interface for model invocation.
 
     Implementations wrap LLM backends (HTTP, SDK, local inference, etc.)
-    and expose a single ``send`` method that accepts a validated request
+    and expose a single ``complete`` method that accepts a validated request
     and returns a validated response. All types used in method signatures
     are Millforge-owned contract types.
     """
 
-    async def send(self, request: ValidatedModelRequest) -> ValidatedModelResponse:
+    async def complete(
+        self, request: ModelCompletionRequest
+    ) -> ModelCompletionResponse:
         """Send a validated model request and return the response.
 
         Parameters
         ----------
-        request : ValidatedModelRequest
-            The validated inference request containing messages, tools,
+        request : ModelCompletionRequest
+            The model completion request containing messages, tools,
             temperature, and other parameters.
 
         Returns
         -------
-        ValidatedModelResponse
-            The validated inference response including content, tool
+        ModelCompletionResponse
+            The model completion response including content, tool
             calls, finish reason, and usage metadata.
         """
         ...
@@ -123,18 +284,23 @@ class ToolExecutor(Protocol):
     signatures are Millforge-owned contract types.
     """
 
-    async def execute(self, call: ValidatedToolCall) -> ValidatedToolResult:
-        """Execute a validated tool call and return the result.
+    async def execute(
+        self, call: ValidatedToolCall, context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        """Execute a validated tool call with execution context and return the result.
 
         Parameters
         ----------
         call : ValidatedToolCall
             The validated tool call specifying the tool name, call ID,
             and arguments.
+        context : ToolExecutionContext
+            The execution context including request identity, stage,
+            run directory, capability envelope, timeout, and cancellation.
 
         Returns
         -------
-        ValidatedToolResult
+        ToolExecutionResult
             The tool execution result including output text, error
             information, and execution duration.
         """

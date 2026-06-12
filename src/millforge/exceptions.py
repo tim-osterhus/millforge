@@ -25,10 +25,12 @@ class MillforgeError(Exception):
             self.__cause__ = cause
 
     def __str__(self) -> str:
-        parts = [super().__str__()]
-        if self._cause is not None:
-            parts.append(f"[caused by: {self._cause}]")
-        return " ".join(parts)
+        """Return only the owned message without cause text."""
+        return self.args[0] if self.args else ""
+
+    def __repr__(self) -> str:
+        """Return only the owned message without cause text."""
+        return self.args[0] if self.args else ""
 
 
 class MillforgeConfigError(MillforgeError):

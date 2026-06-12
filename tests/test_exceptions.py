@@ -140,12 +140,12 @@ class TestCauseChaining:
 
 
 # ---------------------------------------------------------------------------
-# __str__ representation
+# __str__ and __repr__ representation
 # ---------------------------------------------------------------------------
 
 
-class TestStrRepresentation:
-    """Verify __str__ includes message and optionally the cause."""
+class TestStrReprRepresentation:
+    """Verify __str__ and __repr__ return only the owned message."""
 
     @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
     def test_str_without_cause(self, exc_cls: type[MillforgeError]) -> None:
@@ -154,14 +154,70 @@ class TestStrRepresentation:
         assert str(exc) == msg
 
     @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
-    def test_str_with_cause(self, exc_cls: type[MillforgeError]) -> None:
+    def test_str_with_cause_no_leak(self, exc_cls: type[MillforgeError]) -> None:
         msg = f"str test {exc_cls.__name__}"
-        cause = RuntimeError("inner")
+        cause = RuntimeError("secret-inner-token")
         exc = exc_cls(msg, cause=cause)
         s = str(exc)
-        assert msg in s
-        assert "caused by:" in s
-        assert "inner" in s
+        assert s == msg
+        assert "caused by" not in s
+        assert "secret-inner-token" not in s
+
+    @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
+    def test_repr_with_cause_no_leak(self, exc_cls: type[MillforgeError]) -> None:
+        msg = f"repr test {exc_cls.__name__}"
+        cause = ValueError("secret-token-abc123")
+        exc = exc_cls(msg, cause=cause)
+        r = repr(exc)
+        assert r == msg
+        assert "secret-token-abc123" not in r
+
+    @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
+    def test_cause_preserved_for_programmatic_access(
+        self, exc_cls: type[MillforgeError]
+    ) -> None:
+        """__cause__ must still be accessible even though it's not in str/repr."""
+        cause = ValueError("secret-token-abc123")
+        exc = exc_cls("msg", cause=cause)
+        assert exc.__cause__ is cause
+        assert exc._cause is cause
+
+    # ------------------------------------------------------------------
+    # Sentinel secret safety — ensure sentinel-like values never leak
+    # ------------------------------------------------------------------
+
+    SENTINEL_SECRETS = [
+        "s3cret-key-abc",
+        "hunter2",
+        "p@ssw0rd!",
+        "real_secret_value_here",
+        "ghp_xxxxxxxxxxxxxxxxxxxx",
+        "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    ]
+
+    @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
+    @pytest.mark.parametrize("sentinel", SENTINEL_SECRETS)
+    def test_str_never_contains_sentinel_secret(
+        self, exc_cls: type[MillforgeError], sentinel: str
+    ) -> None:
+        """__str__ must never contain sentinel secrets from chained causes."""
+        cause = ValueError(sentinel)
+        exc = exc_cls("safe visible message", cause=cause)
+        s = str(exc)
+        assert s == "safe visible message"
+        assert sentinel not in s, f"__str__ leaked sentinel {sentinel!r}"
+
+    @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
+    @pytest.mark.parametrize("sentinel", SENTINEL_SECRETS)
+    def test_repr_never_contains_sentinel_secret(
+        self, exc_cls: type[MillforgeError], sentinel: str
+    ) -> None:
+        """__repr__ must never contain sentinel secrets from chained causes."""
+        cause = ValueError(sentinel)
+        exc = exc_cls("safe visible message", cause=cause)
+        r = repr(exc)
+        assert r == "safe visible message"
+        assert sentinel not in r, f"__repr__ leaked sentinel {sentinel!r}"
 
 
 # ---------------------------------------------------------------------------

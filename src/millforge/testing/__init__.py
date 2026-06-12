@@ -12,23 +12,24 @@ from typing import Optional
 from millforge.contracts import (
     GuardedSessionRequest,
     GuardedSessionResult,
-    ValidatedModelRequest,
-    ValidatedModelResponse,
+    ModelCompletionRequest,
+    ModelCompletionResponse,
+    ToolExecutionContext,
+    ToolExecutionResult,
     ValidatedToolCall,
-    ValidatedToolResult,
 )
 
 
 class FakeModelClient:
     """Fake implementation of ``ModelClient``.
 
-    Supports scripting a sequence of ``ValidatedModelResponse`` objects
+    Supports scripting a sequence of ``ModelCompletionResponse`` objects
     (success path) and exceptions (failure path). Records every
-    ``ValidatedModelRequest`` passed to ``send()`` in ``requests``.
+    ``ModelCompletionRequest`` passed to ``complete()``.
 
     Parameters
     ----------
-    responses : list[ValidatedModelResponse], optional
+    responses : list[ModelCompletionResponse], optional
         Scripted success responses, returned in order.
     exceptions : list[Exception], optional
         Scripted exceptions, raised in order.
@@ -36,15 +37,22 @@ class FakeModelClient:
 
     def __init__(
         self,
-        responses: Optional[list[ValidatedModelResponse]] = None,
+        responses: Optional[list[ModelCompletionResponse]] = None,
         exceptions: Optional[list[Exception]] = None,
     ) -> None:
-        self._responses: list[ValidatedModelResponse] = list(responses or [])
+        self._responses: list[ModelCompletionResponse] = list(responses or [])
         self._exceptions: list[Exception] = list(exceptions or [])
-        self.requests: list[ValidatedModelRequest] = []
+        self._request_log: list[ModelCompletionRequest] = []
 
-    async def send(self, request: ValidatedModelRequest) -> ValidatedModelResponse:
-        """Send a validated model request.
+    @property
+    def requests(self) -> list[ModelCompletionRequest]:
+        """Recorded model completion calls."""
+        return self._request_log
+
+    async def complete(
+        self, request: ModelCompletionRequest
+    ) -> ModelCompletionResponse:
+        """Send a validated model request and return the response.
 
         Returns the next scripted response, or raises the next
         scripted exception if one is set. Raises ``IndexError``
@@ -52,12 +60,12 @@ class FakeModelClient:
 
         Parameters
         ----------
-        request : ValidatedModelRequest
-            The validated inference request.
+        request : ModelCompletionRequest
+            The model completion request.
 
         Returns
         -------
-        ValidatedModelResponse
+        ModelCompletionResponse
             The next scripted response.
 
         Raises
@@ -67,7 +75,7 @@ class FakeModelClient:
         Exception
             If the next scripted item is an exception.
         """
-        self.requests.append(request)
+        self._request_log.append(request)
 
         if self._exceptions:
             raise self._exceptions.pop(0)
@@ -85,7 +93,7 @@ class FakeGuardrailBackend:
     """Fake implementation of ``GuardrailBackend``.
 
     Supports scripting success/failure responses and records every
-    ``GuardedSessionRequest`` passed to ``check()`` in ``requests``.
+    ``GuardedSessionRequest`` passed to ``run_session()``.
 
     Parameters
     ----------
@@ -102,9 +110,14 @@ class FakeGuardrailBackend:
     ) -> None:
         self._responses: list[GuardedSessionResult] = list(responses or [])
         self._exceptions: list[Exception] = list(exceptions or [])
-        self.requests: list[GuardedSessionRequest] = []
+        self._request_log: list[GuardedSessionRequest] = []
 
-    async def check(self, request: GuardedSessionRequest) -> GuardedSessionResult:
+    @property
+    def requests(self) -> list[GuardedSessionRequest]:
+        """Recorded guardrail session calls."""
+        return self._request_log
+
+    async def run_session(self, request: GuardedSessionRequest) -> GuardedSessionResult:
         """Evaluate guardrails against a session request.
 
         Returns the next scripted response, or raises the next
@@ -128,7 +141,7 @@ class FakeGuardrailBackend:
         Exception
             If the next scripted item is an exception.
         """
-        self.requests.append(request)
+        self._request_log.append(request)
 
         if self._exceptions:
             raise self._exceptions.pop(0)
@@ -150,7 +163,7 @@ class FakeToolExecutor:
 
     Parameters
     ----------
-    results : dict[str, list[ValidatedToolResult]], optional
+    results : dict[str, list[ToolExecutionResult]], optional
         Mapping of tool names to lists of scripted results. Results
         are consumed in order per tool name.
     exceptions : dict[str, list[Exception]], optional
@@ -163,11 +176,11 @@ class FakeToolExecutor:
 
     def __init__(
         self,
-        results: Optional[dict[str, list[ValidatedToolResult]]] = None,
+        results: Optional[dict[str, list[ToolExecutionResult]]] = None,
         exceptions: Optional[dict[str, list[Exception]]] = None,
         supported_tools: Optional[set[str]] = None,
     ) -> None:
-        self._results: dict[str, list[ValidatedToolResult]] = {}
+        self._results: dict[str, list[ToolExecutionResult]] = {}
         for name, result_items in (results or {}).items():
             self._results[name] = list(result_items)
         self._exceptions: dict[str, list[Exception]] = {}
@@ -180,7 +193,9 @@ class FakeToolExecutor:
         )
         self.calls: list[ValidatedToolCall] = []
 
-    async def execute(self, call: ValidatedToolCall) -> ValidatedToolResult:
+    async def execute(
+        self, call: ValidatedToolCall, context: ToolExecutionContext
+    ) -> ToolExecutionResult:
         """Execute a validated tool call.
 
         Returns the next scripted result for the tool name, or raises
@@ -191,10 +206,12 @@ class FakeToolExecutor:
         ----------
         call : ValidatedToolCall
             The validated tool call to execute.
+        context : ToolExecutionContext
+            The execution context.
 
         Returns
         -------
-        ValidatedToolResult
+        ToolExecutionResult
             The next scripted tool result for this tool name.
 
         Raises
