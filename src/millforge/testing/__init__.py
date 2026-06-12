@@ -7,7 +7,7 @@ so tests can verify both happy-path and error-handling behaviour.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from millforge.contracts import (
     GuardedSessionRequest,
@@ -48,6 +48,18 @@ class FakeModelClient:
     def requests(self) -> list[ModelCompletionRequest]:
         """Recorded model completion calls."""
         return self._request_log
+
+    @property
+    def call_count(self) -> int:
+        """Number of completed ``complete()`` invocations recorded."""
+        return len(self._request_log)
+
+    def assert_not_called(self) -> None:
+        """Assert that no model calls were attempted."""
+        if self._request_log:
+            raise AssertionError(
+                f"Expected no model calls, recorded {len(self._request_log)}"
+            )
 
     async def complete(
         self, request: ModelCompletionRequest
@@ -107,15 +119,29 @@ class FakeGuardrailBackend:
         self,
         responses: Optional[list[GuardedSessionResult]] = None,
         exceptions: Optional[list[Exception]] = None,
+        expected_cancellation_id: str | None = None,
     ) -> None:
         self._responses: list[GuardedSessionResult] = list(responses or [])
         self._exceptions: list[Exception] = list(exceptions or [])
+        self._expected_cancellation_id = expected_cancellation_id
         self._request_log: list[GuardedSessionRequest] = []
 
     @property
     def requests(self) -> list[GuardedSessionRequest]:
         """Recorded guardrail session calls."""
         return self._request_log
+
+    @property
+    def call_count(self) -> int:
+        """Number of ``run_session()`` invocations recorded."""
+        return len(self._request_log)
+
+    def assert_not_called(self) -> None:
+        """Assert that no guarded sessions were attempted."""
+        if self._request_log:
+            raise AssertionError(
+                f"Expected no guardrail calls, recorded {len(self._request_log)}"
+            )
 
     async def run_session(self, request: GuardedSessionRequest) -> GuardedSessionResult:
         """Evaluate guardrails against a session request.
@@ -141,6 +167,14 @@ class FakeGuardrailBackend:
         Exception
             If the next scripted item is an exception.
         """
+        if self._expected_cancellation_id is not None:
+            actual = request.execution_request.cancellation.cancellation_id
+            if actual != self._expected_cancellation_id:
+                raise AssertionError(
+                    f"Expected cancellation ID {self._expected_cancellation_id!r}, "
+                    f"got {actual!r}"
+                )
+
         self._request_log.append(request)
 
         if self._exceptions:
@@ -158,17 +192,18 @@ class FakeGuardrailBackend:
 class FakeToolExecutor:
     """Fake implementation of ``ToolExecutor``.
 
-    Supports scripting per-tool-name results and records every
+    Supports scripting per-canonical-tool-id results and records every
     ``ValidatedToolCall`` passed to ``execute()`` in ``calls``.
 
     Parameters
     ----------
     results : dict[str, list[ToolExecutionResult]], optional
-        Mapping of tool names to lists of scripted results. Results
-        are consumed in order per tool name.
+        Mapping of ``ValidatedToolCall.binding.tool_id`` values to lists of
+        scripted results. Results are consumed in order per canonical tool id.
     exceptions : dict[str, list[Exception]], optional
-        Mapping of tool names to lists of scripted exceptions.
-        Exceptions are consumed in order per tool name.
+        Mapping of ``ValidatedToolCall.binding.tool_id`` values to lists of
+        scripted exceptions. Exceptions are consumed in order per canonical
+        tool id.
     supported_tools : set[str], optional
         Set of tool names that ``supports_tool`` returns True for.
         Defaults to all tool names present in ``results``.
@@ -179,6 +214,10 @@ class FakeToolExecutor:
         results: Optional[dict[str, list[ToolExecutionResult]]] = None,
         exceptions: Optional[dict[str, list[Exception]]] = None,
         supported_tools: Optional[set[str]] = None,
+        forbidden_tools: Optional[set[str]] = None,
+        deadline_clock: Optional[Callable[[], float]] = None,
+        minimum_remaining_seconds: Optional[float] = None,
+        expected_cancellation_id: str | None = None,
     ) -> None:
         self._results: dict[str, list[ToolExecutionResult]] = {}
         for name, result_items in (results or {}).items():
@@ -191,7 +230,27 @@ class FakeToolExecutor:
             if supported_tools is not None
             else set((results or {}).keys())
         )
+        self._forbidden_tools: set[str] = set(forbidden_tools or set())
+        self._deadline_clock = deadline_clock
+        self._minimum_remaining_seconds = minimum_remaining_seconds
+        self._expected_cancellation_id = expected_cancellation_id
         self.calls: list[ValidatedToolCall] = []
+        self.contexts: list[ToolExecutionContext] = []
+
+    @property
+    def call_count(self) -> int:
+        """Number of ``execute()`` invocations recorded."""
+        return len(self.calls)
+
+    def assert_not_called(self) -> None:
+        """Assert that no tool execution was attempted."""
+        if self.calls:
+            raise AssertionError(f"Expected no tool calls, recorded {len(self.calls)}")
+
+    def assert_tool_not_called(self, name: str) -> None:
+        """Assert that a specific tool name was not invoked."""
+        if any(call.name == name for call in self.calls):
+            raise AssertionError(f"Expected tool {name!r} not to be called")
 
     async def execute(
         self, call: ValidatedToolCall, context: ToolExecutionContext
@@ -221,8 +280,29 @@ class FakeToolExecutor:
         Exception
             If the next scripted item for this tool is an exception.
         """
-        self.calls.append(call)
         name = call.name
+        if name in self._forbidden_tools:
+            raise AssertionError(f"Forbidden tool {name!r} was called")
+        if self._expected_cancellation_id is not None:
+            actual = context.cancellation.cancellation_id
+            if actual != self._expected_cancellation_id:
+                raise AssertionError(
+                    f"Expected cancellation ID {self._expected_cancellation_id!r}, "
+                    f"got {actual!r}"
+                )
+        if self._deadline_clock is not None:
+            remaining = context.deadline.remaining(self._deadline_clock)
+            if (
+                self._minimum_remaining_seconds is not None
+                and remaining < self._minimum_remaining_seconds
+            ):
+                raise AssertionError(
+                    f"Deadline remaining {remaining} is below required "
+                    f"{self._minimum_remaining_seconds}"
+                )
+
+        self.calls.append(call)
+        self.contexts.append(context)
 
         # Check per-tool exceptions first
         if name in self._exceptions and self._exceptions[name]:

@@ -1,0 +1,255 @@
+{
+  "manifest_version": 1,
+  "upstream": {
+    "name": "forge-guardrails",
+    "url": "https://github.com/antoinezambelli/forge",
+    "commit": "bd99f4df0a7aab2fd4db2e6dae7f810a32617d76",
+    "package_version": "0.7.4",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2025-2026 Antoine Zambelli"
+  },
+  "import_date": "2026-06-12",
+  "source_snapshot": "ref-forge/",
+  "copied_files": [
+    {
+      "upstream_path": "src/forge/errors.py",
+      "sha256_before_namespace_edits": "9a0b5409b0f81588cbd4e410f19781db42472eb4e2e7df06dde6ab015f272d40",
+      "private_destination": "src/millforge/_forge/errors.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/clients/base.py",
+      "sha256_before_namespace_edits": "db4bdf33da769acde686093e42bb62e3f586910ba23eb6632698b09e85f40de5",
+      "private_destination": "src/millforge/_forge/clients/base.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/context/manager.py",
+      "sha256_before_namespace_edits": "934173f7912eda253cad788528cc0409ce851da825ca1753b9e9e65c5e7cd15d",
+      "private_destination": "src/millforge/_forge/context/manager.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/context/strategies.py",
+      "sha256_before_namespace_edits": "c9b618ae7ac3f66ac34febf24b943ed441645f1b703cac51cbe80f569576f526",
+      "private_destination": "src/millforge/_forge/context/strategies.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/core/workflow.py",
+      "sha256_before_namespace_edits": "e5baad6aac152a2625a9bdccf164d32e476ce5a02b9e47be2e4640f6c1ad4862",
+      "private_destination": "src/millforge/_forge/core/workflow.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/core/messages.py",
+      "sha256_before_namespace_edits": "41ce4e4cd9d1776ed13491158ca64bb6e6dcb633faf686a8ed6e002602ae5a3e",
+      "private_destination": "src/millforge/_forge/core/messages.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/core/steps.py",
+      "sha256_before_namespace_edits": "aeeef79fa1d78770203346c163786715fc5f08b7e223794ce70031d0656c9d4c",
+      "private_destination": "src/millforge/_forge/core/steps.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/core/inference.py",
+      "sha256_before_namespace_edits": "d719a32f4bcf63e60a0c808d596e30999668d25b529339f7aad523b45d21b6d4",
+      "private_destination": "src/millforge/_forge/core/inference.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/core/runner.py",
+      "sha256_before_namespace_edits": "cbf0f751f0a797646c5e4e325f473ccf348cafcc21f804c40ccf5a22b6a4bafc",
+      "private_destination": "src/millforge/_forge/core/runner.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/guardrails/error_tracker.py",
+      "sha256_before_namespace_edits": "989658eb8fe14c71eaa131ff5ad1767b35cdc1ce0d0315924e7665165f6cfe8a",
+      "private_destination": "src/millforge/_forge/guardrails/error_tracker.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/guardrails/guardrails.py",
+      "sha256_before_namespace_edits": "4ed4beae5988abe9b9c146e898bfb6cecc9c5133a3075747f91f20da23407823",
+      "private_destination": "src/millforge/_forge/guardrails/guardrails.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/guardrails/nudge.py",
+      "sha256_before_namespace_edits": "35a1ff122f9c8b1d12c51051f7453af4abfb0acc605e46b3bfbbf3fc62863c1c",
+      "private_destination": "src/millforge/_forge/guardrails/nudge.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/guardrails/response_validator.py",
+      "sha256_before_namespace_edits": "215d6310e7f1b5194ea39b54d5ea6ac25d137b8169ddc600673e60d8e6de1363",
+      "private_destination": "src/millforge/_forge/guardrails/response_validator.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/guardrails/step_enforcer.py",
+      "sha256_before_namespace_edits": "5a0b50f0f90ba20708fcae6ff13908175d2cb15540e415e13f0dc16b583883c3",
+      "private_destination": "src/millforge/_forge/guardrails/step_enforcer.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/prompts/nudges.py",
+      "sha256_before_namespace_edits": "ccd6a53de5bf3b5577dc19305a15a5041881c04cca364dc7bca4153e64414cef",
+      "private_destination": "src/millforge/_forge/prompts/nudges.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    },
+    {
+      "upstream_path": "src/forge/prompts/templates.py",
+      "sha256_before_namespace_edits": "aff74a8edcf8afc032e9fb1f60e9f47e8a97596363fe50a2861daafb9608e84d",
+      "private_destination": "src/millforge/_forge/prompts/templates.py",
+      "edit_category": "namespace_rewrite_and_repo_gate_normalization",
+      "patch_reason": "Rewrite imports from top-level forge package to private millforge._forge namespace; apply repo formatting/lint cleanup; where needed, replace Python 3.12 PEP 695 type alias syntax with equivalent TypeAlias assignment so local verification tools can parse the vendored subset. No behavioral change."
+    }
+  ],
+  "curated_private_files": [
+    {
+      "private_destination": "src/millforge/_forge/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Avoid exporting provider clients, server helpers, hardware discovery, tools, or slot worker from the private vendored subset."
+    },
+    {
+      "private_destination": "src/millforge/_forge/clients/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Export only transport-free client protocol/helper types from clients/base.py."
+    },
+    {
+      "private_destination": "src/millforge/_forge/context/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Export only manager and fixed strategy classes; exclude hardware discovery."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Export only WorkflowRunner from the copied guarded-loop core subset. Use a lazy export so importing core submodules such as messages or workflow does not eagerly import WorkflowRunner and recreate circular imports in the reduced private subset."
+    },
+    {
+      "private_destination": "src/millforge/_forge/guardrails/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Mirror guardrail subset exports after private namespace rewrite."
+    },
+    {
+      "private_destination": "src/millforge/_forge/prompts/__init__.py",
+      "edit_category": "curated_private_init",
+      "patch_reason": "Mirror prompt-helper subset exports after private namespace rewrite."
+    }
+  ],
+  "private_behavior_patches": [
+    {
+      "private_destination": "src/millforge/_forge/core/runner.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Expose max_premature_attempts and max_prereq_violations on WorkflowRunner.__init__ and pass them to StepEnforcer so Millforge adapter policy can tune guarded-loop violation budgets without modifying unrelated runner behavior."
+    },
+    {
+      "private_destination": "src/millforge/_forge/errors.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Add NonRetryableToolError for tool outcomes that must bypass model self-correction and propagate directly to adapter translation."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/runner.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Catch NonRetryableToolError before the generic Exception branch so it is not converted to a retryable [ToolError] message or counted against generic tool-error correction budgets."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/workflow.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Make ToolSpec.from_json_schema fail closed for the supported V1 subset by rejecting unknown schema keywords, unsupported JSON types, malformed required lists, and arrays without item schemas before a model or tool call can occur."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/workflow.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Document the private mapped prerequisite representation used by Millforge to preserve compiled argument-match semantics when prerequisite and current argument names differ."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/steps.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Extend arg-matched prerequisite checks to support separate prerequisite_arg and current_arg fields while retaining the upstream match_arg shorthand, preserving Millforge compiled prerequisite semantics without widening model-visible tool schemas."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/__init__.py",
+      "edit_category": "private_subset_safety_patch",
+      "patch_reason": "Convert the curated core package export to a lazy WorkflowRunner lookup so the reduced private subset remains importable when callers import context or workflow modules directly."
+    }
+  ],
+  "excluded_upstream_paths": [
+    {
+      "path": "src/forge/clients/anthropic.py",
+      "reason": "provider client transport"
+    },
+    {
+      "path": "src/forge/clients/llamafile.py",
+      "reason": "provider client transport"
+    },
+    {
+      "path": "src/forge/clients/ollama.py",
+      "reason": "provider client transport"
+    },
+    {
+      "path": "src/forge/clients/openai_compat.py",
+      "reason": "provider client transport"
+    },
+    {
+      "path": "src/forge/clients/sampling_defaults.py",
+      "reason": "not required by fixed Millforge sampling policy"
+    },
+    {
+      "path": "src/forge/clients/vllm.py",
+      "reason": "provider client transport"
+    },
+    {
+      "path": "src/forge/context/hardware.py",
+      "reason": "hardware discovery is not required by fixed context policy"
+    },
+    {
+      "path": "src/forge/core/slot_worker.py",
+      "reason": "server-style slot worker outside guarded-loop subset"
+    },
+    {
+      "path": "src/forge/proxy/",
+      "reason": "proxy and transport implementation code"
+    },
+    {
+      "path": "src/forge/server.py",
+      "reason": "server module"
+    },
+    {
+      "path": "src/forge/tools/",
+      "reason": "built-in tool implementation outside adapter bridge"
+    },
+    {
+      "path": "tests/eval/",
+      "reason": "eval datasets and dashboards"
+    },
+    {
+      "path": "docs/results/",
+      "reason": "dashboard artifacts"
+    },
+    {
+      "path": "scripts/",
+      "reason": "CLI/script entry points"
+    }
+  ],
+  "runtime_dependency_note": "Runtime imports use only src/millforge/_forge; ref-forge/ is optional test provenance input and is not imported by package code."
+}

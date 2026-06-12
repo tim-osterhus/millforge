@@ -41,6 +41,16 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/millforge"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/millforge/_forge/LICENSE" = "millforge/_forge/LICENSE"
+"src/millforge/_forge/PROVENANCE.json" = "millforge/_forge/PROVENANCE.json"
+"src/millforge/_forge/UPDATE_POLICY.md" = "millforge/_forge/UPDATE_POLICY.md"
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/millforge/_forge/LICENSE" = "src/millforge/_forge/LICENSE"
+"src/millforge/_forge/PROVENANCE.json" = "src/millforge/_forge/PROVENANCE.json"
+"src/millforge/_forge/UPDATE_POLICY.md" = "src/millforge/_forge/UPDATE_POLICY.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -51,6 +61,11 @@ mypy_path = "src"
 explicit_package_bases = true
 # Keep broad `mypy .` scoped to this package's owned Python surface. The
 # vendored Forge reference tree creates a duplicate top-level `tests` package,
-# and repository runtime metadata under `millrace-agents/` is not package code;
-# owned coverage is preserved by the explicit `mypy src tests` gate.
-exclude = "^(ref-forge|millrace-agents)/"
+# repository runtime metadata under `millrace-agents/` is not package code, and
+# the private Forge subset is upstream-derived code covered by provenance tests
+# rather than Millforge's owned type surface.
+exclude = "^(ref-forge|millrace-agents|src/millforge/_forge)/"
+
+[[tool.mypy.overrides]]
+module = "millforge._forge.*"
+follow_imports = "skip"

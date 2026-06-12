@@ -10,16 +10,50 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Annotated, Any, Callable, Dict, Literal, Optional, Tuple, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from millforge.compiled_plan import (
     DiagnosticField,
+    IdempotencyClass,
     SessionEvent,
+    SideEffectCertainty,
+    SideEffectClass,
     StageIdentity,
+    ToolBindingRef,
+    ToolExecutionStatus,
     ToolTraceRecord,
 )
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_SANITIZED_METADATA_MAX_ITEMS = 32
+_SANITIZED_METADATA_KEY_MAX_LENGTH = 64
+_SANITIZED_METADATA_STRING_MAX_LENGTH = 2048
+_SANITIZED_METADATA_BYTES_MAX_LENGTH = 32768
+
+
+def _nonblank(value: str, field_name: str) -> str:
+    if not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _unique(values: tuple[str, ...], field_name: str) -> None:
+    if len(set(values)) != len(values):
+        raise ValueError(f"{field_name} values must be unique")
+
+
+def _validate_sha256(value: str, field_name: str) -> str:
+    if not _SHA256_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be exactly 64 lowercase hex characters")
+    return value
+
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = Any
+JsonObject: TypeAlias = dict[str, JsonValue]
+SanitizedMetadataValue = JsonScalar
 
 # ---------------------------------------------------------------------------
 # Closed enums
@@ -173,6 +207,11 @@ class CompiledHarnessIdentity(BaseModel):
     harness_id: str = Field(description="Harness identifier")
     harness_version: int = Field(gt=0, description="Positive harness version")
 
+    @field_validator("compiled_plan_id", "harness_id")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
 
 class CompiledHarnessHash(BaseModel):
     """Immutable cryptographic hash of a compiled harness."""
@@ -181,6 +220,11 @@ class CompiledHarnessHash(BaseModel):
 
     algorithm: Literal["sha256"] = Field(description="Hash algorithm (sha256 only)")
     digest: str = Field(description="Hex-encoded digest value")
+
+    @field_validator("digest")
+    @classmethod
+    def _digest_valid(cls, value: str) -> str:
+        return _validate_sha256(value, "digest")
 
 
 class CompiledHarnessRef(BaseModel):
@@ -203,6 +247,11 @@ class RunDirRef(BaseModel):
     run_id: str = Field(description="Unique run identifier")
     path: Path = Field(description="Absolute or relative path to the run directory")
 
+    @field_validator("run_id")
+    @classmethod
+    def _run_id_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "run_id")
+
 
 class ArtifactRef(BaseModel):
     """Immutable reference to an artifact file."""
@@ -214,6 +263,16 @@ class ArtifactRef(BaseModel):
     content_type: Optional[str] = Field(
         default=None, description="MIME type or content format"
     )
+
+    @field_validator("artifact_id")
+    @classmethod
+    def _artifact_id_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "artifact_id")
+
+    @field_validator("content_type")
+    @classmethod
+    def _content_type_nonblank(cls, value: str | None) -> str | None:
+        return None if value is None else _nonblank(value, "content_type")
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +299,11 @@ class CapabilityGrant(BaseModel):
         default=None, description=CAPABILITY_GRANT_CONSTRAINTS_DESC
     )
 
+    @field_validator("capability_id")
+    @classmethod
+    def _capability_id_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "capability_id")
+
 
 class CapabilityEnvelope(BaseModel):
     """Immutable capability grant envelope containing a tuple of grants."""
@@ -249,6 +313,14 @@ class CapabilityEnvelope(BaseModel):
     grants: Tuple[CapabilityGrant, ...] = Field(
         description="Tuple of capability grants"
     )
+
+    @field_validator("grants")
+    @classmethod
+    def _grant_capabilities_unique(
+        cls, value: tuple[CapabilityGrant, ...]
+    ) -> tuple[CapabilityGrant, ...]:
+        _unique(tuple(grant.capability_id for grant in value), "capability_id")
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +338,11 @@ class ModelProfileRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     profile_id: str = Field(description="Model profile identifier")
+
+    @field_validator("profile_id")
+    @classmethod
+    def _profile_id_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "profile_id")
 
 
 class TimeoutRef(BaseModel):
@@ -439,32 +516,311 @@ class HarnessExecutionRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Model request/response models (renamed)
+# Model, tool, and bridge-owned request/response models
 # ---------------------------------------------------------------------------
 
 
-class ModelCompletionRequest(BaseModel):
-    """Immutable validated model inference request.
-
-    Replaces the former ``ValidatedModelRequest`` name.
-    """
+class ModelCapabilityRequirements(BaseModel):
+    """Exact model capabilities required by the 02C-02D Forge bridge."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    model: str = Field(description="Target model name")
-    messages: List[Dict[str, Any]] = Field(
-        description="Chat messages (role/content pairs)"
+    tool_calls: Literal[True] = True
+    parallel_tool_calls: Literal[False] = False
+    structured_output: Literal[False] = False
+    reasoning_controls: Literal[False] = False
+    usage_reporting: Literal[False] = False
+    system_messages: Literal[True] = True
+    tool_result_messages: Literal[True] = True
+
+
+class SamplingRequest(BaseModel):
+    """Canonical owned sampling controls for model calls."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    top_p: float | None = Field(default=None, ge=0, le=1)
+    presence_penalty: float | None = Field(default=None, ge=-2, le=2)
+    frequency_penalty: float | None = Field(default=None, ge=-2, le=2)
+    seed: int | None = None
+    stop: tuple[str, ...] | None = None
+    reasoning_mode: str | None = None
+    reasoning_effort: str | None = None
+
+    @field_validator("stop")
+    @classmethod
+    def _stop_values_nonblank(
+        cls, value: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        for item in value:
+            _nonblank(item, "stop")
+        return value
+
+    @field_validator("reasoning_mode", "reasoning_effort")
+    @classmethod
+    def _optional_strings_nonblank(cls, value: str | None, info: Any) -> str | None:
+        return None if value is None else _nonblank(value, info.field_name)
+
+
+class SanitizedMetadata(BaseModel):
+    """Bounded metadata that is safe to persist across the public boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    values: Dict[str, SanitizedMetadataValue] = Field(default_factory=dict)
+
+    @field_validator("values")
+    @classmethod
+    def _values_bounded(
+        cls, value: dict[str, SanitizedMetadataValue]
+    ) -> dict[str, SanitizedMetadataValue]:
+        if len(value) > _SANITIZED_METADATA_MAX_ITEMS:
+            raise ValueError("sanitized metadata contains too many items")
+        total_bytes = 0
+        for key, item in value.items():
+            _nonblank(key, "sanitized metadata key")
+            if len(key) > _SANITIZED_METADATA_KEY_MAX_LENGTH:
+                raise ValueError("sanitized metadata key is too long")
+            if isinstance(item, str):
+                if len(item) > _SANITIZED_METADATA_STRING_MAX_LENGTH:
+                    raise ValueError("sanitized metadata string value is too long")
+                total_bytes += len(item.encode("utf-8"))
+            else:
+                total_bytes += len(str(item).encode("utf-8"))
+        if total_bytes > _SANITIZED_METADATA_BYTES_MAX_LENGTH:
+            raise ValueError("sanitized metadata payload is too large")
+        return value
+
+
+class ParsedToolArguments(BaseModel):
+    """Parsed JSON object arguments for a model-requested tool call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["parsed"] = "parsed"
+    value: JsonObject = Field(default_factory=dict)
+
+    @property
+    def values(self) -> JsonObject:
+        """Compatibility accessor; ``value`` is the serialized contract field."""
+        return self.value
+
+
+class InvalidToolArguments(BaseModel):
+    """A malformed tool-argument payload for the public model bridge."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["invalid"] = "invalid"
+    raw: JsonValue
+    error_code: str
+
+    @field_validator("error_code")
+    @classmethod
+    def _error_code_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "error_code")
+
+
+ToolArguments = Annotated[
+    ParsedToolArguments | InvalidToolArguments, Field(discriminator="kind")
+]
+
+
+class ModelToolCall(BaseModel):
+    """Owned typed representation of an assistant-requested tool call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    call_id: str
+    name: str
+    arguments: ToolArguments
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _coerce_arguments(cls, value: Any) -> Any:
+        if isinstance(value, dict) and not (
+            value.get("kind") in {"parsed", "invalid"} or set(value) == {"value"}
+        ):
+            return ParsedToolArguments(value=value)
+        return value
+
+    @property
+    def id(self) -> str:
+        """Compatibility accessor; ``call_id`` is the serialized contract field."""
+        return self.call_id
+
+    @field_validator("call_id", "name")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+
+class SystemMessage(BaseModel):
+    """System instructions sent through the model bridge."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["system"] = "system"
+    content: str
+
+    @property
+    def kind(self) -> str:
+        """Compatibility accessor; ``role`` is the serialized discriminator."""
+        return self.role
+
+    @field_validator("content")
+    @classmethod
+    def _content_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "content")
+
+
+class UserMessage(BaseModel):
+    """User message sent through the model bridge."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["user"] = "user"
+    content: str
+
+    @property
+    def kind(self) -> str:
+        """Compatibility accessor; ``role`` is the serialized discriminator."""
+        return self.role
+
+    @field_validator("content")
+    @classmethod
+    def _content_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "content")
+
+
+class AssistantMessage(BaseModel):
+    """Assistant response message containing text and/or tool calls."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["assistant"] = "assistant"
+    content: str | None = None
+    tool_calls: Tuple[ModelToolCall, ...] = Field(default_factory=tuple)
+
+    @property
+    def kind(self) -> str:
+        """Compatibility accessor; ``role`` is the serialized discriminator."""
+        return self.role
+
+    @field_validator("content")
+    @classmethod
+    def _content_nonblank(cls, value: str | None) -> str | None:
+        return None if value is None else _nonblank(value, "content")
+
+    @model_validator(mode="after")
+    def _assistant_has_content_or_tools(self) -> AssistantMessage:
+        _unique(tuple(call.call_id for call in self.tool_calls), "assistant call_id")
+        if self.content is None and not self.tool_calls:
+            raise ValueError("assistant message requires content or tool_calls")
+        return self
+
+
+class ToolResultMessage(BaseModel):
+    """Model-visible result for a prior assistant tool call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    tool_name: str
+    content: str
+
+    @property
+    def kind(self) -> str:
+        """Compatibility accessor; ``role`` is the serialized discriminator."""
+        return "tool_result"
+
+    @field_validator("tool_call_id", "tool_name", "content")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+
+ModelMessage = Annotated[
+    SystemMessage | UserMessage | AssistantMessage | ToolResultMessage,
+    Field(discriminator="role"),
+]
+
+
+class ModelToolDefinition(BaseModel):
+    """Owned model-visible tool definition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    description: str
+    input_schema: JsonObject
+
+    @field_validator("name", "description")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+
+class ModelCompletionRequest(BaseModel):
+    """Immutable validated model inference request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_id: str
+    run_id: str
+    model_profile_id: str
+    messages: Tuple[ModelMessage, ...] = Field(description="Typed chat messages")
+    tools: Tuple[ModelToolDefinition, ...] = Field(
+        default_factory=tuple, description="Available tool definitions"
     )
-    tools: Optional[List[Dict[str, Any]]] = Field(
-        default=None, description="Available tool definitions"
+    required_capabilities: ModelCapabilityRequirements = Field(
+        default_factory=ModelCapabilityRequirements
     )
-    temperature: Optional[float] = Field(
-        default=None, ge=0, le=2, description="Sampling temperature"
-    )
-    max_tokens: Optional[int] = Field(
-        default=None, ge=1, description="Maximum output tokens"
-    )
-    stream: bool = Field(default=False, description="Whether to stream the response")
+    sampling_overrides: SamplingRequest = Field(default_factory=SamplingRequest)
+    maximum_output_tokens_override: int | None = Field(default=None, gt=0)
+    deadline: Deadline
+    cancellation: CancellationRef
+    secret_refs: Tuple[SecretRef, ...] = Field(default_factory=tuple)
+
+    @property
+    def model(self) -> str:
+        """Compatibility accessor; ``model_profile_id`` is the contract field."""
+        return self.model_profile_id
+
+    @field_validator("request_id", "run_id", "model_profile_id")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _request_invariants(self) -> ModelCompletionRequest:
+        _unique(tuple(tool.name for tool in self.tools), "tool name")
+        _unique(tuple(secret.secret_id for secret in self.secret_refs), "secret_id")
+        pending_tool_calls: dict[str, str] = {}
+        answered_tool_call_ids: set[str] = set()
+        for message in self.messages:
+            if isinstance(message, AssistantMessage):
+                for call in message.tool_calls:
+                    if (
+                        call.call_id in pending_tool_calls
+                        or call.call_id in answered_tool_call_ids
+                    ):
+                        raise ValueError("assistant tool-call IDs must be unique")
+                    pending_tool_calls[call.call_id] = call.name
+            elif isinstance(message, ToolResultMessage):
+                expected_tool_name = pending_tool_calls.get(message.tool_call_id)
+                if expected_tool_name is None:
+                    raise ValueError("tool-result message has no matching tool call")
+                if message.tool_name != expected_tool_name:
+                    raise ValueError("tool-result message tool_name does not match")
+                if message.tool_call_id in answered_tool_call_ids:
+                    raise ValueError("tool-result message duplicates a tool call")
+                answered_tool_call_ids.add(message.tool_call_id)
+        return self
 
 
 class UsageMetadata(BaseModel):
@@ -480,24 +836,49 @@ class UsageMetadata(BaseModel):
 
 
 class ModelCompletionResponse(BaseModel):
-    """Immutable validated model inference response.
-
-    Replaces the former ``ValidatedModelResponse`` name.
-    """
+    """Immutable validated model inference response."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    model: str = Field(description="Model that produced the response")
-    content: Optional[str] = Field(default=None, description="Response text content")
-    tool_calls: Optional[List[Dict[str, Any]]] = Field(
-        default=None, description="Tool calls requested by the model"
-    )
-    finish_reason: Optional[str] = Field(
-        default=None, description="Reason the response finished"
-    )
-    usage: Optional[UsageMetadata] = Field(
-        default=None, description="Token usage metadata"
-    )
+    provider_request_id: str | None = None
+    model_id: str
+    message: AssistantMessage
+    finish_reason: Literal[
+        "stop",
+        "tool_calls",
+        "length",
+        "content_filter",
+        "cancelled",
+        "unknown",
+    ]
+    usage: TokenUsage | None = Field(default=None, description="Token usage metadata")
+    provider_metadata: SanitizedMetadata | None = None
+
+    @property
+    def model(self) -> str:
+        """Compatibility accessor; ``model_id`` is the contract field."""
+        return self.model_id
+
+    @property
+    def content(self) -> str | None:
+        """Compatibility accessor for the assistant message content."""
+        return self.message.content
+
+    @property
+    def tool_calls(self) -> tuple[ModelToolCall, ...]:
+        """Compatibility accessor for the assistant message tool calls."""
+        return self.message.tool_calls
+
+    @field_validator("provider_request_id", "model_id")
+    @classmethod
+    def _strings_nonblank(cls, value: str | None, info: Any) -> str | None:
+        return None if value is None else _nonblank(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _finish_reason_matches_message(self) -> ModelCompletionResponse:
+        if self.message.tool_calls and self.finish_reason != "tool_calls":
+            raise ValueError("tool call responses require finish_reason='tool_calls'")
+        return self
 
 
 class ValidatedToolCall(BaseModel):
@@ -505,27 +886,88 @@ class ValidatedToolCall(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str = Field(description="Unique tool call identifier")
-    name: str = Field(description="Tool name to invoke")
-    arguments: Dict[str, Any] = Field(description="Tool arguments as a dictionary")
+    call_id: str = Field(description="Unique tool call identifier")
+    node_id: str = Field(description="Compiled node identifier")
+    binding: ToolBindingRef = Field(description="Resolved tool binding")
+    arguments: JsonObject = Field(description="Canonical JSON object arguments")
+
+    @property
+    def id(self) -> str:
+        """Compatibility accessor; ``call_id`` is the serialized contract field."""
+        return self.call_id
+
+    @property
+    def name(self) -> str:
+        """Compatibility accessor for legacy fakes; not a serialized field."""
+        return self.binding.tool_id
+
+    @field_validator("call_id", "node_id")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
 
 
 class ToolExecutionResult(BaseModel):
-    """Immutable validated tool execution result.
-
-    Replaces the former ``ValidatedToolResult`` name.
-    """
+    """Immutable validated tool execution result."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     call_id: str = Field(description="Identifier of the originating tool call")
-    output: Optional[str] = Field(default=None, description="Tool output text")
-    error: Optional[str] = Field(
-        default=None, description="Error message if the tool failed"
+    status: ToolExecutionStatus = Field(description="Closed tool execution status")
+    summary: str = Field(description="Bounded model-visible summary")
+    structured_data: JsonValue = None
+    artifact_refs: Tuple[ArtifactRef, ...] = Field(default_factory=tuple)
+    error_code: str | None = Field(
+        default=None, description="Stable error code when execution failed"
     )
-    duration_ms: Optional[int] = Field(
-        default=None, ge=0, description="Execution duration in milliseconds"
+    retryable: bool = Field(
+        default=False, description="Whether retrying this tool call is safe"
     )
+    side_effect_class: SideEffectClass
+    idempotency: IdempotencyClass
+    side_effect_certainty: SideEffectCertainty
+    input_sha256: str
+    output_sha256: str | None = Field(
+        default=None, description="SHA-256 hash of the serialized safe output"
+    )
+    timing: TimingMetadata = Field(description="Canonical timing metadata")
+
+    @property
+    def duration_ms(self) -> float:
+        """Compatibility accessor; ``timing`` is the serialized contract field."""
+        return self.timing.duration_ms
+
+    @field_validator("call_id", "summary")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+    @field_validator("error_code")
+    @classmethod
+    def _error_code_nonblank(cls, value: str | None) -> str | None:
+        return None if value is None else _nonblank(value, "error_code")
+
+    @field_validator("input_sha256")
+    @classmethod
+    def _input_sha256_valid(cls, value: str) -> str:
+        return _validate_sha256(value, "input_sha256")
+
+    @field_validator("output_sha256")
+    @classmethod
+    def _output_sha256_valid(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_sha256(value, "output_sha256")
+
+    @model_validator(mode="after")
+    def _success_error_consistency(self) -> ToolExecutionResult:
+        if self.status == ToolExecutionStatus.SUCCESS:
+            if self.error_code is not None:
+                raise ValueError("successful tool results must not include error_code")
+            if self.retryable:
+                raise ValueError("successful tool results must not be retryable")
+        else:
+            if self.error_code is None:
+                raise ValueError("failed tool results require error_code")
+        return self
 
 
 # ---------------------------------------------------------------------------

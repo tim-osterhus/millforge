@@ -18,6 +18,7 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,23 +27,28 @@ from millforge.artifacts import (
     RuntimeArtifactWriter,
 )
 from millforge.compiled_plan import (
+    ArgumentMatch,
     CompilerIdentity,
     CompiledArtifactPolicy,
     CompiledBudgetPolicy,
     CompiledContextPolicy,
     CompiledHarnessNode,
     CompiledHarnessPlan,
+    CompiledPrerequisite,
     CompiledModelProfile,
     CompiledPromptPolicy,
     IdempotencyClass,
     SessionEventType,
+    SideEffectCertainty,
     SideEffectClass,
     TerminalArtifactRequirement,
     ToolBindingRef,
+    ToolExecutionStatus,
     canonical_json_serialize,
 )
 from millforge.contracts import (
     ArtifactRef,
+    AssistantMessage,
     CancellationRef,
     CapabilityEnvelope,
     CapabilityGrant,
@@ -56,16 +62,22 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    ModelCompletionResponse,
+    ModelToolCall,
     ModelProfileRef,
+    ParsedToolArguments,
     RunDirRef,
     StageIdentity,
     TimeoutRef,
     TimingMetadata,
-    UsageMetadata,
+    ToolExecutionResult,
     TokenUsage,
+    UsageMetadata,
 )
+from millforge._forge.adapter import ForgeContextFactory, ForgeGuardrailBackend
+from millforge.protocols import GuardrailBackend
 from millforge.runtime import DefaultHarnessRuntime
-from millforge.testing import FakeGuardrailBackend
+from millforge.testing import FakeGuardrailBackend, FakeModelClient, FakeToolExecutor
 
 from tests.conftest import (
     FakeCancellationResolver,
@@ -92,7 +104,7 @@ TEST_WORK_ITEM_ID = "task-int-001"
 TEST_PROFILE_ID = "deepseek_flash_high"
 TEST_SESSION_ID = "00000000-0000-4000-8000-000000000001"
 EXPECTED_INTEGRATION_COMPILED_SHA256 = (
-    "85473c71eba945d51a245ec0a48f9002285f76a9e3a854c2fa03ea92775b6e43"
+    "2324d80b154199e20a048736571915d78502bd5c94d296f8e333d9d763a68c14"
 )
 
 # ---------------------------------------------------------------------------
@@ -160,25 +172,68 @@ def _build_test_artifact_policy() -> CompiledArtifactPolicy:
     )
 
 
-def _build_test_harness_node() -> CompiledHarnessNode:
-    """Build a single CompiledHarnessNode for the test plan."""
+def _build_prepare_node() -> CompiledHarnessNode:
+    """Build the required non-terminal preparation node."""
     return CompiledHarnessNode(
-        node_id="node-001",
-        model_tool_name="get_weather",
-        description="Test Node",
-        input_schema={"type": "object", "properties": {}},
+        node_id="node-prepare",
+        model_tool_name="prepare",
+        description="Prepare input",
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
         binding=ToolBindingRef(
-            tool_id="tool.weather",
+            tool_id="tool.prepare",
             tool_version=1,
             descriptor_sha256="a" * 64,
-            implementation_id="impl.weather.v1",
+            implementation_id="impl.prepare.v1",
         ),
         prerequisites=(),
+        required=True,
+        terminal_result=None,
+        required_capabilities=("workspace.read",),
+        produced_artifact_ids=(),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    )
+
+
+def _build_terminal_node() -> CompiledHarnessNode:
+    """Build the terminal node with a prerequisite edge."""
+    return CompiledHarnessNode(
+        node_id="node-001",
+        model_tool_name="submit",
+        description="Submit result",
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        binding=ToolBindingRef(
+            tool_id="tool.submit",
+            tool_version=1,
+            descriptor_sha256="b" * 64,
+            implementation_id="impl.submit.v1",
+        ),
+        prerequisites=(
+            CompiledPrerequisite(
+                node_id="node-prepare",
+                argument_matches=(
+                    ArgumentMatch(
+                        prerequisite_argument="path",
+                        current_argument="path",
+                    ),
+                ),
+            ),
+        ),
         required=False,
         terminal_result="success",
         required_capabilities=("workspace.read",),
         produced_artifact_ids=("art-output-001",),
-        side_effect_class=SideEffectClass.READ_ONLY,
+        side_effect_class=SideEffectClass.TERMINAL,
         idempotency=IdempotencyClass.IDEMPOTENT,
     )
 
@@ -201,7 +256,7 @@ def _build_test_plan_with_hash() -> CompiledHarnessPlan:
         prompt_policy=_build_test_prompt_policy(),
         budgets=_build_test_budget_policy(),
         context_policy=_build_test_context_policy(),
-        nodes=(_build_test_harness_node(),),
+        nodes=(_build_prepare_node(), _build_terminal_node()),
         required_capabilities=("workspace.read",),
         terminal_result_map={"node-001": "success"},
         artifact_policy=_build_test_artifact_policy(),
@@ -213,6 +268,71 @@ def _build_test_plan_with_hash() -> CompiledHarnessPlan:
     canonical_str = canonical_json_serialize(canonical_body)
     compiled_sha256 = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
     return plan_without_hash.model_copy(update={"compiled_sha256": compiled_sha256})
+
+
+def _artifact_output() -> str:
+    return json.dumps(
+        {
+            "summary": "done",
+            "artifact_refs": [
+                {
+                    "artifact_id": "art-output-001",
+                    "path": "millforge/output.json",
+                    "content_type": "application/json",
+                }
+            ],
+        },
+        sort_keys=True,
+    )
+
+
+def _model_response(
+    *,
+    content: str,
+    call_id: str,
+    tool_name: str,
+    usage: TokenUsage,
+) -> ModelCompletionResponse:
+    return ModelCompletionResponse(
+        provider_request_id=f"provider-{call_id}",
+        model_id=TEST_PROFILE_ID,
+        message=AssistantMessage(
+            content=content,
+            tool_calls=(
+                ModelToolCall(
+                    call_id=call_id,
+                    name=tool_name,
+                    arguments=ParsedToolArguments(value={"path": "input.json"}),
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+        usage=usage,
+    )
+
+
+def _tool_result(
+    call_id: str,
+    summary: str,
+    artifact_refs: tuple[ArtifactRef, ...] = (),
+    input_arguments: dict[str, Any] | None = None,
+) -> ToolExecutionResult:
+    node = _build_terminal_node() if "submit" in call_id else _build_prepare_node()
+    input_arguments = input_arguments or {"path": "input.json"}
+    return ToolExecutionResult(
+        call_id=call_id,
+        status=ToolExecutionStatus.SUCCESS,
+        summary=summary,
+        artifact_refs=artifact_refs,
+        side_effect_class=node.side_effect_class,
+        idempotency=node.idempotency,
+        side_effect_certainty=SideEffectCertainty.CONFIRMED_COMPLETE,
+        input_sha256=hashlib.sha256(
+            canonical_json_serialize(input_arguments).encode("utf-8")
+        ).hexdigest(),
+        output_sha256=None,
+        timing=TimingMetadata(started_at="start", completed_at="end", duration_ms=0.0),
+    )
 
 
 def _build_test_request(
@@ -352,8 +472,64 @@ def _build_scripted_backend() -> FakeGuardrailBackend:
     return FakeGuardrailBackend(responses=[session_result])
 
 
+def _build_forge_backend(plan_loader: FakePlanLoader) -> ForgeGuardrailBackend:
+    model_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="prepare first",
+                call_id="model-call-prepare",
+                tool_name="prepare",
+                usage=TokenUsage(
+                    input_tokens=10,
+                    output_tokens=5,
+                    total_tokens=15,
+                    provider_reported=True,
+                ),
+            ),
+            _model_response(
+                content="submit now",
+                call_id="model-call-submit",
+                tool_name="submit",
+                usage=TokenUsage(
+                    input_tokens=12,
+                    output_tokens=6,
+                    total_tokens=18,
+                    provider_reported=True,
+                ),
+            ),
+        ]
+    )
+    tool_executor = FakeToolExecutor(
+        supported_tools={"prepare", "submit"},
+        results={
+            "tool.prepare": [_tool_result("model-call-prepare", "prepared")],
+            "tool.submit": [
+                _tool_result(
+                    "model-call-submit",
+                    _artifact_output(),
+                    (
+                        ArtifactRef(
+                            artifact_id="art-output-001",
+                            path=Path("millforge/output.json"),
+                            content_type="application/json",
+                        ),
+                    ),
+                )
+            ],
+        },
+    )
+    return ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=FakeClock(),
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+    )
+
+
 def _build_runtime(
-    backend: FakeGuardrailBackend,
+    backend: GuardrailBackend,
     plan_loader: FakePlanLoader,
     artifact_writer: RuntimeArtifactWriter,
     clock: FakeClock,
@@ -382,16 +558,14 @@ def _assert_result_shape(result: HarnessExecutionResult) -> None:
         f"Expected disposition 'success', got {result.terminal_intent.disposition!r}"
     )
     assert result.usage is not None, "Expected usage to be present"
-    assert result.usage.model_calls == 5, (
-        f"Expected model_calls=5, got {result.usage.model_calls}"
+    assert result.usage.model_calls == 2, (
+        f"Expected model_calls=2, got {result.usage.model_calls}"
     )
-    assert result.usage.tool_calls == 3, (
-        f"Expected tool_calls=3, got {result.usage.tool_calls}"
+    assert result.usage.tool_calls == 2, (
+        f"Expected tool_calls=2, got {result.usage.tool_calls}"
     )
     assert result.timing is not None, "Expected timing to be present"
-    assert result.diagnostic is not None, "Expected diagnostic to be present"
-    assert result.diagnostic.origin == "integration_fixture"
-    assert result.diagnostic.category == "internal"
+    assert result.diagnostic is None, "Expected no diagnostic on success"
 
 
 def _assert_artifacts_written(
@@ -411,7 +585,6 @@ def _assert_artifacts_written(
         "tool_trace",
         "metrics",
         "artifact_manifest",
-        "diagnostic",
     ]
 
     for aid in expected_present:
@@ -480,7 +653,6 @@ def _assert_result_artifact_refs(
         "events",
         "tool_trace",
         "metrics",
-        "diagnostic",
         "artifact_manifest",
     ]
 
@@ -572,8 +744,8 @@ async def test_full_pipeline_integration(
     # ------------------------------------------------------------------
     # 3. Wire up all 5 dependencies
     # ------------------------------------------------------------------
-    backend = _build_scripted_backend()
     plan_loader = FakePlanLoader(plan=plan)
+    backend = _build_forge_backend(plan_loader)
     clock = FakeClock()
     cancellation_resolver = FakeCancellationResolver(is_cancelled=False)
 
@@ -614,12 +786,12 @@ async def test_full_pipeline_integration(
     # 7. Byte-determinism on repeat run
     # ------------------------------------------------------------------
     # Build a fresh runtime with the same deterministic inputs
-    backend2 = _build_scripted_backend()
     plan_loader2 = FakePlanLoader(plan=plan)
+    backend2 = _build_forge_backend(plan_loader2)
     clock2 = FakeClock()
     cancellation_resolver2 = FakeCancellationResolver(is_cancelled=False)
 
-    run_dir2 = tmp_path / "run-int-002"
+    run_dir2 = tmp_path / "run-int-001"
     request2 = _build_test_request(plan, run_directory=run_dir2)
     artifact_writer2 = RuntimeArtifactWriter(run_directory=run_dir2)
     runtime2 = _build_runtime(

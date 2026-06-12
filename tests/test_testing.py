@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from millforge.contracts import (
+    AssistantMessage,
     CancellationRef,
     CapabilityEnvelope,
     CompiledHarnessHash,
@@ -23,14 +24,21 @@ from millforge.contracts import (
     GuardedSessionResult,
     GuardedSessionStatus,
     HarnessExecutionRequest,
+    IdempotencyClass,
     ModelCompletionRequest,
     ModelCompletionResponse,
     ModelProfileRef,
     RunDirRef,
     StageIdentity,
+    SideEffectCertainty,
+    SideEffectClass,
     TimeoutRef,
+    TimingMetadata,
+    ToolBindingRef,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolExecutionStatus,
+    UserMessage,
     ValidatedToolCall,
 )
 from millforge.protocols import (
@@ -99,6 +107,68 @@ def _make_tool_context() -> ToolExecutionContext:
     )
 
 
+def _binding(tool_id: str = "echo") -> ToolBindingRef:
+    return ToolBindingRef(
+        tool_id=tool_id,
+        tool_version=1,
+        descriptor_sha256="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        implementation_id="impl.echo.v1",
+    )
+
+
+def _model_request(content: str = "Hi") -> ModelCompletionRequest:
+    return ModelCompletionRequest(
+        request_id="req-1",
+        run_id="run-1",
+        model_profile_id="gpt-4",
+        messages=(UserMessage(content=content),),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=60.0,
+            effective_deadline_monotonic=60.0,
+            source="request",
+        ),
+        cancellation=CancellationRef(cancellation_id="cancel-1"),
+    )
+
+
+def _model_response(content: str = "ok") -> ModelCompletionResponse:
+    return ModelCompletionResponse(
+        provider_request_id=None,
+        model_id="gpt-4",
+        message=AssistantMessage(content=content),
+        finish_reason="stop",
+    )
+
+
+def _validated_call(
+    call_id: str = "c1",
+    name: str = "echo",
+    arguments: dict[str, object] | None = None,
+    binding_tool_id: str | None = None,
+) -> ValidatedToolCall:
+    return ValidatedToolCall(
+        call_id=call_id,
+        node_id=f"node-{name}",
+        binding=_binding(binding_tool_id or name),
+        arguments=arguments or {},
+    )
+
+
+def _tool_result(call_id: str = "c1", summary: str = "done") -> ToolExecutionResult:
+    return ToolExecutionResult(
+        call_id=call_id,
+        status=ToolExecutionStatus.SUCCESS,
+        summary=summary,
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+        side_effect_certainty=SideEffectCertainty.CONFIRMED_COMPLETE,
+        input_sha256="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        output_sha256=None,
+        timing=TimingMetadata(started_at="start", completed_at="end", duration_ms=0.0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exports
 # ---------------------------------------------------------------------------
@@ -130,7 +200,7 @@ class _ConformingModelClient:
     async def complete(
         self, request: ModelCompletionRequest
     ) -> ModelCompletionResponse:
-        return ModelCompletionResponse(model="test", content="ok")
+        return _model_response()
 
 
 @pytest.mark.parametrize(
@@ -161,24 +231,12 @@ def test_fake_passes_isinstance_check(
 
 @pytest.mark.asyncio
 async def test_fake_model_client_scripted_success() -> None:
-    response_a = ModelCompletionResponse(
-        model="gpt-4", content="Hello!", finish_reason="stop"
-    )
-    response_b = ModelCompletionResponse(
-        model="gpt-4", content="World!", finish_reason="stop"
-    )
+    response_a = _model_response("Hello!")
+    response_b = _model_response("World!")
     client = FakeModelClient(responses=[response_a, response_b])
 
-    result_1 = await client.complete(
-        ModelCompletionRequest(
-            model="gpt-4", messages=[{"role": "user", "content": "Hi"}]
-        )
-    )
-    result_2 = await client.complete(
-        ModelCompletionRequest(
-            model="gpt-4", messages=[{"role": "user", "content": "Again"}]
-        )
-    )
+    result_1 = await client.complete(_model_request("Hi"))
+    result_2 = await client.complete(_model_request("Again"))
 
     assert result_1 == response_a, "First scripted response should be returned"
     assert result_2 == response_b, "Second scripted response should be returned"
@@ -197,7 +255,17 @@ async def test_fake_model_client_scripted_exception() -> None:
     with pytest.raises(ValueError, match="model unavailable"):
         await client.complete(
             ModelCompletionRequest(
-                model="gpt-4", messages=[{"role": "user", "content": "Hi"}]
+                request_id="req-1",
+                run_id="run-1",
+                model_profile_id="gpt-4",
+                messages=(UserMessage(content="Hi"),),
+                deadline=Deadline(
+                    started_monotonic=0.0,
+                    outer_deadline_monotonic=60.0,
+                    effective_deadline_monotonic=60.0,
+                    source="request",
+                ),
+                cancellation=CancellationRef(cancellation_id="cancel-1"),
             )
         )
 
@@ -206,12 +274,12 @@ async def test_fake_model_client_scripted_exception() -> None:
 async def test_fake_model_client_exception_precedes_response() -> None:
     """Exceptions are consumed before responses when both are set."""
     client = FakeModelClient(
-        responses=[ModelCompletionResponse(model="gpt-4", content="ok")],
+        responses=[_model_response("ok")],
         exceptions=[ValueError("fail")],
     )
 
     with pytest.raises(ValueError):
-        await client.complete(ModelCompletionRequest(model="gpt-4", messages=[]))
+        await client.complete(_model_request())
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +292,7 @@ async def test_fake_model_client_unscripted_raises_index_error() -> None:
     client = FakeModelClient()
 
     with pytest.raises(IndexError, match="No scripted responses remain"):
-        await client.complete(ModelCompletionRequest(model="gpt-4", messages=[]))
+        await client.complete(_model_request())
 
 
 # ---------------------------------------------------------------------------
@@ -234,15 +302,11 @@ async def test_fake_model_client_unscripted_raises_index_error() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_model_client_records_requests() -> None:
-    response = ModelCompletionResponse(model="gpt-4", content="ok")
+    response = _model_response("ok")
     client = FakeModelClient(responses=[response, response])
 
-    req_1 = ModelCompletionRequest(
-        model="gpt-4", messages=[{"role": "user", "content": "A"}]
-    )
-    req_2 = ModelCompletionRequest(
-        model="gpt-4", messages=[{"role": "user", "content": "B"}]
-    )
+    req_1 = _model_request("A")
+    req_2 = _model_request("B")
 
     await client.complete(req_1)
     await client.complete(req_2)
@@ -387,6 +451,95 @@ async def test_fake_guardrail_backend_records_requests() -> None:
     assert backend.requests[1] == req_2
 
 
+@pytest.mark.asyncio
+async def test_fake_guardrail_backend_accepts_expected_cancellation_id() -> None:
+    result = GuardedSessionResult(
+        session_id="sess-1", status=GuardedSessionStatus.TERMINAL
+    )
+    backend = FakeGuardrailBackend(
+        responses=[result], expected_cancellation_id="cancel-1"
+    )
+    request = GuardedSessionRequest(
+        session_id="sess-1",
+        execution_request=_make_harness_request(),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=300.0,
+            effective_deadline_monotonic=300.0,
+            source="request",
+        ),
+    )
+
+    assert await backend.run_session(request) == result
+    assert backend.requests == [request]
+
+
+@pytest.mark.asyncio
+async def test_fake_guardrail_backend_rejects_unexpected_cancellation_id() -> None:
+    result = GuardedSessionResult(
+        session_id="sess-1", status=GuardedSessionStatus.TERMINAL
+    )
+    backend = FakeGuardrailBackend(
+        responses=[result], expected_cancellation_id="cancel-expected"
+    )
+    request = GuardedSessionRequest(
+        session_id="sess-1",
+        execution_request=_make_harness_request(),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=300.0,
+            effective_deadline_monotonic=300.0,
+            source="request",
+        ),
+    )
+
+    with pytest.raises(AssertionError, match="Expected cancellation ID"):
+        await backend.run_session(request)
+
+    assert backend.call_count == 0
+    assert backend.requests == []
+
+
+@pytest.mark.asyncio
+async def test_fake_guardrail_backend_cancellation_mismatch_preserves_script() -> None:
+    result = GuardedSessionResult(
+        session_id="sess-1", status=GuardedSessionStatus.TERMINAL
+    )
+    backend = FakeGuardrailBackend(
+        responses=[result], expected_cancellation_id="cancel-1"
+    )
+    bad_execution_request = _make_harness_request().model_copy(
+        update={"cancellation": CancellationRef(cancellation_id="cancel-other")}
+    )
+    bad_request = GuardedSessionRequest(
+        session_id="sess-1",
+        execution_request=bad_execution_request,
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=300.0,
+            effective_deadline_monotonic=300.0,
+            source="request",
+        ),
+    )
+    good_request = GuardedSessionRequest(
+        session_id="sess-1",
+        execution_request=_make_harness_request(),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=300.0,
+            effective_deadline_monotonic=300.0,
+            source="request",
+        ),
+    )
+
+    with pytest.raises(AssertionError, match="Expected cancellation ID"):
+        await backend.run_session(bad_request)
+
+    assert backend.call_count == 0
+    assert await backend.run_session(good_request) == result
+    assert backend.requests == [good_request]
+
+
 # ---------------------------------------------------------------------------
 # FakeToolExecutor — scripted success
 # ---------------------------------------------------------------------------
@@ -394,8 +547,8 @@ async def test_fake_guardrail_backend_records_requests() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_tool_executor_scripted_success() -> None:
-    result_a = ToolExecutionResult(call_id="call-1", output="Sunny")
-    result_b = ToolExecutionResult(call_id="call-2", output="Rainy")
+    result_a = _tool_result("call-1", "Sunny")
+    result_b = _tool_result("call-2", "Rainy")
     executor = FakeToolExecutor(
         results={
             "get_weather": [result_a, result_b],
@@ -403,18 +556,45 @@ async def test_fake_tool_executor_scripted_success() -> None:
     )
 
     r1 = await executor.execute(
-        ValidatedToolCall(
-            id="call-1", name="get_weather", arguments={"city": "London"}
+        _validated_call(
+            call_id="call-1",
+            name="get_weather",
+            arguments={"city": "London"},
         ),
         _make_tool_context(),
     )
     r2 = await executor.execute(
-        ValidatedToolCall(id="call-2", name="get_weather", arguments={"city": "Paris"}),
+        _validated_call(
+            call_id="call-2",
+            name="get_weather",
+            arguments={"city": "Paris"},
+        ),
         _make_tool_context(),
     )
 
     assert r1 == result_a
     assert r2 == result_b
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_scripts_by_canonical_binding_tool_id() -> None:
+    result = _tool_result("call-1", "Prepared")
+    executor = FakeToolExecutor(
+        supported_tools={"prepare"},
+        results={"tool.prepare": [result]},
+    )
+
+    response = await executor.execute(
+        _validated_call(
+            call_id="call-1",
+            name="prepare",
+            binding_tool_id="tool.prepare",
+            arguments={"path": "input.json"},
+        ),
+        _make_tool_context(),
+    )
+
+    assert response == result
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +612,7 @@ async def test_fake_tool_executor_scripted_exception() -> None:
 
     with pytest.raises(ValueError, match="API key missing"):
         await executor.execute(
-            ValidatedToolCall(id="call-1", name="get_weather", arguments={}),
+            _validated_call(call_id="call-1", name="get_weather"),
             _make_tool_context(),
         )
 
@@ -440,7 +620,7 @@ async def test_fake_tool_executor_scripted_exception() -> None:
 @pytest.mark.asyncio
 async def test_fake_tool_executor_mixed_success_exception() -> None:
     """Exceptions and results are consumed independently per tool name."""
-    result = ToolExecutionResult(call_id="call-1", output="Sunny")
+    result = _tool_result("call-1", "Sunny")
     executor = FakeToolExecutor(
         results={"get_weather": [result]},
         exceptions={"search": [RuntimeError("search failed")]},
@@ -448,7 +628,7 @@ async def test_fake_tool_executor_mixed_success_exception() -> None:
 
     # get_weather works
     r = await executor.execute(
-        ValidatedToolCall(id="call-1", name="get_weather", arguments={}),
+        _validated_call(call_id="call-1", name="get_weather"),
         _make_tool_context(),
     )
     assert r == result
@@ -456,7 +636,7 @@ async def test_fake_tool_executor_mixed_success_exception() -> None:
     # search raises
     with pytest.raises(RuntimeError, match="search failed"):
         await executor.execute(
-            ValidatedToolCall(id="call-2", name="search", arguments={}),
+            _validated_call(call_id="call-2", name="search"),
             _make_tool_context(),
         )
 
@@ -474,7 +654,7 @@ async def test_fake_tool_executor_unscripted_tool_raises_index_error() -> None:
         IndexError, match="No scripted results remain for tool 'unknown'"
     ):
         await executor.execute(
-            ValidatedToolCall(id="call-1", name="unknown", arguments={}),
+            _validated_call(call_id="call-1", name="unknown"),
             _make_tool_context(),
         )
 
@@ -510,6 +690,20 @@ def test_fake_tool_executor_supports_tool_empty() -> None:
     assert executor.supports_tool("anything") is False
 
 
+def test_fakes_expose_call_counts_and_negative_side_effect_assertions() -> None:
+    model = FakeModelClient()
+    backend = FakeGuardrailBackend()
+    executor = FakeToolExecutor(forbidden_tools={"mutate"})
+
+    assert model.call_count == 0
+    assert backend.call_count == 0
+    assert executor.call_count == 0
+    model.assert_not_called()
+    backend.assert_not_called()
+    executor.assert_not_called()
+    executor.assert_tool_not_called("mutate")
+
+
 # ---------------------------------------------------------------------------
 # FakeToolExecutor — call recording
 # ---------------------------------------------------------------------------
@@ -517,18 +711,106 @@ def test_fake_tool_executor_supports_tool_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_tool_executor_records_calls() -> None:
-    result = ToolExecutionResult(call_id="call-1", output="done")
+    result = _tool_result("call-1", "done")
     executor = FakeToolExecutor(results={"echo": [result, result]})
 
-    call_1 = ValidatedToolCall(id="c1", name="echo", arguments={"text": "hello"})
-    call_2 = ValidatedToolCall(id="c2", name="echo", arguments={"text": "world"})
+    call_1 = _validated_call(
+        call_id="c1",
+        name="echo",
+        arguments={"text": "hello"},
+    )
+    call_2 = _validated_call(
+        call_id="c2",
+        name="echo",
+        arguments={"text": "world"},
+    )
 
     await executor.execute(call_1, _make_tool_context())
     await executor.execute(call_2, _make_tool_context())
 
     assert len(executor.calls) == 2
+    assert executor.call_count == 2
     assert executor.calls[0] == call_1
     assert executor.calls[1] == call_2
+    assert executor.contexts[0] == _make_tool_context()
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_rejects_forbidden_tool_call() -> None:
+    executor = FakeToolExecutor(
+        results={"mutate": [_tool_result("c1", "done")]},
+        forbidden_tools={"mutate"},
+    )
+
+    with pytest.raises(AssertionError, match="Forbidden tool"):
+        await executor.execute(
+            _validated_call(call_id="c1", name="mutate"),
+            _make_tool_context(),
+        )
+    assert executor.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_asserts_deadline_remaining() -> None:
+    executor = FakeToolExecutor(
+        results={"echo": [_tool_result("c1", "done")]},
+        deadline_clock=lambda: 59.5,
+        minimum_remaining_seconds=1.0,
+    )
+
+    with pytest.raises(AssertionError, match="Deadline remaining"):
+        await executor.execute(
+            _validated_call(call_id="c1", name="echo"),
+            _make_tool_context(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_accepts_expected_cancellation_id() -> None:
+    result = _tool_result("c1", "done")
+    executor = FakeToolExecutor(
+        results={"echo": [result]}, expected_cancellation_id="cancel-1"
+    )
+    call = _validated_call(call_id="c1", name="echo")
+
+    assert await executor.execute(call, _make_tool_context()) == result
+    assert executor.calls == [call]
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_rejects_unexpected_cancellation_id() -> None:
+    executor = FakeToolExecutor(
+        results={"echo": [_tool_result("c1", "done")]},
+        expected_cancellation_id="cancel-expected",
+    )
+
+    with pytest.raises(AssertionError, match="Expected cancellation ID"):
+        await executor.execute(
+            _validated_call(call_id="c1", name="echo"),
+            _make_tool_context(),
+        )
+
+    assert executor.call_count == 0
+    assert executor.contexts == []
+
+
+@pytest.mark.asyncio
+async def test_fake_tool_executor_cancellation_mismatch_preserves_script() -> None:
+    result = _tool_result("c1", "done")
+    executor = FakeToolExecutor(
+        results={"echo": [result]}, expected_cancellation_id="cancel-1"
+    )
+    call = _validated_call(call_id="c1", name="echo")
+    bad_context = _make_tool_context().model_copy(
+        update={"cancellation": CancellationRef(cancellation_id="cancel-other")}
+    )
+
+    with pytest.raises(AssertionError, match="Expected cancellation ID"):
+        await executor.execute(call, bad_context)
+
+    assert executor.call_count == 0
+    assert await executor.execute(call, _make_tool_context()) == result
+    assert executor.calls == [call]
 
 
 # ---------------------------------------------------------------------------
@@ -539,10 +821,8 @@ async def test_fake_tool_executor_records_calls() -> None:
 @pytest.mark.asyncio
 async def test_fake_model_client_deterministic() -> None:
     """Given the same script, produce the same outputs."""
-    response = ModelCompletionResponse(model="gpt-4", content="Hello")
-    req = ModelCompletionRequest(
-        model="gpt-4", messages=[{"role": "user", "content": "Hi"}]
-    )
+    response = _model_response("Hello")
+    req = _model_request("Hi")
 
     client_a = FakeModelClient(responses=[response])
     client_b = FakeModelClient(responses=[response])
@@ -555,8 +835,12 @@ async def test_fake_model_client_deterministic() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_tool_executor_deterministic() -> None:
-    result = ToolExecutionResult(call_id="c1", output="Sunny")
-    call = ValidatedToolCall(id="c1", name="get_weather", arguments={"city": "London"})
+    result = _tool_result("c1", "Sunny")
+    call = _validated_call(
+        call_id="c1",
+        name="get_weather",
+        arguments={"city": "London"},
+    )
 
     exec_a = FakeToolExecutor(results={"get_weather": [result]})
     exec_b = FakeToolExecutor(results={"get_weather": [result]})

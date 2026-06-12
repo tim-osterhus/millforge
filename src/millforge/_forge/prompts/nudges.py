@@ -1,0 +1,95 @@
+"""Nudge message templates for the WorkflowRunner."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def retry_nudge(raw_response: str) -> str:
+    """Nudge for when the model returns text instead of a tool call.
+
+    Args:
+        raw_response: The raw text the model produced (unused — kept for
+            signature compatibility).
+    """
+    return (
+        "Your previous response was not a valid tool call. "
+        "You must respond with a tool call, not free text. "
+        "Please try again with a valid tool call."
+    )
+
+
+def unknown_tool_nudge(tool_name: str, available_tools: list[str]) -> str:
+    """Nudge for when the model calls a tool that doesn't exist.
+
+    Args:
+        tool_name: The tool name the model tried to call.
+        available_tools: The list of valid tool names.
+    """
+    tools_list = ", ".join(available_tools)
+    return (
+        f"Tool '{tool_name}' does not exist. "
+        f"Available tools: {tools_list}. "
+        "Call one of them."
+    )
+
+
+def step_nudge(terminal_tool: str, pending_steps: list[str], tier: int = 1) -> str:
+    """Escalating nudge for premature terminal tool attempts.
+
+    Args:
+        terminal_tool: The name of the terminal tool the model tried to call.
+        pending_steps: The required steps that must be completed first.
+        tier: Escalation level (1=polite, 2=direct, 3=aggressive). Clamped to 1-3.
+    """
+    tier = max(1, min(3, tier))
+    steps = ", ".join(pending_steps)
+    if tier == 1:
+        return (
+            f"You cannot call {terminal_tool} yet. "
+            f"You must first complete these required steps: {steps}. "
+            "Call one of them now."
+        )
+    if tier == 2:
+        return f"You must call one of these tools now: {steps}. Pick one."
+    return (
+        f"STOP. You MUST call one of: {steps}. "
+        f"Do NOT call {terminal_tool}. "
+        f"Your next response MUST be a tool call to one of: {steps}."
+    )
+
+
+def tool_arg_validation_nudge(tool_name: str, args: Any) -> str:
+    """Nudge for when a tool call's args are not a JSON object.
+
+    The model emitted a structurally valid tool call but with malformed
+    args content (e.g. an empty string, null, a list, or a primitive
+    instead of a JSON object). Same shape as calling a tool with a bad
+    path — the call exists, the inputs are wrong.
+
+    Args:
+        tool_name: The tool the model tried to call.
+        args: The raw args value the model emitted (any type).
+    """
+    return (
+        f"Tool call to '{tool_name}' had malformed arguments. "
+        f"Got args={args!r} (type: {type(args).__name__}). "
+        "Required: args must be a JSON object (dict). "
+        "Re-emit the tool call with args as an object — "
+        '{} for no-arg tools or {"key": value} otherwise.'
+    )
+
+
+def prerequisite_nudge(tool_name: str, missing_prereqs: list[str]) -> str:
+    """Nudge for when a tool is called without its prerequisites.
+
+    Args:
+        tool_name: The tool the model tried to call.
+        missing_prereqs: The prerequisite tool names that haven't been called.
+    """
+    prereqs = ", ".join(missing_prereqs)
+    return (
+        f"You cannot call {tool_name} yet. "
+        f"You must first call: {prereqs}. "
+        "Call the prerequisite tool now."
+    )

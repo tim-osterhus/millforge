@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from millforge.contracts import (
+    AssistantMessage,
     CancellationRef,
     CapabilityEnvelope,
     CompiledHarnessHash,
@@ -25,15 +26,21 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    IdempotencyClass,
     ModelCompletionRequest,
     ModelCompletionResponse,
     ModelProfileRef,
     RunDirRef,
     StageIdentity,
+    SideEffectCertainty,
+    SideEffectClass,
     TimeoutRef,
     TimingMetadata,
+    ToolBindingRef,
     ToolExecutionContext,
     ToolExecutionResult,
+    ToolExecutionStatus,
+    UserMessage,
     ValidatedToolCall,
 )
 from millforge.protocols import (
@@ -92,6 +99,15 @@ def _make_cancellation() -> CancellationRef:
     return CancellationRef(cancellation_id="cancel-1")
 
 
+def _make_deadline() -> Deadline:
+    return Deadline(
+        started_monotonic=0.0,
+        outer_deadline_monotonic=60.0,
+        effective_deadline_monotonic=60.0,
+        source="request",
+    )
+
+
 def _make_compiled_harness_ref() -> CompiledHarnessRef:
     return CompiledHarnessRef(
         identity=CompiledHarnessIdentity(
@@ -122,6 +138,29 @@ def _make_tool_context() -> ToolExecutionContext:
             effective_deadline_monotonic=60.0,
             source="request",
         ),
+    )
+
+
+def _make_binding() -> ToolBindingRef:
+    return ToolBindingRef(
+        tool_id="tool.weather",
+        tool_version=1,
+        descriptor_sha256="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        implementation_id="impl.weather.v1",
+    )
+
+
+def _make_tool_result(call_id: str, summary: str) -> ToolExecutionResult:
+    return ToolExecutionResult(
+        call_id=call_id,
+        status=ToolExecutionStatus.SUCCESS,
+        summary=summary,
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+        side_effect_certainty=SideEffectCertainty.CONFIRMED_COMPLETE,
+        input_sha256="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        output_sha256=None,
+        timing=TimingMetadata(started_at="start", completed_at="end", duration_ms=0.0),
     )
 
 
@@ -182,8 +221,10 @@ class _ConformingModelClient:
         self, request: ModelCompletionRequest
     ) -> ModelCompletionResponse:
         return ModelCompletionResponse(
-            model=request.model,
-            content="Hello!",
+            provider_request_id=None,
+            model_id=request.model_profile_id,
+            message=AssistantMessage(content="Hello!"),
+            finish_reason="stop",
         )
 
 
@@ -193,10 +234,7 @@ class _ConformingToolExecutor:
     async def execute(
         self, call: ValidatedToolCall, context: ToolExecutionContext
     ) -> ToolExecutionResult:
-        return ToolExecutionResult(
-            call_id=call.id,
-            output=f"Executed {call.name}",
-        )
+        return _make_tool_result(call.call_id, f"Executed {call.node_id}")
 
     def supports_tool(self, name: str) -> bool:
         return name in {"get_weather", "search"}
@@ -254,7 +292,7 @@ class _ToolExecutorMissingSupportsTool:
     async def execute(
         self, call: ValidatedToolCall, context: ToolExecutionContext
     ) -> ToolExecutionResult:
-        return ToolExecutionResult(call_id=call.id, output="ok")
+        return _make_tool_result(call.call_id, "ok")
 
 
 # ---------------------------------------------------------------------------
@@ -412,12 +450,16 @@ async def test_guardrail_backend_run_session_returns_expected_type() -> None:
 async def test_model_client_complete_returns_expected_type() -> None:
     impl = _ConformingModelClient()
     request = ModelCompletionRequest(
-        model="gpt-4",
-        messages=[{"role": "user", "content": "Hello"}],
+        request_id="req-1",
+        run_id="run-1",
+        model_profile_id="gpt-4",
+        messages=(UserMessage(content="Hello"),),
+        deadline=_make_deadline(),
+        cancellation=_make_cancellation(),
     )
     response = await impl.complete(request)
     assert isinstance(response, ModelCompletionResponse)
-    assert response.model == "gpt-4"
+    assert response.model_id == "gpt-4"
     assert response.content == "Hello!"
 
 
@@ -425,8 +467,9 @@ async def test_model_client_complete_returns_expected_type() -> None:
 async def test_tool_executor_execute_returns_expected_type() -> None:
     impl = _ConformingToolExecutor()
     call = ValidatedToolCall(
-        id="call-1",
-        name="get_weather",
+        call_id="call-1",
+        node_id="node-weather",
+        binding=_make_binding(),
         arguments={"city": "London"},
     )
     result = await impl.execute(call, _make_tool_context())

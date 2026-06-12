@@ -13,9 +13,29 @@ principles of [Forge guardrails](https://github.com/antoinezambelli/forge).
 | Upstream | [https://github.com/antoinezambelli/forge](https://github.com/antoinezambelli/forge) |
 | Commit   | `bd99f4df0a7aab2fd4db2e6dae7f810a32617d76`                                  |
 
-Millforge is an independent project. It does **not** vendor, copy, rename, or
-import Forge source code. Forge's guardrails concepts informed Millforge's
-architecture and design, but all implementation is original.
+Millforge is an independent project. Its public API is Millforge-owned, while
+`src/millforge/_forge/` contains a private vendored subset of the reviewed
+Forge v0.7.4 guarded-loop implementation. That subset is limited to
+transport-free protocol helpers, workflow/message/step/inference/runner
+modules, guardrails, prompt helpers, fixed context management, the private
+Millforge plan-translation adapter layer, and private model/tool/terminal
+bridge adapters, plus `ForgeGuardrailBackend` runtime integration.
+
+The vendored subset intentionally excludes provider clients, proxy/server/CLI
+modules, eval assets, dashboards, hardware discovery, `httpx`, provider SDKs,
+and transport implementation code. Runtime package code does not import or
+depend on `ref-forge/`.
+
+Machine-readable provenance lives in
+`src/millforge/_forge/PROVENANCE.json`. The upstream MIT license is retained in
+`src/millforge/_forge/LICENSE`, and update rules are documented in
+`src/millforge/_forge/UPDATE_POLICY.md`.
+
+Private behavioral patches are recorded in the manifest's
+`private_behavior_patches` section. They currently cover configurable guarded
+loop violation budgets, non-retryable tool outcomes, strict supported-subset
+JSON Schema conversion, mapped prerequisite argument enforcement, and private
+subset import safety.
 
 ## Snapshot Comparison
 

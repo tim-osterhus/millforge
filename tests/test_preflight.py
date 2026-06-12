@@ -952,7 +952,7 @@ async def test_preflight_empty_run_id() -> None:
     )
     plan_loader = FakePlanLoader(plan=plan)
     runtime = _build_runtime(backend=backend, plan_loader=plan_loader)
-    request = _valid_harness_request(run_id="   ")
+    request = _valid_harness_request().model_copy(update={"run_id": "   "})
 
     result = await runtime.execute(request)
 
