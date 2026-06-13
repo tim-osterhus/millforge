@@ -40,7 +40,6 @@ PRIVATE_FORGE = SRC_MILLFORGE / "_forge"
 FORBIDDEN_PUBLIC_IMPORTS = {
     "millforge._forge",
     "forge",
-    "httpx",
     "anthropic",
     "openai",
     "ollama",
@@ -49,7 +48,6 @@ FORBIDDEN_PUBLIC_IMPORTS = {
 }
 FORBIDDEN_RUNTIME_DEPENDENCIES = {
     "forge-guardrails",
-    "httpx",
     "anthropic",
     "openai",
     "ollama",
@@ -64,6 +62,13 @@ FORBIDDEN_RUNTIME_DEPENDENCIES = {
     "streamlit",
     "torch",
     "transformers",
+}
+FORBIDDEN_PROVIDER_IMPORT_ROOTS = {
+    "anthropic",
+    "httpx",
+    "litellm",
+    "openai",
+    "requests",
 }
 FORBIDDEN_WHEEL_PATH_PARTS = {
     "anthropic.py",
@@ -92,6 +97,10 @@ def _public_python_files() -> Iterator[Path]:
         if PRIVATE_FORGE in path.parents:
             continue
         yield path
+
+
+def _source_python_files() -> Iterator[Path]:
+    yield from SRC_MILLFORGE.rglob("*.py")
 
 
 def _annotation_text(annotation: ast.AST | None) -> str:
@@ -147,8 +156,31 @@ def test_runtime_dependencies_exclude_forge_transport_and_provider_packages() ->
         re.split(r"[\s<>=!~;\[]", item, maxsplit=1)[0].lower() for item in dependencies
     }
 
+    assert "httpx" in normalized
     assert "pydantic" in normalized
     assert not (normalized & FORBIDDEN_RUNTIME_DEPENDENCIES)
+
+
+def test_http_transport_imports_are_isolated_to_private_model_backend() -> None:
+    allowed = {SRC_MILLFORGE / "model_backend.py"}
+    for path in _source_python_files():
+        if path in allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported_root = alias.name.split(".", maxsplit=1)[0]
+                    assert imported_root not in FORBIDDEN_PROVIDER_IMPORT_ROOTS, (
+                        path,
+                        alias.name,
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                imported_root = node.module.split(".", maxsplit=1)[0]
+                assert imported_root not in FORBIDDEN_PROVIDER_IMPORT_ROOTS, (
+                    path,
+                    node.module,
+                )
 
 
 def test_wheel_content_exposes_only_millforge_private_forge_subset(

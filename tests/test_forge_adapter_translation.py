@@ -42,6 +42,8 @@ from millforge.compiled_plan import (
 from millforge.contracts import (
     ArtifactRef,
     AssistantMessage,
+    Deadline,
+    GuardedSessionRequest,
     InvalidToolArguments,
     ModelCompletionResponse,
     ModelToolCall,
@@ -51,12 +53,22 @@ from millforge.contracts import (
     ToolResultMessage,
     TokenUsage,
 )
-from millforge.testing import FakeModelClient, FakeToolExecutor
+from millforge.testing import (
+    BUILDER_WORKSPACE_FIXED,
+    BUILDER_WORKSPACE_INITIAL,
+    BUILDER_WORKSPACE_PATH,
+    BuilderArtifactStore,
+    BuilderFakeToolExecutor,
+    FakeModelClient,
+    FakeToolExecutor,
+)
 from tests.conftest import (
     FakeCancellationResolver,
     FakeClock,
     SHA_A,
     SHA_B,
+    make_canonical_builder_compiled_plan,
+    make_canonical_builder_execution_request,
     make_test_compiled_plan,
     make_test_guarded_session_request,
 )
@@ -985,6 +997,88 @@ async def test_tool_bridge_uses_owned_history_for_terminal_acceptance() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_bridge_accepts_canonical_builder_fake_terminal_path(
+    tmp_path: Path,
+) -> None:
+    plan = make_canonical_builder_compiled_plan()
+    execution_request = make_canonical_builder_execution_request(tmp_path, plan=plan)
+    session_request = GuardedSessionRequest(
+        session_id="session-builder-001",
+        execution_request=execution_request,
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=60.0,
+            effective_deadline_monotonic=60.0,
+            source="request",
+        ),
+    )
+    executor = BuilderFakeToolExecutor(
+        plan=plan,
+        artifact_store=BuilderArtifactStore(execution_request.run_directory.path),
+    )
+    bridge = ForgeToolBridge(
+        plan=plan,
+        session_request=session_request,
+        executor=executor,
+        cancellation_resolver=FakeCancellationResolver(),
+        clock=FakeClock(monotonic_value=1.0),
+        call_id_resolver=lambda name, _args: f"call-{name}",
+    )
+
+    await bridge.invoke("inspect_request", {})
+    await bridge.invoke("read_plan", {})
+    await bridge.invoke("read_file", {"path": BUILDER_WORKSPACE_PATH})
+    await bridge.invoke(
+        "apply_patch",
+        {
+            "path": BUILDER_WORKSPACE_PATH,
+            "expected_text": BUILDER_WORKSPACE_INITIAL,
+            "replacement_text": BUILDER_WORKSPACE_FIXED,
+        },
+    )
+    await bridge.invoke("read_diff", {})
+    await bridge.invoke("run_validator", {"validator": "unit"})
+    await bridge.invoke(
+        "write_patch_summary",
+        {"summary": "fixed add", "changed_files": [BUILDER_WORKSPACE_PATH]},
+    )
+    await bridge.invoke(
+        "write_validation_results",
+        {"validator": "unit", "passed": True, "summary": "unit passed"},
+    )
+    await bridge.invoke(
+        "submit_patch",
+        {"summary_artifact_ids": ["patch_summary.json", "validation_results.json"]},
+    )
+
+    assert executor.call_count == 9
+    assert [record.call.call_id for record in executor.call_records] == [
+        "call-inspect_request",
+        "call-read_plan",
+        "call-read_file",
+        "call-apply_patch",
+        "call-read_diff",
+        "call-run_validator",
+        "call-write_patch_summary",
+        "call-write_validation_results",
+        "call-submit_patch",
+    ]
+    assert executor.rejected_calls == []
+    assert bridge.terminal_intent is not None
+    assert bridge.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert executor.call_records[-1].result.structured_data == {
+        "terminal_result": "BUILDER_COMPLETE",
+        "summary_artifact_ids": ["patch_summary.json", "validation_results.json"],
+    }
+    assert {ref.artifact_id for ref in bridge.terminal_intent.artifact_refs} == {
+        "workspace_diff",
+        "patch_summary.json",
+        "validation_results.json",
+    }
+    assert bridge.tool_trace[-1].execution_status == ToolExecutionStatus.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_tool_bridge_rejects_terminal_without_owned_required_history() -> None:
     plan = _plan()
     executor = FakeToolExecutor(
@@ -1008,6 +1102,7 @@ async def test_tool_bridge_rejects_terminal_without_owned_required_history() -> 
     assert executor.call_count == 0
     assert bridge.terminal_intent is None
     assert bridge.tool_trace[0].execution_status.value == "not_executed"
+    assert bridge.tool_trace[0].side_effect_certainty.value == "not_attempted"
 
 
 @pytest.mark.asyncio
@@ -1043,6 +1138,8 @@ async def test_tool_bridge_denies_capability_without_executor_call() -> None:
 
     assert executor.call_count == 0
     assert bridge.tool_trace[0].capability_decisions[0].decision.value == "denied"
+    assert bridge.tool_trace[0].execution_status.value == "not_executed"
+    assert bridge.tool_trace[0].side_effect_certainty.value == "not_attempted"
 
 
 @pytest.mark.asyncio

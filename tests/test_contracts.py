@@ -49,6 +49,7 @@ from millforge.contracts import (
     DiagnosticMetadata,
     ExecutionResultClass,
     ExecutionStatus,
+    HarnessExecutionRequest,
     HarnessExecutionResult,
     AssistantMessage,
     InvalidToolArguments,
@@ -70,6 +71,17 @@ from millforge.contracts import (
     ValidatedToolCall,
     UserMessage,
     SystemMessage,
+)
+from tests.conftest import (
+    BUILDER_FIXTURE_COMPILED_SHA256,
+    BUILDER_FIXTURE_DESCRIPTOR_SHA256,
+    BUILDER_FIXTURE_HARNESS_ID,
+    BUILDER_FIXTURE_HARNESS_VERSION,
+    BUILDER_FIXTURE_PROFILE_ID,
+    BUILDER_FIXTURE_PROMPT_SHA256,
+    builder_fixture_prompt_sha256,
+    make_canonical_builder_compiled_plan,
+    make_canonical_builder_execution_request,
 )
 
 SHA_A = "a" * 64
@@ -122,6 +134,19 @@ def _node(
         side_effect_class=SideEffectClass.READ_ONLY,
         idempotency=IdempotencyClass.IDEMPOTENT,
     )
+
+
+def _closed_schema(
+    properties: dict[str, object],
+    *,
+    required: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": list(required),
+    }
 
 
 def _plan(compiled_sha256: str = SHA_B) -> CompiledHarnessPlan:
@@ -210,6 +235,284 @@ def test_compiled_harness_plan_round_trip_and_hash_verification() -> None:
     assert computed == digest
     assert warnings == []
     assert result == plan
+
+
+def test_canonical_builder_compiled_fixture_golden_shape_and_hashes() -> None:
+    plan = make_canonical_builder_compiled_plan()
+    raw = plan.model_dump_json()
+    verified, computed, warnings, restored = verify_compiled_plan_sha256(
+        raw,
+        expected_compiled_hash=BUILDER_FIXTURE_COMPILED_SHA256,
+        expected_harness_id=BUILDER_FIXTURE_HARNESS_ID,
+        expected_harness_version=BUILDER_FIXTURE_HARNESS_VERSION,
+    )
+
+    assert verified is True
+    assert warnings == []
+    assert restored == plan
+    assert computed == BUILDER_FIXTURE_COMPILED_SHA256
+    assert plan.compiled_sha256 == BUILDER_FIXTURE_COMPILED_SHA256
+    assert plan.source_sha256 == BUILDER_FIXTURE_PROMPT_SHA256
+    assert builder_fixture_prompt_sha256() == BUILDER_FIXTURE_PROMPT_SHA256
+
+    assert plan.harness_id == BUILDER_FIXTURE_HARNESS_ID
+    assert plan.harness_version == 1
+    assert plan.stage_kind_ids == ("builder",)
+    assert plan.model_profile.profile_id == BUILDER_FIXTURE_PROFILE_ID
+    assert plan.budgets.model_dump(mode="json") == {
+        "max_iterations": 12,
+        "max_validation_retries": 2,
+        "max_tool_errors": 2,
+        "max_prerequisite_violations": 2,
+        "max_premature_terminal_attempts": 2,
+    }
+    assert plan.context_policy.model_dump(mode="json") == {
+        "strategy_id": "forge.tiered.v1",
+        "budget_tokens": 12000,
+        "keep_recent_iterations": 2,
+        "phase_thresholds": [0.60, 0.75, 0.90],
+    }
+
+    node_ids = tuple(node.node_id for node in plan.nodes)
+    assert node_ids == (
+        "inspect_request",
+        "read_plan",
+        "list_files",
+        "read_file",
+        "apply_patch",
+        "read_diff",
+        "run_validator",
+        "write_patch_summary",
+        "write_validation_results",
+        "submit_patch",
+        "block_builder",
+    )
+    assert tuple(node.model_tool_name for node in plan.nodes) == node_ids
+    assert {node.node_id for node in plan.nodes if node.required} == {
+        "inspect_request",
+        "read_plan",
+    }
+    assert plan.terminal_result_map == {
+        "submit_patch": "BUILDER_COMPLETE",
+        "block_builder": "BUILDER_BLOCKED",
+    }
+    assert plan.required_capabilities == (
+        "artifact.read",
+        "workspace.read",
+        "workspace.write",
+        "shell.run",
+        "artifact.write",
+        "evidence.emit",
+    )
+
+    descriptor_hashes = {
+        node.node_id: node.binding.descriptor_sha256 for node in plan.nodes
+    }
+    assert descriptor_hashes == BUILDER_FIXTURE_DESCRIPTOR_SHA256
+    assert all(
+        len(value) == 64 and value == value.lower()
+        for value in descriptor_hashes.values()
+    )
+    assert all(
+        set(value) <= set("0123456789abcdef") for value in descriptor_hashes.values()
+    )
+
+    schemas = {node.node_id: node.input_schema for node in plan.nodes}
+    assert schemas == {
+        "inspect_request": _closed_schema({}),
+        "read_plan": _closed_schema({}),
+        "list_files": _closed_schema({}),
+        "read_file": _closed_schema(
+            {"path": {"type": "string"}},
+            required=("path",),
+        ),
+        "apply_patch": _closed_schema(
+            {
+                "path": {"type": "string"},
+                "expected_text": {"type": "string"},
+                "replacement_text": {"type": "string"},
+            },
+            required=("path", "expected_text", "replacement_text"),
+        ),
+        "read_diff": _closed_schema({}),
+        "run_validator": _closed_schema(
+            {"validator": {"const": "unit"}},
+            required=("validator",),
+        ),
+        "write_patch_summary": _closed_schema(
+            {
+                "summary": {"type": "string"},
+                "changed_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            required=("summary", "changed_files"),
+        ),
+        "write_validation_results": _closed_schema(
+            {
+                "validator": {"const": "unit"},
+                "passed": {"type": "boolean"},
+                "summary": {"type": "string"},
+            },
+            required=("validator", "passed", "summary"),
+        ),
+        "submit_patch": _closed_schema(
+            {
+                "summary_artifact_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            required=("summary_artifact_ids",),
+        ),
+        "block_builder": _closed_schema(
+            {
+                "reason": {"type": "string"},
+                "blocker_artifact_id": {"type": "string"},
+            },
+            required=("reason", "blocker_artifact_id"),
+        ),
+    }
+    empty_schema_nodes = {
+        node_id
+        for node_id, schema in schemas.items()
+        if schema["properties"] == {} and schema["required"] == []
+    }
+    assert empty_schema_nodes == {
+        "inspect_request",
+        "read_plan",
+        "list_files",
+        "read_diff",
+    }
+
+
+def test_canonical_builder_fixture_prerequisites_and_artifact_policy() -> None:
+    plan = make_canonical_builder_compiled_plan()
+    nodes = {node.node_id: node for node in plan.nodes}
+
+    apply_prereq = nodes["apply_patch"].prerequisites[0]
+    assert apply_prereq.node_id == "read_file"
+    assert apply_prereq.argument_matches[0].model_dump(mode="json") == {
+        "prerequisite_argument": "path",
+        "current_argument": "path",
+    }
+    assert tuple(prereq.node_id for prereq in nodes["read_diff"].prerequisites) == (
+        "apply_patch",
+    )
+    assert tuple(prereq.node_id for prereq in nodes["run_validator"].prerequisites) == (
+        "apply_patch",
+    )
+    assert tuple(
+        prereq.node_id for prereq in nodes["write_patch_summary"].prerequisites
+    ) == ("read_diff",)
+    assert tuple(
+        prereq.node_id for prereq in nodes["write_validation_results"].prerequisites
+    ) == ("run_validator",)
+    assert tuple(prereq.node_id for prereq in nodes["submit_patch"].prerequisites) == (
+        "inspect_request",
+        "read_plan",
+        "read_diff",
+        "run_validator",
+        "write_patch_summary",
+        "write_validation_results",
+    )
+    assert tuple(prereq.node_id for prereq in nodes["block_builder"].prerequisites) == (
+        "inspect_request",
+        "read_plan",
+    )
+
+    assert plan.artifact_policy.declared_artifact_ids == (
+        "patch_summary.json",
+        "validation_results.json",
+        "workspace_diff",
+        "blocker_report.json",
+    )
+    assert [
+        requirement.model_dump(mode="json")
+        for requirement in plan.artifact_policy.required_by_terminal
+    ] == [
+        {
+            "terminal_result": "BUILDER_COMPLETE",
+            "artifact_ids": [
+                "patch_summary.json",
+                "validation_results.json",
+                "workspace_diff",
+            ],
+        },
+        {
+            "terminal_result": "BUILDER_BLOCKED",
+            "artifact_ids": ["blocker_report.json"],
+        },
+    ]
+    assert plan.validate_plan_invariants() == []
+
+
+def test_canonical_builder_execution_request_round_trip_and_constraints(
+    tmp_path: Path,
+) -> None:
+    plan = make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path, plan=plan)
+    restored = HarnessExecutionRequest.model_validate_json(request.model_dump_json())
+
+    assert restored == request
+    assert request.request_id == "request-builder-001"
+    assert request.run_id == "run-builder-001"
+    assert request.work_item_id == "work-builder-001"
+    assert request.stage == StageIdentity(
+        plane="execution",
+        node_id="builder",
+        stage_kind_id="builder",
+    )
+    assert (
+        request.compiled_harness.path
+        == tmp_path / "run-builder-001" / "millforge" / "compiled_plan.json"
+    )
+    assert request.compiled_harness.expected_hash.digest == plan.compiled_sha256
+    assert request.input_artifacts == (
+        ArtifactRef(
+            artifact_id="plan",
+            path=Path("millforge") / "compiled_plan.json",
+            content_type="application/json",
+        ),
+    )
+    assert request.run_directory.path == tmp_path / "run-builder-001"
+    assert request.timeout.timeout_seconds == 120
+    assert request.timeout.deadline is None
+    assert request.cancellation.cancellation_id == "cancel-builder-001"
+    assert request.secret_refs == ()
+    assert request.model_profile.profile_id == BUILDER_FIXTURE_PROFILE_ID
+
+    grants = {
+        grant.capability_id: grant.constraints
+        for grant in request.capability_envelope.grants
+    }
+    assert grants == {
+        "artifact.read": {"artifact_ids": ["plan"]},
+        "workspace.read": {"allowed_paths": ["src/example.py"]},
+        "workspace.write": {"allowed_paths": ["src/example.py"]},
+        "shell.run": {
+            "allowed_validators": ["unit"],
+            "subprocess_allowed": False,
+        },
+        "artifact.write": {
+            "allowed_artifact_ids": [
+                "patch_summary.json",
+                "validation_results.json",
+                "workspace_diff",
+                "blocker_report.json",
+            ],
+        },
+        "evidence.emit": {
+            "allowed_terminal_results": [
+                "BUILDER_COMPLETE",
+                "BUILDER_BLOCKED",
+            ],
+        },
+    }
+    serialized = request.model_dump_json()
+    assert "raw_secret" not in serialized.lower()
+    assert "DATABASE_PASSWORD" not in serialized
 
 
 def test_compiled_plan_rejects_off_contract_aliases() -> None:
@@ -685,6 +988,7 @@ def test_public_bridge_records_expose_exact_canonical_json_shapes() -> None:
         "required_capabilities",
         "sampling_overrides",
         "maximum_output_tokens_override",
+        "request_options",
         "deadline",
         "cancellation",
         "secret_refs",

@@ -47,9 +47,19 @@ from millforge.protocols import (
     ToolExecutor,
 )
 from millforge.testing import (
+    BUILDER_WORKSPACE_FIXED,
+    BUILDER_WORKSPACE_INITIAL,
+    BUILDER_WORKSPACE_PATH,
+    BuilderArtifactStore,
+    BuilderFakeToolExecutor,
+    BuilderInMemoryWorkspace,
     FakeGuardrailBackend,
     FakeModelClient,
     FakeToolExecutor,
+)
+from tests.conftest import (
+    make_canonical_builder_compiled_plan,
+    make_canonical_builder_execution_request,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,6 +108,25 @@ def _make_tool_context() -> ToolExecutionContext:
         capability_envelope=CapabilityEnvelope(grants=()),
         timeout=TimeoutRef(timeout_seconds=60.0),
         cancellation=CancellationRef(cancellation_id="cancel-1"),
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=60.0,
+            effective_deadline_monotonic=60.0,
+            source="request",
+        ),
+    )
+
+
+def _builder_tool_context(tmp_path: Path) -> ToolExecutionContext:
+    request = make_canonical_builder_execution_request(tmp_path)
+    return ToolExecutionContext(
+        request_id=request.request_id,
+        run_id=request.run_id,
+        stage=request.stage,
+        run_directory=request.run_directory,
+        capability_envelope=request.capability_envelope,
+        timeout=request.timeout,
+        cancellation=request.cancellation,
         deadline=Deadline(
             started_monotonic=0.0,
             outer_deadline_monotonic=60.0,
@@ -702,6 +731,291 @@ def test_fakes_expose_call_counts_and_negative_side_effect_assertions() -> None:
     backend.assert_not_called()
     executor.assert_not_called()
     executor.assert_tool_not_called("mutate")
+
+
+def test_builder_workspace_is_in_memory_and_path_limited() -> None:
+    workspace = BuilderInMemoryWorkspace()
+
+    assert workspace.list_files() == (BUILDER_WORKSPACE_PATH,)
+    assert workspace.read_file(BUILDER_WORKSPACE_PATH) == BUILDER_WORKSPACE_INITIAL
+
+    workspace.replace_file(BUILDER_WORKSPACE_PATH, BUILDER_WORKSPACE_FIXED)
+
+    assert workspace.read_file(BUILDER_WORKSPACE_PATH) == BUILDER_WORKSPACE_FIXED
+    assert "return a + b" in workspace.diff()
+    assert workspace.mutations[0].path == BUILDER_WORKSPACE_PATH
+    with pytest.raises(KeyError):
+        workspace.read_file("pyproject.toml")
+
+
+@pytest.mark.asyncio
+async def test_builder_fake_executor_exposes_exact_compiled_tool_set(
+    tmp_path: Path,
+) -> None:
+    plan = make_canonical_builder_compiled_plan()
+    executor = BuilderFakeToolExecutor(plan=plan)
+
+    assert {node.model_tool_name for node in plan.nodes} == {
+        "inspect_request",
+        "read_plan",
+        "list_files",
+        "read_file",
+        "apply_patch",
+        "read_diff",
+        "run_validator",
+        "write_patch_summary",
+        "write_validation_results",
+        "submit_patch",
+        "block_builder",
+    }
+    assert all(executor.supports_tool(node.model_tool_name) for node in plan.nodes)
+    assert executor.supports_tool("shell") is False
+
+    rejected = await executor.invoke_raw("shell", {}, _builder_tool_context(tmp_path))
+
+    assert rejected.status == ToolExecutionStatus.NOT_EXECUTED
+    assert rejected.error_code == "uncompiled_tool"
+    assert executor.call_count == 0
+    assert executor.rejected_calls[0].side_effect_certainty == (
+        SideEffectCertainty.NOT_ATTEMPTED
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "error_code"),
+    [
+        ("read_file", "not-object", "malformed_arguments"),
+        ("read_file", {}, "missing_required_field"),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH, "extra": True}, "extra_field"),
+        ("read_file", {"path": 1}, "incorrect_scalar_type"),
+        (
+            "write_patch_summary",
+            {"summary": "fixed", "changed_files": [BUILDER_WORKSPACE_PATH, 1]},
+            "incorrect_scalar_type",
+        ),
+        ("submit_patch", {}, "missing_required_field"),
+        (
+            "submit_patch",
+            {"summary_artifact_ids": "patch_summary.json"},
+            "incorrect_scalar_type",
+        ),
+        ("block_builder", {"reason": "blocked"}, "missing_required_field"),
+        ("run_validator", {"validator": "integration"}, "invalid_enum_value"),
+    ],
+)
+async def test_builder_fake_executor_rejects_bad_arguments_before_state_mutation(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: object,
+    error_code: str,
+) -> None:
+    executor = BuilderFakeToolExecutor(plan=make_canonical_builder_compiled_plan())
+
+    result = await executor.invoke_raw(
+        tool_name,
+        arguments,
+        _builder_tool_context(tmp_path),
+    )
+
+    assert result.status == ToolExecutionStatus.NOT_EXECUTED
+    assert result.error_code == error_code
+    assert result.side_effect_certainty == SideEffectCertainty.NOT_ATTEMPTED
+    assert executor.call_count == 0
+    assert executor.workspace.mutations == []
+    assert executor.rejected_calls[0].arguments == arguments
+    assert executor.rejected_calls[0].side_effect_certainty == (
+        SideEffectCertainty.NOT_ATTEMPTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_builder_fake_executor_enforces_request_constraints_without_mutation(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    denied_request = request.model_copy(
+        update={"capability_envelope": CapabilityEnvelope(grants=())}
+    )
+    context = ToolExecutionContext(
+        request_id=denied_request.request_id,
+        run_id=denied_request.run_id,
+        stage=denied_request.stage,
+        run_directory=denied_request.run_directory,
+        capability_envelope=denied_request.capability_envelope,
+        timeout=denied_request.timeout,
+        cancellation=denied_request.cancellation,
+        deadline=Deadline(
+            started_monotonic=0.0,
+            outer_deadline_monotonic=60.0,
+            effective_deadline_monotonic=60.0,
+            source="request",
+        ),
+    )
+    executor = BuilderFakeToolExecutor(plan=make_canonical_builder_compiled_plan())
+
+    result = await executor.invoke_raw(
+        "apply_patch",
+        {
+            "path": BUILDER_WORKSPACE_PATH,
+            "expected_text": BUILDER_WORKSPACE_INITIAL,
+            "replacement_text": BUILDER_WORKSPACE_FIXED,
+        },
+        context,
+    )
+
+    assert result.status == ToolExecutionStatus.NOT_EXECUTED
+    assert result.error_code == "capability_denied"
+    assert result.side_effect_certainty == SideEffectCertainty.NOT_ATTEMPTED
+    assert executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_INITIAL
+    )
+    assert executor.call_count == 0
+    assert executor.rejected_calls[0].error_code == "capability_denied"
+
+
+@pytest.mark.asyncio
+async def test_builder_fake_executor_rejects_apply_patch_without_matching_read(
+    tmp_path: Path,
+) -> None:
+    context = _builder_tool_context(tmp_path)
+    executor = BuilderFakeToolExecutor(plan=make_canonical_builder_compiled_plan())
+
+    no_read = await executor.invoke_raw(
+        "apply_patch",
+        {
+            "path": BUILDER_WORKSPACE_PATH,
+            "expected_text": BUILDER_WORKSPACE_INITIAL,
+            "replacement_text": BUILDER_WORKSPACE_FIXED,
+        },
+        context,
+    )
+    await executor.invoke_raw(
+        "read_file",
+        {"path": BUILDER_WORKSPACE_PATH},
+        context,
+        call_id="call-read",
+    )
+    mismatch = await executor.invoke_raw(
+        "apply_patch",
+        {
+            "path": BUILDER_WORKSPACE_PATH,
+            "expected_text": "def add(a, b): return 0\n",
+            "replacement_text": BUILDER_WORKSPACE_FIXED,
+        },
+        context,
+    )
+
+    assert no_read.status == ToolExecutionStatus.NOT_EXECUTED
+    assert no_read.error_code == "read_before_write_required"
+    assert mismatch.status == ToolExecutionStatus.NOT_EXECUTED
+    assert mismatch.error_code == "expected_text_mismatch"
+    assert no_read.side_effect_certainty == SideEffectCertainty.NOT_ATTEMPTED
+    assert mismatch.side_effect_certainty == SideEffectCertainty.NOT_ATTEMPTED
+    assert executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_INITIAL
+    )
+    assert executor.workspace.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_builder_fake_executor_mutates_only_in_memory_and_writes_artifacts(
+    tmp_path: Path,
+) -> None:
+    plan = make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path, plan=plan)
+    context = _builder_tool_context(tmp_path)
+    artifact_store = BuilderArtifactStore(request.run_directory.path)
+    executor = BuilderFakeToolExecutor(plan=plan, artifact_store=artifact_store)
+
+    await executor.invoke_raw(
+        "read_file",
+        {"path": BUILDER_WORKSPACE_PATH},
+        context,
+        call_id="call-read",
+    )
+    apply_result = await executor.invoke_raw(
+        "apply_patch",
+        {
+            "path": BUILDER_WORKSPACE_PATH,
+            "expected_text": BUILDER_WORKSPACE_INITIAL,
+            "replacement_text": BUILDER_WORKSPACE_FIXED,
+        },
+        context,
+        call_id="call-apply",
+    )
+    diff_result = await executor.invoke_raw(
+        "read_diff",
+        {},
+        context,
+        call_id="call-diff",
+    )
+    validation_result = await executor.invoke_raw(
+        "run_validator",
+        {"validator": "unit"},
+        context,
+        call_id="call-validator",
+    )
+    summary_result = await executor.invoke_raw(
+        "write_patch_summary",
+        {"summary": "fixed add", "changed_files": [BUILDER_WORKSPACE_PATH]},
+        context,
+        call_id="call-summary",
+    )
+    validation_artifact_result = await executor.invoke_raw(
+        "write_validation_results",
+        {"validator": "unit", "passed": True, "summary": "unit passed"},
+        context,
+        call_id="call-validation-artifact",
+    )
+    submit_result = await executor.invoke_raw(
+        "submit_patch",
+        {"summary_artifact_ids": ["patch_summary.json", "validation_results.json"]},
+        context,
+        call_id="call-submit",
+    )
+
+    assert executor.call_count == 7
+    assert [record.call.call_id for record in executor.call_records] == [
+        "call-read",
+        "call-apply",
+        "call-diff",
+        "call-validator",
+        "call-summary",
+        "call-validation-artifact",
+        "call-submit",
+    ]
+    assert apply_result.structured_data == {"mutated": True}
+    assert validation_result.structured_data == {"validator": "unit", "passed": True}
+    assert summary_result.structured_data == {
+        "summary": "fixed add",
+        "changed_files": [BUILDER_WORKSPACE_PATH],
+    }
+    assert validation_artifact_result.structured_data == {
+        "validator": "unit",
+        "passed": True,
+        "summary": "unit passed",
+    }
+    assert submit_result.structured_data == {
+        "terminal_result": "BUILDER_COMPLETE",
+        "summary_artifact_ids": ["patch_summary.json", "validation_results.json"],
+    }
+    assert diff_result.duration_ms == 7.0
+    assert summary_result.artifact_refs[0].artifact_id == "patch_summary.json"
+    assert (
+        (request.run_directory.path / "millforge" / "workspace_diff")
+        .read_text(encoding="utf-8")
+        .startswith("--- a/src/example.py")
+    )
+    assert (request.run_directory.path / "millforge" / "patch_summary.json").read_text(
+        encoding="utf-8"
+    ) == '{"changed_files":["src/example.py"],"summary":"fixed add"}\n'
+    assert (
+        request.run_directory.path / "millforge" / "validation_results.json"
+    ).read_text(encoding="utf-8") == (
+        '{"passed":true,"summary":"unit passed","validator":"unit"}\n'
+    )
+    assert Path(BUILDER_WORKSPACE_PATH).exists() is False
 
 
 # ---------------------------------------------------------------------------

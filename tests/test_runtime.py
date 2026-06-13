@@ -19,6 +19,8 @@ or network imports.
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,8 +29,11 @@ from typing import Any
 import pytest
 
 from millforge.artifacts import RuntimeArtifactWriter
+from millforge.compiled_plan import CompiledHarnessPlan, canonical_json_serialize
+from millforge._forge.errors import NonRetryableToolError
 from millforge.contracts import (
     ArtifactRef,
+    AssistantMessage,
     CancellationRef,
     CapabilityEnvelope,
     CompiledHarnessHash,
@@ -40,11 +45,17 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    InvalidToolArguments,
+    ModelCompletionResponse,
     ModelProfileRef,
+    ModelToolCall,
+    ParsedToolArguments,
     RunDirRef,
     StageIdentity,
     TimeoutRef,
+    TokenUsage,
 )
+from millforge._forge.adapter import ForgeContextFactory, ForgeGuardrailBackend
 from millforge.exceptions import (
     ArtifactWriteError,
     BackendTranslationError,
@@ -53,6 +64,13 @@ from millforge.exceptions import (
     OperationCancelledError,
     ToolInvokeError,
 )
+from millforge.model_backend import (
+    DefaultModelClient,
+    OpenAIChatCompletionsTransport,
+    ResolvedModelProfile,
+    StaticModelProfileResolver,
+    StaticSecretResolver,
+)
 from millforge.runtime import (
     DefaultHarnessRuntime,
     FailureOrigin,
@@ -60,14 +78,28 @@ from millforge.runtime import (
     classify_failure,
     classify_guarded_session_status,
 )
-from millforge.testing import FakeGuardrailBackend
+from millforge.testing import (
+    BUILDER_WORKSPACE_FIXED,
+    BUILDER_WORKSPACE_INITIAL,
+    BUILDER_WORKSPACE_PATH,
+    BuilderArtifactStore,
+    BuilderFakeModelClient,
+    BuilderFakeToolExecutor,
+    BuilderInMemoryWorkspace,
+    FakeGuardrailBackend,
+)
 
 from tests.conftest import (
+    BUILDER_FIXTURE_PROFILE_ID,
     FakeArtifactWriter,
     FakeCancellationResolver,
     FakeClock,
     FakePlanLoader,
     FakeCancellationToken,
+    make_canonical_builder_profile_a,
+    make_canonical_builder_profile_b,
+    make_canonical_builder_compiled_plan,
+    make_canonical_builder_execution_request,
     make_test_compiled_plan,
     make_test_harness_execution_request,
     make_test_guarded_session_result,
@@ -100,6 +132,8 @@ _TERMINAL_STATES: list[RuntimeState] = [
 ]
 
 _ALL_STATES: list[RuntimeState] = list(RuntimeState)
+_BUILDER_SESSION_ID = "00000000-0000-4000-8000-0000000002d3"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -237,6 +271,1393 @@ def _build_recording_runtime(
         artifact_writer=artifact_writer or FakeArtifactWriter(),
         clock=clock or FakeClock(),
         cancellation_resolver=cancellation_resolver or FakeCancellationResolver(),
+    )
+
+
+def _builder_model_response(
+    sequence: int,
+    tool_name: str,
+    arguments: Any,
+) -> ModelCompletionResponse:
+    call_id = f"builder-call-{sequence:03d}-{tool_name}"
+    tool_arguments = (
+        arguments
+        if isinstance(arguments, InvalidToolArguments)
+        else ParsedToolArguments(value=arguments)
+    )
+    return ModelCompletionResponse(
+        provider_request_id=f"provider-{call_id}",
+        model_id=BUILDER_FIXTURE_PROFILE_ID,
+        message=AssistantMessage(
+            content=f"call {tool_name}",
+            tool_calls=(
+                ModelToolCall(
+                    call_id=call_id,
+                    name=tool_name,
+                    arguments=tool_arguments,
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+        usage=TokenUsage(
+            input_tokens=10 + sequence,
+            output_tokens=sequence,
+            total_tokens=10 + (sequence * 2),
+            provider_reported=True,
+        ),
+    )
+
+
+def _builder_script(
+    calls: list[tuple[str, Any]],
+) -> list[ModelCompletionResponse]:
+    return [
+        _builder_model_response(sequence, tool_name, arguments)
+        for sequence, (tool_name, arguments) in enumerate(calls, start=1)
+    ]
+
+
+def _builder_apply_args() -> dict[str, Any]:
+    return {
+        "path": BUILDER_WORKSPACE_PATH,
+        "expected_text": BUILDER_WORKSPACE_INITIAL,
+        "replacement_text": BUILDER_WORKSPACE_FIXED,
+    }
+
+
+def _builder_patch_summary_args() -> dict[str, Any]:
+    return {
+        "summary": "fixed add",
+        "changed_files": [BUILDER_WORKSPACE_PATH],
+    }
+
+
+def _builder_validation_results_args() -> dict[str, Any]:
+    return {
+        "validator": "unit",
+        "passed": True,
+        "summary": "unit passed",
+    }
+
+
+def _builder_submit_args() -> dict[str, Any]:
+    return {
+        "summary_artifact_ids": [
+            "patch_summary.json",
+            "validation_results.json",
+        ],
+    }
+
+
+def _builder_success_calls() -> list[tuple[str, dict[str, Any]]]:
+    return [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("list_files", {}),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+        ("apply_patch", _builder_apply_args()),
+        ("read_diff", {}),
+        ("run_validator", {"validator": "unit"}),
+        ("write_patch_summary", _builder_patch_summary_args()),
+        ("write_validation_results", _builder_validation_results_args()),
+        ("submit_patch", _builder_submit_args()),
+    ]
+
+
+def _builder_block_args() -> dict[str, Any]:
+    return {
+        "reason": "missing upstream decision",
+        "blocker_artifact_id": "blocker_report.json",
+    }
+
+
+def _rehash_plan(plan: CompiledHarnessPlan) -> CompiledHarnessPlan:
+    body = plan.model_dump(mode="json")
+    body.pop("compiled_sha256")
+    digest = hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
+    return plan.model_copy(update={"compiled_sha256": digest})
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _jsonl_event_types(path: Path) -> list[str]:
+    return [
+        json.loads(line)["event_type"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _jsonl_records(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _model_event_sequence(count: int) -> list[str]:
+    return ["model_request_started", "model_request_completed"] * count
+
+
+def _tool_event_sequence(
+    count: int, *, final_status: str = "tool_completed"
+) -> list[str]:
+    return ["tool_started", "tool_completed"] * (count - 1) + [
+        "tool_started",
+        final_status,
+    ]
+
+
+def _assert_tool_trace_sequence(
+    traces: list[dict[str, Any]],
+    expected: list[tuple[str, str, str]],
+) -> None:
+    assert [
+        (
+            record["node_id"],
+            record["execution_status"],
+            record["side_effect_certainty"],
+        )
+        for record in traces
+    ] == expected
+
+
+def _canonical_json_file(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _normalize_run_root(value: Any, run_dir: Path) -> Any:
+    run_dir_text = str(run_dir)
+    if isinstance(value, dict):
+        return {key: _normalize_run_root(item, run_dir) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_run_root(item, run_dir) for item in value]
+    if isinstance(value, str):
+        return value.replace(run_dir_text, "<RUN_DIR>")
+    return value
+
+
+def _normalized_result_json(result: HarnessExecutionResult, run_dir: Path) -> Any:
+    return _normalize_run_root(result.model_dump(mode="json"), run_dir)
+
+
+def _normalized_file_json(path: Path, run_dir: Path) -> Any:
+    return _normalize_run_root(_canonical_json_file(path), run_dir)
+
+
+def _normalized_jsonl(path: Path, run_dir: Path) -> list[Any]:
+    return _normalize_run_root(_jsonl_records(path), run_dir)
+
+
+def _manifest_content_hashes(manifest_path: Path) -> dict[str, str]:
+    manifest = _canonical_json_file(manifest_path)
+    return {
+        entry["artifact_id"]: entry["sha256_hex"] for entry in manifest["artifacts"]
+    }
+
+
+async def _execute_canonical_builder_script(
+    tmp_path: Path,
+    calls: list[tuple[str, Any]],
+    *,
+    plan: CompiledHarnessPlan | None = None,
+) -> tuple[
+    HarnessExecutionResult,
+    BuilderFakeModelClient,
+    BuilderFakeToolExecutor,
+    Path,
+]:
+    plan = plan or make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path, plan=plan)
+    plan_loader = FakePlanLoader(plan=plan)
+    artifact_store = BuilderArtifactStore(request.run_directory.path)
+    workspace = BuilderInMemoryWorkspace()
+    tool_executor = BuilderFakeToolExecutor(
+        plan=plan,
+        workspace=workspace,
+        artifact_store=artifact_store,
+    )
+    model_client = BuilderFakeModelClient(responses=_builder_script(calls))
+    clock = FakeClock()
+    cancellation_resolver = FakeCancellationResolver(is_cancelled=False)
+    backend = ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+    runtime = DefaultHarnessRuntime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=RuntimeArtifactWriter(request.run_directory.path),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+
+    result = await runtime.execute(request)
+
+    assert len(backend.requests) == 1
+    assert backend.requests[0].session_id == _BUILDER_SESSION_ID
+    return result, model_client, tool_executor, request.run_directory.path
+
+
+async def _execute_canonical_builder_http_profile(
+    tmp_path: Path,
+    profile: ResolvedModelProfile,
+    secret_values: dict[str, str],
+    *,
+    plan: CompiledHarnessPlan | None = None,
+) -> tuple[HarnessExecutionResult, list[dict[str, Any]], BuilderFakeToolExecutor, Path]:
+    plan = plan or make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path, plan=plan).model_copy(
+        update={"secret_refs": (profile.authentication.secret_ref,)}
+    )
+    calls = _builder_success_calls()
+    seen: list[dict[str, Any]] = []
+    httpx_module = __import__("httpx")
+
+    async def handler(http_request: Any) -> Any:
+        sequence = len(seen) + 1
+        tool_name, arguments = calls[sequence - 1]
+        body = json.loads(http_request.content)
+        headers = dict(http_request.headers)
+        seen.append({"url": str(http_request.url), "headers": headers, "body": body})
+
+        call_id = f"builder-http-{profile.provider_id[-1]}-{sequence:03d}-{tool_name}"
+        response_body: dict[str, Any] = {
+            "id": f"provider-{profile.provider_id}-{sequence:03d}",
+            "model": profile.model_id,
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": f"call {tool_name}",
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(
+                                        arguments,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        if profile.provider_id == "compat-a":
+            response_body["usage"] = {
+                "prompt_tokens": 10 + sequence,
+                "completion_tokens": sequence,
+                "total_tokens": 10 + (sequence * 2),
+            }
+        return httpx_module.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json=response_body,
+        )
+
+    plan_loader = FakePlanLoader(plan=plan)
+    artifact_store = BuilderArtifactStore(request.run_directory.path)
+    tool_executor = BuilderFakeToolExecutor(
+        plan=plan,
+        workspace=BuilderInMemoryWorkspace(),
+        artifact_store=artifact_store,
+    )
+    transport = OpenAIChatCompletionsTransport(
+        http_transport=httpx_module.MockTransport(handler)
+    )
+    model_client = DefaultModelClient(
+        profile_resolver=StaticModelProfileResolver({profile.profile_id: profile}),
+        secret_resolver=StaticSecretResolver(secret_values),
+        transport=transport,
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+        clock=FakeClock(),
+    )
+    clock = FakeClock()
+    cancellation_resolver = FakeCancellationResolver(is_cancelled=False)
+    backend = ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+    runtime = DefaultHarnessRuntime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=RuntimeArtifactWriter(request.run_directory.path),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+
+    try:
+        result = await runtime.execute(request)
+    finally:
+        await model_client.aclose()
+
+    assert len(backend.requests) == 1
+    assert backend.requests[0].session_id == _BUILDER_SESSION_ID
+    return result, seen, tool_executor, request.run_directory.path
+
+
+def _assert_terminal_result_shape(
+    terminal_payload: dict[str, Any],
+    *,
+    terminal_result: str,
+    result_class: str,
+) -> None:
+    assert set(terminal_payload) == {
+        "compiled_harness_sha256",
+        "request_id",
+        "result_class",
+        "run_id",
+        "schema_version",
+        "stage",
+        "summary_artifact_paths",
+        "terminal_result",
+    }
+    assert terminal_payload["schema_version"] == "1.0"
+    assert terminal_payload["request_id"] == "request-builder-001"
+    assert terminal_payload["run_id"] == "run-builder-001"
+    assert terminal_payload["stage"] == {
+        "node_id": "builder",
+        "plane": "execution",
+        "stage_kind_id": "builder",
+    }
+    assert terminal_payload["terminal_result"] == terminal_result
+    assert terminal_payload["result_class"] == result_class
+    assert len(terminal_payload["compiled_harness_sha256"]) == 64
+
+
+def _assert_millforge_artifacts(
+    millforge_dir: Path,
+    *,
+    filenames: list[str],
+    manifest_artifact_ids: set[str],
+    absent_filenames: set[str] | None = None,
+) -> None:
+    assert sorted(path.name for path in millforge_dir.iterdir()) == filenames
+    manifest = _read_json(millforge_dir / "artifact_manifest.json")
+    assert manifest["schema_version"] == "1.0"
+    assert manifest["request_id"] == "request-builder-001"
+    assert manifest["run_id"] == "run-builder-001"
+    assert {entry["artifact_id"] for entry in manifest["artifacts"]} == (
+        manifest_artifact_ids
+    )
+    for filename in absent_filenames or set():
+        assert not (millforge_dir / filename).exists()
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s1_clean_success_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S1 executes the canonical Builder success path through the real runtime."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    calls = _builder_success_calls()
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert result.terminal_intent.disposition == "success"
+    assert result.usage is not None
+    assert result.usage.model_calls == 10
+    assert result.usage.tool_calls == 10
+    token_usage = result.usage.token_usage
+    assert token_usage is not None
+    assert token_usage.model_dump(mode="json") == {
+        "input_tokens": 155,
+        "output_tokens": 55,
+        "total_tokens": 210,
+        "provider_reported": True,
+    }
+    assert model_client.call_count == 10
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        tool_name for tool_name, _args in calls
+    ]
+    assert tool_executor.rejected_calls == []
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert len(tool_executor.workspace.mutations) == 1
+    assert Path(BUILDER_WORKSPACE_PATH).exists() is False
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "tool_trace.jsonl",
+            "validation_results.json",
+            "workspace_diff",
+        ],
+        manifest_artifact_ids={
+            "terminal_result",
+            "execution_summary",
+            "events",
+            "tool_trace",
+            "metrics",
+        },
+        absent_filenames={"blocker_report.json", "diagnostic.json"},
+    )
+    terminal_payload = _read_json(millforge_dir / "terminal_result.json")
+    _assert_terminal_result_shape(
+        terminal_payload,
+        terminal_result="BUILDER_COMPLETE",
+        result_class="domain_terminal",
+    )
+    assert set(terminal_payload["summary_artifact_paths"]) == {
+        "millforge/patch_summary.json",
+        "millforge/validation_results.json",
+        "millforge/workspace_diff",
+    }
+    assert (millforge_dir / "workspace_diff").read_text(encoding="utf-8").strip()
+    assert _jsonl_event_types(millforge_dir / "events.jsonl") == [
+        "session_started",
+        "workflow_constructed",
+        *(["model_request_started", "model_request_completed"] * 10),
+        *(["tool_started", "tool_completed"] * 10),
+        "terminal_intent_accepted",
+    ]
+    traces = _jsonl_records(millforge_dir / "tool_trace.jsonl")
+    assert [record["node_id"] for record in traces] == [
+        tool_name for tool_name, _args in calls
+    ]
+    assert all(record["execution_status"] == "success" for record in traces)
+
+
+@pytest.mark.parametrize(
+    ("profile_factory", "secret_values", "usage_expected"),
+    (
+        (
+            make_canonical_builder_profile_a,
+            {"compat_a_key": "sk-compat-a-secret"},
+            True,
+        ),
+        (
+            make_canonical_builder_profile_b,
+            {"compat_b_key": "sk-compat-b-secret"},
+            False,
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_canonical_builder_s1_success_uses_canonical_profile_http_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile_factory: Any,
+    secret_values: dict[str, str],
+    usage_expected: bool,
+) -> None:
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    profile = profile_factory()
+    plan = make_canonical_builder_compiled_plan()
+    calls = _builder_success_calls()
+    expected_tool_names = [node.model_tool_name for node in plan.nodes]
+
+    (
+        result,
+        seen,
+        tool_executor,
+        _run_dir,
+    ) = await _execute_canonical_builder_http_profile(
+        tmp_path,
+        profile,
+        secret_values,
+        plan=plan,
+    )
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert result.terminal_intent.disposition == "success"
+    assert result.usage is not None
+    assert result.usage.model_calls == 10
+    assert result.usage.tool_calls == 10
+    assert (result.usage.token_usage is not None) is usage_expected
+    if usage_expected:
+        assert result.usage.token_usage is not None
+        assert result.usage.token_usage.model_dump(mode="json") == {
+            "input_tokens": 155,
+            "output_tokens": 55,
+            "total_tokens": 210,
+            "provider_reported": True,
+        }
+
+    assert [request["url"] for request in seen] == [
+        profile.endpoint.chat_completions_url
+    ] * len(calls)
+    expected_tools = seen[0]["body"]["tools"]
+    assert [tool["function"]["name"] for tool in expected_tools] == expected_tool_names
+    assert expected_tools[3]["function"]["parameters"] == {
+        "additionalProperties": False,
+        "properties": {"path": {"title": "Path", "type": "string"}},
+        "required": ["path"],
+        "title": "ReadFileParams",
+        "type": "object",
+    }
+    assert expected_tools[4]["function"]["parameters"]["required"] == [
+        "path",
+        "expected_text",
+        "replacement_text",
+    ]
+    for request in seen:
+        headers = request["headers"]
+        body = request["body"]
+        assert headers["content-type"] == "application/json"
+        assert headers["user-agent"] == "millforge-model-backend/1"
+        assert "accept" not in headers
+        assert body["model"] == profile.model_id
+        assert body["stream"] is False
+        assert body["max_tokens"] == profile.maximum_output_tokens
+        assert body["tools"] == expected_tools
+        assert "temperature" not in body
+        assert "top_p" not in body
+        if profile.provider_id == "compat-a":
+            assert headers["authorization"] == "Bearer sk-compat-a-secret"
+            assert "reasoning_effort" not in body
+        else:
+            assert headers["x-api-key"] == "sk-compat-b-secret"
+            assert body["reasoning_effort"] == "high"
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        tool_name for tool_name, _arguments in calls
+    ]
+    assert [record.call.call_id for record in tool_executor.call_records] == [
+        f"builder-http-{profile.provider_id[-1]}-{sequence:03d}-{tool_name}"
+        for sequence, (tool_name, _arguments) in enumerate(calls, start=1)
+    ]
+    assert [request["body"]["model"] for request in seen] == [profile.model_id] * 10
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert tool_executor.rejected_calls == []
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s1_repeated_runs_are_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S1 repeats byte-stable after normalizing only absolute run roots."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    calls = _builder_success_calls()
+
+    result_1, model_1, tools_1, run_dir_1 = await _execute_canonical_builder_script(
+        tmp_path / "first",
+        calls,
+    )
+    result_2, model_2, tools_2, run_dir_2 = await _execute_canonical_builder_script(
+        tmp_path / "second",
+        calls,
+    )
+
+    millforge_1 = run_dir_1 / "millforge"
+    millforge_2 = run_dir_2 / "millforge"
+    assert _normalized_result_json(result_1, run_dir_1) == _normalized_result_json(
+        result_2,
+        run_dir_2,
+    )
+    assert _normalized_file_json(
+        millforge_1 / "terminal_result.json",
+        run_dir_1,
+    ) == _normalized_file_json(millforge_2 / "terminal_result.json", run_dir_2)
+    assert _normalized_jsonl(millforge_1 / "events.jsonl", run_dir_1) == (
+        _normalized_jsonl(millforge_2 / "events.jsonl", run_dir_2)
+    )
+    assert _normalized_jsonl(millforge_1 / "tool_trace.jsonl", run_dir_1) == (
+        _normalized_jsonl(millforge_2 / "tool_trace.jsonl", run_dir_2)
+    )
+    assert _normalized_file_json(millforge_1 / "metrics.json", run_dir_1) == (
+        _normalized_file_json(millforge_2 / "metrics.json", run_dir_2)
+    )
+    assert _manifest_content_hashes(millforge_1 / "artifact_manifest.json") == (
+        _manifest_content_hashes(millforge_2 / "artifact_manifest.json")
+    )
+    assert [record.request for record in model_1.call_records] == [
+        record.request for record in model_2.call_records
+    ]
+    assert [record.call for record in tools_1.call_records] == [
+        record.call for record in tools_2.call_records
+    ]
+
+
+def test_canonical_builder_slice_keeps_deferred_systems_out_of_scope(
+    tmp_path: Path,
+) -> None:
+    """Audit the 02D Builder slice boundaries without importing Millrace runtime."""
+    plan = make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path)
+    tool_names = {node.model_tool_name for node in plan.nodes}
+
+    assert tool_names == {
+        "inspect_request",
+        "read_plan",
+        "list_files",
+        "read_file",
+        "apply_patch",
+        "read_diff",
+        "run_validator",
+        "write_patch_summary",
+        "write_validation_results",
+        "submit_patch",
+        "block_builder",
+    }
+    assert request.secret_refs == ()
+    assert request.model_profile.profile_id == BUILDER_FIXTURE_PROFILE_ID
+    shell_grant = next(
+        grant
+        for grant in request.capability_envelope.grants
+        if grant.capability_id == "shell.run"
+    )
+    assert shell_grant.constraints == {
+        "allowed_validators": ["unit"],
+        "subprocess_allowed": False,
+    }
+    assert request.compiled_harness.path.name == "compiled_plan.json"
+    assert all(ref.artifact_id == "plan" for ref in request.input_artifacts)
+
+    forbidden_import_roots = {
+        "git",
+        "httpx",
+        "millrace",
+        "openai",
+        "requests",
+        "subprocess",
+        "urllib",
+        "yaml",
+    }
+    audited_paths = (
+        _REPO_ROOT / "src" / "millforge" / "runtime.py",
+        _REPO_ROOT / "src" / "millforge" / "testing" / "__init__.py",
+        _REPO_ROOT / "tests" / "conftest.py",
+    )
+    for path in audited_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_roots = {
+                    alias.name.split(".", maxsplit=1)[0] for alias in node.names
+                }
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                imported_roots = {node.module.split(".", maxsplit=1)[0]}
+            else:
+                continue
+            assert not (imported_roots & forbidden_import_roots), path
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s2_premature_terminal_correction_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S2 rejects premature terminal attempts, then completes after correction."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    corrected_calls = _builder_success_calls()
+    calls = [
+        ("submit_patch", _builder_submit_args()),
+        *corrected_calls,
+    ]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert result.terminal_intent.disposition == "success"
+    assert result.usage is not None
+    assert result.usage.model_calls == 11
+    assert result.usage.tool_calls == 10
+    token_usage = result.usage.token_usage
+    assert token_usage is not None
+    assert token_usage.model_dump(mode="json") == {
+        "input_tokens": 176,
+        "output_tokens": 66,
+        "total_tokens": 242,
+        "provider_reported": True,
+    }
+    assert model_client.call_count == 11
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        tool_name for tool_name, _args in corrected_calls
+    ]
+    assert tool_executor.rejected_calls == []
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert len(tool_executor.workspace.mutations) == 1
+    assert Path(BUILDER_WORKSPACE_PATH).exists() is False
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "tool_trace.jsonl",
+            "validation_results.json",
+            "workspace_diff",
+        ],
+        manifest_artifact_ids={
+            "terminal_result",
+            "execution_summary",
+            "events",
+            "tool_trace",
+            "metrics",
+        },
+        absent_filenames={"blocker_report.json", "diagnostic.json"},
+    )
+    events = _jsonl_event_types(millforge_dir / "events.jsonl")
+    assert events == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(1),
+        "correction_issued",
+        "premature_terminal_rejected",
+        *_model_event_sequence(10),
+        *_tool_event_sequence(10),
+        "terminal_intent_accepted",
+    ]
+    traces = _jsonl_records(millforge_dir / "tool_trace.jsonl")
+    assert [record["node_id"] for record in traces] == [
+        tool_name for tool_name, _args in corrected_calls
+    ]
+    _assert_tool_trace_sequence(
+        traces,
+        [
+            (tool_name, "success", "confirmed_complete")
+            for tool_name, _args in corrected_calls
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s3_invalid_tool_arguments_correction_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3 rejects malformed arguments before executor dispatch, then corrects."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    invalid_args = InvalidToolArguments(
+        raw='"not-object"',
+        error_code="malformed_arguments",
+    )
+    corrected_calls: list[tuple[str, Any]] = [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+        ("apply_patch", _builder_apply_args()),
+        ("read_diff", {}),
+        ("run_validator", {"validator": "unit"}),
+        ("write_patch_summary", _builder_patch_summary_args()),
+        ("write_validation_results", _builder_validation_results_args()),
+        ("submit_patch", _builder_submit_args()),
+    ]
+    calls = [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+        ("apply_patch", invalid_args),
+        *corrected_calls[3:],
+    ]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert result.terminal_intent.disposition == "success"
+    assert result.usage is not None
+    assert result.usage.model_calls == 10
+    assert result.usage.tool_calls == 9
+    token_usage = result.usage.token_usage
+    assert token_usage is not None
+    assert token_usage.model_dump(mode="json") == {
+        "input_tokens": 155,
+        "output_tokens": 55,
+        "total_tokens": 210,
+        "provider_reported": True,
+    }
+    assert model_client.call_count == 10
+    assert tool_executor.rejected_calls == []
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        tool_name for tool_name, _args in corrected_calls
+    ]
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert len(tool_executor.workspace.mutations) == 1
+    assert Path(BUILDER_WORKSPACE_PATH).exists() is False
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "tool_trace.jsonl",
+            "validation_results.json",
+            "workspace_diff",
+        ],
+        manifest_artifact_ids={
+            "terminal_result",
+            "execution_summary",
+            "events",
+            "tool_trace",
+            "metrics",
+        },
+        absent_filenames={"blocker_report.json", "diagnostic.json"},
+    )
+    events = _jsonl_event_types(millforge_dir / "events.jsonl")
+    assert events == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(5),
+        "correction_issued",
+        *_model_event_sequence(5),
+        *_tool_event_sequence(9),
+        "terminal_intent_accepted",
+    ]
+    traces = _jsonl_records(millforge_dir / "tool_trace.jsonl")
+    _assert_tool_trace_sequence(
+        traces,
+        [
+            (tool_name, "success", "confirmed_complete")
+            for tool_name, _args in corrected_calls
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s4_missing_success_evidence_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S4 missing required success evidence prevents BUILDER_COMPLETE."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    calls: list[tuple[str, Any]] = [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+        ("apply_patch", _builder_apply_args()),
+        ("read_diff", {}),
+        ("run_validator", {"validator": "unit"}),
+        ("write_patch_summary", _builder_patch_summary_args()),
+        ("submit_patch", _builder_submit_args()),
+        ("submit_patch", _builder_submit_args()),
+        ("submit_patch", _builder_submit_args()),
+    ]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    executed_calls = calls[:7]
+    rejected_submit_attempts = calls[7:]
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.BUDGET_EXHAUSTED
+    assert result.terminal_intent is None
+    assert result.usage is not None
+    assert result.usage.model_calls == 10
+    assert result.usage.tool_calls == 7
+    token_usage = result.usage.token_usage
+    assert token_usage is not None
+    assert token_usage.model_dump(mode="json") == {
+        "input_tokens": 155,
+        "output_tokens": 55,
+        "total_tokens": 210,
+        "provider_reported": True,
+    }
+    assert model_client.call_count == 10
+    assert [record.sequence for record in model_client.call_records] == list(
+        range(1, len(calls) + 1)
+    )
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        tool_name for tool_name, _args in executed_calls
+    ]
+    assert [tool_name for tool_name, _args in rejected_submit_attempts] == [
+        "submit_patch",
+        "submit_patch",
+        "submit_patch",
+    ]
+    assert tool_executor.rejected_calls == []
+    assert len(tool_executor.workspace.mutations) == 1
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert Path(BUILDER_WORKSPACE_PATH).exists() is False
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "diagnostic.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "patch_summary.json",
+            "tool_trace.jsonl",
+            "workspace_diff",
+        ],
+        manifest_artifact_ids={
+            "diagnostic",
+            "events",
+            "execution_summary",
+            "metrics",
+            "tool_trace",
+        },
+        absent_filenames={
+            "blocker_report.json",
+            "terminal_result.json",
+            "validation_results.json",
+        },
+    )
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "prerequisite_budget_exhausted"
+    assert diagnostic["category"] == "backend"
+    events = _jsonl_event_types(millforge_dir / "events.jsonl")
+    assert events == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(8),
+        "correction_issued",
+        *_model_event_sequence(1),
+        "correction_issued",
+        *_model_event_sequence(1),
+        "budget_exhausted",
+        *_tool_event_sequence(7),
+    ]
+    traces = _jsonl_records(millforge_dir / "tool_trace.jsonl")
+    _assert_tool_trace_sequence(
+        traces,
+        [
+            (tool_name, "success", "confirmed_complete")
+            for tool_name, _args in executed_calls
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s5_validation_correction_exhaustion_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S5 pins repeated malformed argument correction exhaustion behavior."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    invalid_args = InvalidToolArguments(
+        raw='"not-object"',
+        error_code="malformed_arguments",
+    )
+    calls: list[tuple[str, Any]] = [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+        ("apply_patch", invalid_args),
+        ("apply_patch", invalid_args),
+        ("apply_patch", invalid_args),
+    ]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.MODEL_FAILURE
+    assert result.terminal_intent is None
+    assert result.usage is not None
+    assert result.usage.model_calls == 6
+    assert result.usage.tool_calls == 3
+    token_usage = result.usage.token_usage
+    assert token_usage is not None
+    assert token_usage.model_dump(mode="json") == {
+        "input_tokens": 81,
+        "output_tokens": 21,
+        "total_tokens": 102,
+        "provider_reported": True,
+    }
+    assert model_client.call_count == 6
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        "inspect_request",
+        "read_plan",
+        "read_file",
+    ]
+    assert tool_executor.rejected_calls == []
+    assert tool_executor.workspace.mutations == []
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_INITIAL
+    )
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "diagnostic.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "tool_trace.jsonl",
+        ],
+        manifest_artifact_ids={
+            "diagnostic",
+            "events",
+            "execution_summary",
+            "metrics",
+            "tool_trace",
+        },
+        absent_filenames={
+            "blocker_report.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "validation_results.json",
+            "workspace_diff",
+        },
+    )
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "malformed_tool_call"
+    assert diagnostic["category"] == "model"
+    events = _jsonl_event_types(millforge_dir / "events.jsonl")
+    assert events == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(6),
+        "correction_issued",
+    ]
+    assert _jsonl_records(millforge_dir / "tool_trace.jsonl") == []
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s6_tool_infrastructure_failure_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S6 tool infrastructure failure remains distinct from terminal outcomes."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    plan = make_canonical_builder_compiled_plan()
+    request = make_canonical_builder_execution_request(tmp_path, plan=plan)
+    plan_loader = FakePlanLoader(plan=plan)
+    artifact_store = BuilderArtifactStore(request.run_directory.path)
+
+    class _FailingBuilderToolExecutor(BuilderFakeToolExecutor):
+        async def execute(self, call: Any, context: Any) -> Any:
+            if call.node_id == "apply_patch":
+                raise NonRetryableToolError("workspace adapter unavailable")
+            return await super().execute(call, context)
+
+    tool_executor = _FailingBuilderToolExecutor(
+        plan=plan,
+        artifact_store=artifact_store,
+    )
+    model_client = BuilderFakeModelClient(
+        responses=_builder_script(
+            [
+                ("inspect_request", {}),
+                ("read_plan", {}),
+                ("read_file", {"path": BUILDER_WORKSPACE_PATH}),
+                (
+                    "apply_patch",
+                    _builder_apply_args(),
+                ),
+            ]
+        )
+    )
+    clock = FakeClock()
+    cancellation_resolver = FakeCancellationResolver(is_cancelled=False)
+    backend = ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+    runtime = DefaultHarnessRuntime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=RuntimeArtifactWriter(request.run_directory.path),
+        clock=clock,
+        cancellation_resolver=cancellation_resolver,
+    )
+
+    result = await runtime.execute(request)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.TOOL_FAILURE
+    assert result.terminal_intent is None
+    assert result.usage is not None
+    assert result.usage.model_calls == 4
+    assert result.usage.tool_calls == 4
+    assert model_client.call_count == 4
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        "inspect_request",
+        "read_plan",
+        "read_file",
+    ]
+    assert tool_executor.workspace.mutations == []
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) == (
+        BUILDER_WORKSPACE_INITIAL
+    )
+
+    millforge_dir = request.run_directory.path / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "diagnostic.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "tool_trace.jsonl",
+        ],
+        manifest_artifact_ids={
+            "diagnostic",
+            "events",
+            "execution_summary",
+            "metrics",
+            "tool_trace",
+        },
+        absent_filenames={
+            "blocker_report.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "validation_results.json",
+            "workspace_diff",
+        },
+    )
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "tool_execution_failed"
+    assert diagnostic["category"] == "tool"
+    assert _jsonl_event_types(millforge_dir / "events.jsonl") == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(4),
+        *_tool_event_sequence(4, final_status="tool_failed"),
+    ]
+    traces = _jsonl_records(millforge_dir / "tool_trace.jsonl")
+    _assert_tool_trace_sequence(
+        traces,
+        [
+            ("inspect_request", "success", "confirmed_complete"),
+            ("read_plan", "success", "confirmed_complete"),
+            ("read_file", "success", "confirmed_complete"),
+            ("apply_patch", "hard_failure", "completion_unknown"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s8_backend_pre_inference_failure_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S8 backend failure before inference performs no model or tool invocation."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    base = make_canonical_builder_compiled_plan()
+    bad_context = base.context_policy.model_copy(update={"strategy_id": "unsupported"})
+    plan = _rehash_plan(base.model_copy(update={"context_policy": bad_context}))
+    calls: list[tuple[str, Any]] = [("inspect_request", {})]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls, plan=plan)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.BACKEND_FAILURE
+    assert result.terminal_intent is None
+    assert result.usage is not None
+    assert result.usage.model_calls == 0
+    assert result.usage.tool_calls == 0
+    assert model_client.call_count == 0
+    assert tool_executor.call_records == []
+    assert tool_executor.rejected_calls == []
+    assert tool_executor.workspace.mutations == []
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "compiled_plan.json",
+            "diagnostic.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "tool_trace.jsonl",
+        ],
+        manifest_artifact_ids={
+            "diagnostic",
+            "events",
+            "execution_summary",
+            "metrics",
+            "tool_trace",
+        },
+        absent_filenames={
+            "blocker_report.json",
+            "patch_summary.json",
+            "terminal_result.json",
+            "validation_results.json",
+            "workspace_diff",
+        },
+    )
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "binding_rejected"
+    assert diagnostic["category"] == "backend"
+    assert _jsonl_event_types(millforge_dir / "events.jsonl") == [
+        "session_started",
+        "workflow_constructed",
+    ]
+    assert _jsonl_records(millforge_dir / "tool_trace.jsonl") == []
+
+
+@pytest.mark.asyncio
+async def test_canonical_builder_s7_blocked_runtime_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S7 blocks after inspect/read_plan and writes only blocked evidence."""
+    monkeypatch.setattr("millforge.runtime.uuid.uuid4", lambda: _BUILDER_SESSION_ID)
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("inspect_request", {}),
+        ("read_plan", {}),
+        ("block_builder", _builder_block_args()),
+    ]
+
+    (
+        result,
+        model_client,
+        tool_executor,
+        run_dir,
+    ) = await _execute_canonical_builder_script(tmp_path, calls)
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_REJECTED
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "BUILDER_BLOCKED"
+    assert result.terminal_intent.disposition == "blocked"
+    assert result.usage is not None
+    assert result.usage.model_calls == 3
+    assert result.usage.tool_calls == 3
+    assert model_client.call_count == 3
+    assert [record.call.node_id for record in tool_executor.call_records] == [
+        "inspect_request",
+        "read_plan",
+        "block_builder",
+    ]
+    assert tool_executor.workspace.read_file(BUILDER_WORKSPACE_PATH) != (
+        BUILDER_WORKSPACE_FIXED
+    )
+    assert tool_executor.workspace.mutations == []
+    assert tool_executor.rejected_calls == []
+
+    millforge_dir = run_dir / "millforge"
+    _assert_millforge_artifacts(
+        millforge_dir,
+        filenames=[
+            "artifact_manifest.json",
+            "blocker_report.json",
+            "compiled_plan.json",
+            "events.jsonl",
+            "execution_summary.json",
+            "metrics.json",
+            "terminal_result.json",
+            "tool_trace.jsonl",
+        ],
+        manifest_artifact_ids={
+            "terminal_result",
+            "execution_summary",
+            "events",
+            "tool_trace",
+            "metrics",
+        },
+        absent_filenames={
+            "diagnostic.json",
+            "patch_summary.json",
+            "validation_results.json",
+            "workspace_diff",
+        },
+    )
+    terminal_payload = _read_json(millforge_dir / "terminal_result.json")
+    _assert_terminal_result_shape(
+        terminal_payload,
+        terminal_result="BUILDER_BLOCKED",
+        result_class="domain_rejected",
+    )
+    assert terminal_payload["summary_artifact_paths"] == [
+        "millforge/blocker_report.json"
+    ]
+    assert _read_json(millforge_dir / "blocker_report.json") == _builder_block_args()
+    assert _jsonl_event_types(millforge_dir / "events.jsonl") == [
+        "session_started",
+        "workflow_constructed",
+        *_model_event_sequence(3),
+        *_tool_event_sequence(3),
+        "terminal_intent_accepted",
+    ]
+    _assert_tool_trace_sequence(
+        _jsonl_records(millforge_dir / "tool_trace.jsonl"),
+        [
+            ("inspect_request", "success", "confirmed_complete"),
+            ("read_plan", "success", "confirmed_complete"),
+            ("block_builder", "success", "confirmed_complete"),
+        ],
     )
 
 
@@ -458,6 +1879,10 @@ async def test_domain_rejected_writes_required_artifact_set() -> None:
         (GuardedSessionStatus.TOOL_FAILED, ExecutionResultClass.TOOL_FAILURE),
         (GuardedSessionStatus.BUDGET_EXHAUSTED, ExecutionResultClass.BUDGET_EXHAUSTED),
         (
+            GuardedSessionStatus.PREREQUISITE_BUDGET_EXHAUSTED,
+            ExecutionResultClass.BUDGET_EXHAUSTED,
+        ),
+        (
             GuardedSessionStatus.INVALID_TERMINAL,
             ExecutionResultClass.TERMINAL_RESULT_INVALID,
         ),
@@ -496,8 +1921,14 @@ async def test_non_domain_session_results_do_not_write_terminal_result_artifact(
     assert len(writer.execution_summary_calls) == 1
     assert len(writer.metrics_calls) == 1
     assert len(writer.manifest_calls) == 1
-    assert writer.events_calls == []
-    assert writer.tool_trace_calls == []
+    assert len(writer.events_calls) == 1
+    assert len(writer.tool_trace_calls) == 1
+    assert writer.events_calls[0][1] == [
+        event.model_dump(mode="json") for event in session_result.events
+    ]
+    assert writer.tool_trace_calls[0][1] == [
+        record.model_dump(mode="json") for record in session_result.tool_trace
+    ]
 
     summary_payload = writer.execution_summary_calls[0][1]
     assert summary_payload["status"] == result.status.value
@@ -509,7 +1940,12 @@ async def test_non_domain_session_results_do_not_write_terminal_result_artifact(
     manifest_ids = {
         artifact["artifact_id"] for artifact in writer.manifest_calls[0][1]["artifacts"]
     }
-    assert manifest_ids == {"execution_summary", "metrics"}
+    assert manifest_ids == {
+        "execution_summary",
+        "metrics",
+        "events",
+        "tool_trace",
+    }
 
 
 @pytest.mark.asyncio
@@ -1065,6 +2501,10 @@ def test_classify_guarded_session_status_all_values() -> None:
         GuardedSessionStatus.BUDGET_EXHAUSTED: (
             ExecutionResultClass.BUDGET_EXHAUSTED,
             ExecutionStatus.INTERRUPTED,
+        ),
+        GuardedSessionStatus.PREREQUISITE_BUDGET_EXHAUSTED: (
+            ExecutionResultClass.BUDGET_EXHAUSTED,
+            ExecutionStatus.FAILED,
         ),
         GuardedSessionStatus.TIMED_OUT: (
             ExecutionResultClass.TIMED_OUT,

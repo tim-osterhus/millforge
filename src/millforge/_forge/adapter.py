@@ -285,6 +285,7 @@ class ForgeGuardrailBackend:
                 max_premature_attempts=workflow_input.runner_options.max_premature_attempts,
                 max_prereq_violations=workflow_input.runner_options.max_prereq_violations,
                 stream=False,
+                on_message=_runner_message_observer(event_translator),
             )
             initial_messages = ForgeSessionInputBuilder().build(plan, request)
             cancel_event = cancellation_event_from_ref(token.is_cancelled())
@@ -296,9 +297,14 @@ class ForgeGuardrailBackend:
             )
             if tool_bridge.terminal_intent is None:
                 raise ForgeBridgeError("Workflow completed without terminal intent")
+            status = (
+                GuardedSessionStatus.REJECTED
+                if tool_bridge.terminal_intent.disposition == "blocked"
+                else GuardedSessionStatus.TERMINAL
+            )
             return self._result(
                 request,
-                status=GuardedSessionStatus.TERMINAL,
+                status=status,
                 started_at=started_at,
                 terminal_intent=tool_bridge.terminal_intent,
                 artifact_refs=tool_bridge.terminal_intent.artifact_refs,
@@ -320,6 +326,7 @@ class ForgeGuardrailBackend:
                     _single_event(event_translator, SessionEventType.CANCELLED),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except DeadlineExceededError:
             return self._failure_result(
@@ -335,6 +342,7 @@ class ForgeGuardrailBackend:
                     _single_event(event_translator, SessionEventType.TIMED_OUT),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except (ForgeBindingRejectedError, ForgeBridgeError) as exc:
             return self._failure_result(
@@ -345,18 +353,25 @@ class ForgeGuardrailBackend:
                 message="Forge backend rejected the compiled workflow",
                 started_at=started_at,
                 events=_ordered_events(event_translator.events),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except ToolCallError:
+            event_translator.correction_issued(code="tool_arg_validation")
             return self._failure_result(
                 request,
-                status=GuardedSessionStatus.REJECTED,
+                status=GuardedSessionStatus.MODEL_FAILED,
                 code="malformed_tool_call",
-                category="backend",
+                category="model",
                 message="Model did not produce a valid tool call",
                 started_at=started_at,
                 events=_ordered_events(event_translator.events),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
-        except (StepEnforcementError, PrerequisiteError):
+        except StepEnforcementError as exc:
+            event_translator.correction_issued(code="step")
+            event_translator.premature_terminal_rejected(
+                node_id=workflow_input.node_id_by_tool.get(exc.terminal_tool)
+            )
             return self._failure_result(
                 request,
                 status=GuardedSessionStatus.INVALID_TERMINAL,
@@ -369,8 +384,26 @@ class ForgeGuardrailBackend:
                     tool_bridge.events if tool_bridge is not None else (),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
+            )
+        except PrerequisiteError:
+            event_translator.budget_exhausted(code="prerequisite_budget_exhausted")
+            return self._failure_result(
+                request,
+                status=GuardedSessionStatus.PREREQUISITE_BUDGET_EXHAUSTED,
+                code="prerequisite_budget_exhausted",
+                category="backend",
+                message="Model exhausted prerequisite correction budget",
+                started_at=started_at,
+                events=_ordered_events(
+                    event_translator.events,
+                    tool_bridge.events if tool_bridge is not None else (),
+                ),
+                tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except (MaxIterationsError, ContextBudgetExceeded):
+            event_translator.budget_exhausted(code="workflow_budget_exhausted")
             return self._failure_result(
                 request,
                 status=GuardedSessionStatus.BUDGET_EXHAUSTED,
@@ -381,13 +414,9 @@ class ForgeGuardrailBackend:
                 events=_ordered_events(
                     event_translator.events,
                     tool_bridge.events if tool_bridge is not None else (),
-                    _single_event(
-                        event_translator,
-                        SessionEventType.BUDGET_EXHAUSTED,
-                        code="workflow_budget_exhausted",
-                    ),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except WorkflowCancelledError:
             return self._failure_result(
@@ -403,6 +432,7 @@ class ForgeGuardrailBackend:
                     _single_event(event_translator, SessionEventType.CANCELLED),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except (ToolExecutionError, ToolResolutionError, NonRetryableToolError):
             return self._failure_result(
@@ -417,6 +447,7 @@ class ForgeGuardrailBackend:
                     tool_bridge.events if tool_bridge is not None else (),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except (BackendTranslationError, ToolInvokeError):
             return self._failure_result(
@@ -427,6 +458,7 @@ class ForgeGuardrailBackend:
                 message="Forge backend translation failed",
                 started_at=started_at,
                 events=_ordered_events(event_translator.events),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except ModelTransportError:
             return self._failure_result(
@@ -437,6 +469,7 @@ class ForgeGuardrailBackend:
                 message="Model transport failed",
                 started_at=started_at,
                 events=_ordered_events(event_translator.events),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except ForgeError:
             return self._failure_result(
@@ -447,6 +480,7 @@ class ForgeGuardrailBackend:
                 message="Forge backend failed",
                 started_at=started_at,
                 events=_ordered_events(event_translator.events),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except Exception as exc:
             if model_bridge is not None and (
@@ -473,6 +507,7 @@ class ForgeGuardrailBackend:
                     tool_bridge.events if tool_bridge is not None else (),
                 ),
                 tool_trace=tool_bridge.tool_trace if tool_bridge is not None else (),
+                usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
                 cause=exc,
             )
 
@@ -572,6 +607,7 @@ class ForgeGuardrailBackend:
         started_at: Any,
         events: tuple[SessionEvent, ...],
         tool_trace: tuple[ToolTraceRecord, ...] = (),
+        usage: UsageMetadata | None = None,
         cause: Exception | None = None,
     ) -> GuardedSessionResult:
         _ = cause
@@ -593,6 +629,7 @@ class ForgeGuardrailBackend:
             status=status,
             started_at=started_at,
             diagnostic=diagnostic,
+            usage=usage,
             events=events,
             tool_trace=tool_trace,
         )
@@ -675,6 +712,25 @@ class ForgeEventTranslator:
         )
         self._events.append(event)
         return event
+
+
+def _runner_message_observer(
+    event_translator: ForgeEventTranslator,
+) -> Callable[[Message], None]:
+    def observe(message: Message) -> None:
+        metadata_type = message.metadata.type
+        if metadata_type == MessageType.STEP_NUDGE:
+            event_translator.correction_issued(code="step")
+            event_translator.premature_terminal_rejected()
+        elif metadata_type == MessageType.PREREQUISITE_NUDGE:
+            event_translator.correction_issued(code="prerequisite")
+        elif metadata_type == MessageType.RETRY_NUDGE:
+            code = (
+                "tool_arg_validation" if message.role == MessageRole.TOOL else "retry"
+            )
+            event_translator.correction_issued(code=code)
+
+    return observe
 
 
 class ForgeWorkflowFactory:
@@ -1392,13 +1448,16 @@ class ForgeToolBridge:
                 "Terminal candidate failed owned-history validation"
             )
         request = self._session_request.execution_request
+        disposition: Literal["success", "blocked"] = (
+            "blocked" if node.terminal_result.endswith("_BLOCKED") else "success"
+        )
         self._terminal_intent = TerminalIntent(
             request_id=request.request_id,
             run_id=request.run_id,
             stage=request.stage,
             terminal_node_id=node.node_id,
             terminal_result=node.terminal_result,
-            disposition="success",
+            disposition=disposition,
             summary=candidate.summary,
             artifact_refs=candidate.artifact_refs,
         )
@@ -1802,6 +1861,15 @@ def _usage_from_bridges(
         tool_calls=executed_tool_calls,
         token_usage=model_bridge.token_usage,
     )
+
+
+def _usage_from_optional_bridges(
+    model_bridge: ForgeModelBridge | None,
+    tool_bridge: ForgeToolBridge | None,
+) -> UsageMetadata | None:
+    if model_bridge is None or tool_bridge is None:
+        return None
+    return _usage_from_bridges(model_bridge, tool_bridge)
 
 
 __all__ = [

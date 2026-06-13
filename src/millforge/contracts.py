@@ -95,6 +95,7 @@ class GuardedSessionStatus(str, Enum):
     MODEL_FAILED = "model_failed"
     TOOL_FAILED = "tool_failed"
     BUDGET_EXHAUSTED = "budget_exhausted"
+    PREREQUISITE_BUDGET_EXHAUSTED = "prerequisite_budget_exhausted"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
     INVALID_TERMINAL = "invalid_terminal"
@@ -782,6 +783,7 @@ class ModelCompletionRequest(BaseModel):
     )
     sampling_overrides: SamplingRequest = Field(default_factory=SamplingRequest)
     maximum_output_tokens_override: int | None = Field(default=None, gt=0)
+    request_options: JsonObject = Field(default_factory=dict)
     deadline: Deadline
     cancellation: CancellationRef
     secret_refs: Tuple[SecretRef, ...] = Field(default_factory=tuple)
@@ -798,6 +800,30 @@ class ModelCompletionRequest(BaseModel):
 
     @model_validator(mode="after")
     def _request_invariants(self) -> ModelCompletionRequest:
+        protected_options = {
+            "model",
+            "messages",
+            "tools",
+            "stream",
+            "endpoint",
+            "authentication",
+            "timeout",
+            "headers",
+            "host",
+            "content_type",
+            "user_agent",
+            "max_tokens",
+            "maximum_output_tokens",
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "stop",
+        }
+        for option_name in self.request_options:
+            if option_name in protected_options:
+                raise ValueError(f"request option {option_name!r} is protected")
         _unique(tuple(tool.name for tool in self.tools), "tool name")
         _unique(tuple(secret.secret_id for secret in self.secret_refs), "secret_id")
         pending_tool_calls: dict[str, str] = {}

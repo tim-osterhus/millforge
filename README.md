@@ -35,7 +35,9 @@ Private behavioral patches are recorded in the manifest's
 `private_behavior_patches` section. They currently cover configurable guarded
 loop violation budgets, non-retryable tool outcomes, strict supported-subset
 JSON Schema conversion, mapped prerequisite argument enforcement, and private
-subset import safety.
+subset import safety. Runtime adapter behavior also classifies exhausted
+prerequisite correction budgets as `budget_exhausted` with diagnostic code
+`prerequisite_budget_exhausted`.
 
 ## Snapshot Comparison
 
@@ -56,3 +58,27 @@ only.
 - Run tests: `pytest`
 - Lint: `ruff check .`
 - Format: `ruff format --check .`
+
+### Opt-In Live Model Backend Smoke
+
+Normal test runs are offline, deterministic, and do not require provider
+credentials. The live OpenAI-compatible backend smoke is marked
+`live_model_backend` and is skipped unless explicitly enabled:
+
+```bash
+MILLFORGE_LIVE_MODEL_BACKEND_SMOKE=1 \
+MILLFORGE_LIVE_MODEL_PROFILE_ID=<profile-id> \
+MILLFORGE_LIVE_MODEL_PROVIDER_ID=<provider-id> \
+MILLFORGE_LIVE_MODEL_ID=<model-id> \
+MILLFORGE_LIVE_MODEL_BASE_URL=<openai-compatible-base-url> \
+MILLFORGE_LIVE_MODEL_SECRET_ID=<secret-ref-id> \
+MILLFORGE_LIVE_MODEL_SECRET_ENV_VAR=<credential-env-var-name> \
+<credential-env-var-name>=<credential> \
+python -m pytest -m live_model_backend tests/test_model_backend.py
+```
+
+Optional variables: `MILLFORGE_LIVE_MODEL_AUTH_SCHEME` (`bearer` or `header`),
+`MILLFORGE_LIVE_MODEL_AUTH_HEADER` for custom header authentication,
+`MILLFORGE_LIVE_MODEL_TIMEOUT_SECONDS`, and
+`MILLFORGE_LIVE_MODEL_MAX_OUTPUT_TOKENS`. The smoke records only sanitized
+provider, model, latency, finish reason, and usage metadata.

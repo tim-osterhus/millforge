@@ -15,6 +15,7 @@ _SCHEMA_OBJECT_KEYS = frozenset(
 _SCHEMA_PROPERTY_KEYS = frozenset(
     {
         "type",
+        "const",
         "properties",
         "required",
         "description",
@@ -101,6 +102,14 @@ def _json_schema_to_type(
         allowed=_SCHEMA_PROPERTY_KEYS,
         location=f"{model_name_prefix}.{field_name}",
     )
+    if "const" in prop:
+        value = prop["const"]
+        if not isinstance(value, str | int | float | bool):
+            raise ValueError(
+                f"Unsupported JSON Schema const at {model_name_prefix}.{field_name}"
+            )
+        return Literal[value]  # type: ignore[valid-type]
+
     if "type" not in prop:
         raise ValueError(
             f"Missing JSON Schema type at {model_name_prefix}.{field_name}"

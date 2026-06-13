@@ -174,6 +174,10 @@ _SESSION_STATUS_MATRIX: dict[
         ExecutionResultClass.BUDGET_EXHAUSTED,
         ExecutionStatus.INTERRUPTED,
     ),
+    GuardedSessionStatus.PREREQUISITE_BUDGET_EXHAUSTED: (
+        ExecutionResultClass.BUDGET_EXHAUSTED,
+        ExecutionStatus.FAILED,
+    ),
     GuardedSessionStatus.TIMED_OUT: (
         ExecutionResultClass.TIMED_OUT,
         ExecutionStatus.INTERRUPTED,
@@ -510,10 +514,36 @@ class DefaultHarnessRuntime:
             {"artifact_id": "execution_summary"},
             {"artifact_id": "metrics"},
         ]
+        artifact_ids = [
+            "execution_summary",
+            "metrics",
+        ]
+        if session_result is not None:
+            events_ref = _build_artifact_ref("events")
+            await self._artifact_writer.write_events(
+                events_ref,
+                [event.model_dump(mode="json") for event in session_result.events],
+            )
+            tool_trace_ref = _build_artifact_ref("tool_trace")
+            await self._artifact_writer.write_tool_trace(
+                tool_trace_ref,
+                [
+                    record.model_dump(mode="json")
+                    for record in session_result.tool_trace
+                ],
+            )
+            manifest_artifacts.extend(
+                [
+                    {"artifact_id": "events"},
+                    {"artifact_id": "tool_trace"},
+                ]
+            )
+            artifact_ids.extend(["events", "tool_trace"])
         if diagnostic is not None:
             diagnostic_ref = _build_artifact_ref("diagnostic")
             await self._artifact_writer.write_diagnostic(diagnostic_ref, diagnostic)
             manifest_artifacts.append({"artifact_id": "diagnostic"})
+            artifact_ids.append("diagnostic")
 
         manifest_ref = _build_artifact_ref("artifact_manifest")
         await self._artifact_writer.write_artifact_manifest(
@@ -525,9 +555,8 @@ class DefaultHarnessRuntime:
                 "artifacts": manifest_artifacts,
             },
         )
-        return _build_non_terminal_artifact_refs(
-            include_diagnostic=diagnostic is not None
-        )
+        artifact_ids.append("artifact_manifest")
+        return tuple(_build_artifact_ref(artifact_id) for artifact_id in artifact_ids)
 
     async def _finalize_non_terminal_failure(
         self,
@@ -1355,9 +1384,19 @@ class DefaultHarnessRuntime:
             # ----------------------------------------------------------
             terminal_intent = session_result.terminal_intent
             if terminal_intent is None:
-                return await fail(
-                    FailureOrigin.INVALID_TERMINAL,
+                diagnostic = DiagnosticMetadata(
+                    error_code=FailureOrigin.INVALID_TERMINAL.value,
+                    category=_diagnostic_category(FailureOrigin.INVALID_TERMINAL),
                     message="Backend session produced no terminal intent",
+                    retryable=False,
+                    origin=FailureOrigin.INVALID_TERMINAL.value,
+                    fields=(),
+                )
+                return await self._finalize_non_domain_session_result(
+                    request,
+                    session_result.model_copy(update={"diagnostic": diagnostic}),
+                    status=ExecutionStatus.FAILED,
+                    result_class=ExecutionResultClass.TERMINAL_RESULT_INVALID,
                 )
             try:
                 await self._validate_terminal_intent(plan, request, terminal_intent)
