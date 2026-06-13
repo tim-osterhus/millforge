@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib  # type: ignore[import-not-found]
 import zipfile
 from collections.abc import Iterator
@@ -216,6 +217,35 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
     metadata_lower = metadata.lower()
     for dependency in FORBIDDEN_RUNTIME_DEPENDENCIES:
         assert f"requires-dist: {dependency}" not in metadata_lower
+
+
+def test_sdist_content_excludes_tests_runtime_artifacts_and_ref_forge(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "dist"
+    subprocess.run(
+        [sys.executable, "-m", "build", "--sdist", "--outdir", str(out_dir)],
+        cwd=REPO_ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    sdist_path = next(out_dir.glob("millforge-*.tar.gz"))
+
+    with tarfile.open(sdist_path) as sdist:
+        names = set(sdist.getnames())
+
+    stripped = {"/".join(Path(name).parts[1:]) for name in names}
+    assert "src/millforge/_forge/LICENSE" in stripped
+    assert "src/millforge/_forge/PROVENANCE.json" in stripped
+    assert "src/millforge/_forge/UPDATE_POLICY.md" in stripped
+    assert not any(name.startswith("tests/") for name in stripped)
+    assert not any(name.startswith("ref-forge/") for name in stripped)
+    assert not any(name.startswith("millrace-agents/") for name in stripped)
+    assert not any("__pycache__" in Path(name).parts for name in stripped)
+    assert not any(name.endswith(".pyc") for name in stripped)
+    assert not any("secret" in Path(name).name.lower() for name in stripped)
 
 
 def test_prompt_assembly_excludes_secrets_and_artifact_contents_and_preserves_braces() -> (

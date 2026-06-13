@@ -8,9 +8,11 @@ mutable working models are explicitly noted in their docstrings.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, Literal, Optional, Tuple, TypeAlias
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,6 +33,16 @@ _SANITIZED_METADATA_MAX_ITEMS = 32
 _SANITIZED_METADATA_KEY_MAX_LENGTH = 64
 _SANITIZED_METADATA_STRING_MAX_LENGTH = 2048
 _SANITIZED_METADATA_BYTES_MAX_LENGTH = 32768
+_REDACTION_MAX_DEPTH = 8
+_REDACTION_MAX_COLLECTION_ITEMS = 64
+_REDACTION_MAX_STRING_LENGTH = 2048
+_REDACTION_MAX_TOTAL_BYTES = 32768
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^&\s]+)"),
+    re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+"),
+    re.compile(r"\b(sk|pk|org|sess)-[a-zA-Z0-9]{8,}\b"),
+)
+_URL_PATTERN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s<>'\"]+", re.IGNORECASE)
 
 
 def _nonblank(value: str, field_name: str) -> str:
@@ -48,6 +60,15 @@ def _validate_sha256(value: str, field_name: str) -> str:
     if not _SHA256_RE.fullmatch(value):
         raise ValueError(f"{field_name} must be exactly 64 lowercase hex characters")
     return value
+
+
+def _is_sensitive_field_name(value: str, policy: RedactionPolicy) -> bool:
+    lowered = value.lower()
+    compact = lowered.replace("_", "").replace("-", "")
+    return any(
+        marker in lowered or marker.replace("-", "") in compact
+        for marker in policy.sensitive_field_markers
+    )
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -86,6 +107,14 @@ class ExecutionResultClass(str, Enum):
     INTERNAL_FAILURE = "internal_failure"
 
 
+class TerminalCertainty(str, Enum):
+    """Certainty of terminal-result commit ordering."""
+
+    NOT_APPLICABLE = "not_applicable"
+    COMMITTED = "committed"
+    UNKNOWN = "unknown"
+
+
 class GuardedSessionStatus(str, Enum):
     """Closed enum of possible guarded session statuses."""
 
@@ -99,6 +128,20 @@ class GuardedSessionStatus(str, Enum):
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
     INVALID_TERMINAL = "invalid_terminal"
+
+
+class TimeoutOrigin(str, Enum):
+    """Closed timeout origins that preserve the stable timeout result class."""
+
+    SESSION_DEADLINE = "session_deadline"
+    MODEL_CONNECT_TIMEOUT = "model_connect_timeout"
+    MODEL_READ_TIMEOUT = "model_read_timeout"
+    MODEL_WRITE_TIMEOUT = "model_write_timeout"
+    MODEL_POOL_TIMEOUT = "model_pool_timeout"
+    TOOL_TIMEOUT = "tool_timeout"
+    BACKEND_TIMEOUT = "backend_timeout"
+    ARTIFACT_FINALIZATION_TIMEOUT = "artifact_finalization_timeout"
+    CLEANUP_TIMEOUT = "cleanup_timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +160,15 @@ class Deadline(BaseModel):
     outer_deadline_monotonic: float = Field(
         ge=0, description="Outer request deadline as monotonic seconds"
     )
+    compiled_harness_deadline_monotonic: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional smaller compiled harness deadline as monotonic seconds",
+    )
     effective_deadline_monotonic: float = Field(
         ge=0, description="Effective deadline after all bounds are applied"
     )
-    source: Literal["request", "request_and_harness"] = Field(
+    source: Literal["request", "compiled_harness", "request_and_harness"] = Field(
         description="Source used to derive the effective deadline"
     )
 
@@ -134,12 +182,72 @@ class Deadline(BaseModel):
             raise ValueError(
                 "effective_deadline_monotonic must not exceed outer deadline"
             )
+        if self.compiled_harness_deadline_monotonic is not None:
+            if self.compiled_harness_deadline_monotonic < self.started_monotonic:
+                raise ValueError(
+                    "compiled_harness_deadline_monotonic must not precede start"
+                )
+            expected = min(
+                self.outer_deadline_monotonic,
+                self.compiled_harness_deadline_monotonic,
+            )
+            if self.effective_deadline_monotonic != expected:
+                raise ValueError(
+                    "effective_deadline_monotonic must equal the smaller request "
+                    "or compiled harness deadline"
+                )
+            if self.source == "request":
+                raise ValueError(
+                    "source=request is invalid when compiled harness deadline is present"
+                )
+        elif self.effective_deadline_monotonic != self.outer_deadline_monotonic:
+            raise ValueError(
+                "effective_deadline_monotonic must equal outer deadline when no "
+                "compiled harness deadline is present"
+            )
         return self
+
+    @property
+    def request_deadline_monotonic(self) -> float:
+        """Return the absolute request deadline in monotonic seconds."""
+        return self.outer_deadline_monotonic
 
     def remaining(self, clock: Callable[[], float] | Any) -> float:
         """Return non-negative seconds remaining against the effective deadline."""
         now = clock() if callable(clock) else clock.monotonic()
         return max(0.0, self.effective_deadline_monotonic - float(now))
+
+    @classmethod
+    def from_deadlines(
+        cls,
+        *,
+        started_monotonic: float,
+        request_deadline_monotonic: float,
+        compiled_harness_deadline_monotonic: float | None = None,
+    ) -> Deadline:
+        """Build a deadline with effective time derived from admitted bounds."""
+        if compiled_harness_deadline_monotonic is None:
+            source: Literal["request", "compiled_harness", "request_and_harness"] = (
+                "request"
+            )
+            effective = request_deadline_monotonic
+        else:
+            effective = min(
+                request_deadline_monotonic,
+                compiled_harness_deadline_monotonic,
+            )
+            source = (
+                "compiled_harness"
+                if compiled_harness_deadline_monotonic < request_deadline_monotonic
+                else "request_and_harness"
+            )
+        return cls(
+            started_monotonic=started_monotonic,
+            outer_deadline_monotonic=request_deadline_monotonic,
+            compiled_harness_deadline_monotonic=compiled_harness_deadline_monotonic,
+            effective_deadline_monotonic=effective,
+            source=source,
+        )
 
 
 class TokenUsage(BaseModel):
@@ -596,6 +704,279 @@ class SanitizedMetadata(BaseModel):
         return value
 
 
+class RedactionPolicy(BaseModel):
+    """Single bounded redaction policy for public summaries and diagnostics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_depth: int = Field(default=_REDACTION_MAX_DEPTH, ge=1, le=32)
+    max_collection_items: int = Field(
+        default=_REDACTION_MAX_COLLECTION_ITEMS,
+        ge=1,
+        le=1024,
+    )
+    max_string_length: int = Field(
+        default=_REDACTION_MAX_STRING_LENGTH,
+        ge=1,
+        le=16384,
+    )
+    max_total_bytes: int = Field(
+        default=_REDACTION_MAX_TOTAL_BYTES,
+        ge=1,
+        le=262144,
+    )
+    replacement: str = "**redacted**"
+    sensitive_field_markers: Tuple[str, ...] = (
+        "authorization",
+        "api-key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "cookie",
+        "set-cookie",
+    )
+
+    @field_validator("replacement")
+    @classmethod
+    def _replacement_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "replacement")
+
+    @field_validator("sensitive_field_markers")
+    @classmethod
+    def _markers_valid(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(
+            _nonblank(item, "sensitive marker").lower() for item in value
+        )
+        _unique(normalized, "sensitive marker")
+        return normalized
+
+
+class _RedactionBudget:
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._used = 0
+
+    def text(self, value: str) -> str:
+        remaining = self._limit - self._used
+        if remaining <= 0:
+            return "[truncated]"
+        encoded = value.encode("utf-8")
+        if len(encoded) <= remaining:
+            self._used += len(encoded)
+            return value
+        truncated = encoded[:remaining].decode("utf-8", errors="ignore")
+        self._used = self._limit
+        return f"{truncated}[truncated]"
+
+
+def _redact_url(value: str, policy: RedactionPolicy) -> str:
+    try:
+        split = urlsplit(value)
+    except ValueError:
+        return _redact_secret_patterns(value, policy)
+    host = split.hostname or ""
+    if split.port is not None:
+        host = f"{host}:{split.port}"
+    query_parts = parse_qsl(split.query, keep_blank_values=True)
+    query = "&".join(
+        f"{key}={policy.replacement}"
+        if _is_sensitive_field_name(key, policy)
+        else f"{key}={value}"
+        for key, value in query_parts
+    )
+    return urlunsplit(
+        (
+            split.scheme,
+            host,
+            split.path,
+            query,
+            policy.replacement if split.fragment else "",
+        )
+    )
+
+
+def _redact_secret_patterns(text: str, policy: RedactionPolicy) -> str:
+    text = _SECRET_PATTERNS[0].sub(
+        lambda match: (
+            match.group(0)
+            if match.group(2) == policy.replacement
+            else f"{match.group(1)}{policy.replacement}"
+        ),
+        text,
+    )
+    for pattern in _SECRET_PATTERNS[1:]:
+        text = pattern.sub(lambda match: f"{match.group(1)}{policy.replacement}", text)
+    return text
+
+
+def redact_diagnostic_text(
+    value: str,
+    *,
+    policy: RedactionPolicy | None = None,
+    secret_values: tuple[str, ...] = (),
+) -> str:
+    """Apply the shared deterministic redaction policy to text."""
+    active_policy = policy or RedactionPolicy()
+    text = value
+    for secret in secret_values:
+        if secret:
+            text = text.replace(secret, active_policy.replacement)
+    text = _URL_PATTERN.sub(
+        lambda match: _redact_url(match.group(0), active_policy), text
+    )
+    text = _redact_secret_patterns(text, active_policy)
+    if len(text) > active_policy.max_string_length:
+        text = f"{text[: active_policy.max_string_length]}[truncated]"
+    return text
+
+
+def redact_diagnostic_value(
+    value: object,
+    *,
+    policy: RedactionPolicy | None = None,
+    secret_values: tuple[str, ...] = (),
+) -> JsonValue:
+    """Return a bounded JSON-safe diagnostic value without arbitrary repr calls."""
+    active_policy = policy or RedactionPolicy()
+    budget = _RedactionBudget(active_policy.max_total_bytes)
+    return _redact_value(
+        value,
+        policy=active_policy,
+        secret_values=secret_values,
+        budget=budget,
+        depth=0,
+        seen=set(),
+        sensitive_key=False,
+    )
+
+
+def redact_diagnostic_mapping(
+    values: Mapping[str, object],
+    *,
+    policy: RedactionPolicy | None = None,
+    secret_values: tuple[str, ...] = (),
+) -> dict[str, JsonValue]:
+    """Redact a diagnostic mapping using one bounded recursive policy."""
+    redacted = redact_diagnostic_value(
+        values,
+        policy=policy,
+        secret_values=secret_values,
+    )
+    return redacted if isinstance(redacted, dict) else {}
+
+
+def _safe_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int | float | bool) or value is None:
+        return str(value)
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, BaseException):
+        parts = [
+            _safe_text(arg)
+            for arg in value.args
+            if isinstance(arg, str | int | float | bool) or arg is None
+        ]
+        detail = ": " + " ".join(parts) if parts else ""
+        return f"{type(value).__name__}{detail}"
+    return f"<{type(value).__module__}.{type(value).__qualname__}>"
+
+
+def _redact_key(key: object, policy: RedactionPolicy, budget: _RedactionBudget) -> str:
+    text = redact_diagnostic_text(_safe_text(key), policy=policy)
+    return budget.text(text[: policy.max_string_length])
+
+
+def _redact_value(
+    value: object,
+    *,
+    policy: RedactionPolicy,
+    secret_values: tuple[str, ...],
+    budget: _RedactionBudget,
+    depth: int,
+    seen: set[int],
+    sensitive_key: bool,
+) -> JsonValue:
+    if sensitive_key:
+        return budget.text(policy.replacement)
+    if depth >= policy.max_depth:
+        return budget.text("[max_depth]")
+    if isinstance(value, str):
+        return budget.text(
+            redact_diagnostic_text(
+                value,
+                policy=policy,
+                secret_values=secret_values,
+            )
+        )
+    if isinstance(value, int | float | bool) or value is None:
+        return value
+    if isinstance(value, Path | BaseException):
+        return budget.text(
+            redact_diagnostic_text(
+                _safe_text(value),
+                policy=policy,
+                secret_values=secret_values,
+            )
+        )
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in seen:
+            return budget.text("[cycle]")
+        seen.add(identity)
+        result: dict[str, JsonValue] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= policy.max_collection_items:
+                result["[truncated]"] = budget.text("[truncated]")
+                break
+            clean_key = _redact_key(key, policy, budget)
+            lowered = clean_key.lower()
+            child_sensitive = _is_sensitive_field_name(lowered, policy)
+            result[clean_key] = _redact_value(
+                item,
+                policy=policy,
+                secret_values=secret_values,
+                budget=budget,
+                depth=depth + 1,
+                seen=seen,
+                sensitive_key=child_sensitive,
+            )
+        seen.remove(identity)
+        return result
+    if isinstance(value, tuple | list | set | frozenset):
+        identity = id(value)
+        if identity in seen:
+            return budget.text("[cycle]")
+        seen.add(identity)
+        sequence_result: list[JsonValue] = [
+            _redact_value(
+                item,
+                policy=policy,
+                secret_values=secret_values,
+                budget=budget,
+                depth=depth + 1,
+                seen=seen,
+                sensitive_key=False,
+            )
+            for index, item in enumerate(value)
+            if index < policy.max_collection_items
+        ]
+        if len(value) > policy.max_collection_items:
+            sequence_result.append(budget.text("[truncated]"))
+        seen.remove(identity)
+        return sequence_result
+    return budget.text(
+        redact_diagnostic_text(
+            _safe_text(value),
+            policy=policy,
+            secret_values=secret_values,
+        )
+    )
+
+
 class ParsedToolArguments(BaseModel):
     """Parsed JSON object arguments for a model-requested tool call."""
 
@@ -952,6 +1333,10 @@ class ToolExecutionResult(BaseModel):
     side_effect_class: SideEffectClass
     idempotency: IdempotencyClass
     side_effect_certainty: SideEffectCertainty
+    side_effect_record: SideEffectRecord | None = Field(
+        default=None,
+        description="Typed side-effect detail when certainty needs explanation",
+    )
     input_sha256: str
     output_sha256: str | None = Field(
         default=None, description="SHA-256 hash of the serialized safe output"
@@ -984,7 +1369,7 @@ class ToolExecutionResult(BaseModel):
         return None if value is None else _validate_sha256(value, "output_sha256")
 
     @model_validator(mode="after")
-    def _success_error_consistency(self) -> ToolExecutionResult:
+    def _result_consistency(self) -> ToolExecutionResult:
         if self.status == ToolExecutionStatus.SUCCESS:
             if self.error_code is not None:
                 raise ValueError("successful tool results must not include error_code")
@@ -993,6 +1378,50 @@ class ToolExecutionResult(BaseModel):
         else:
             if self.error_code is None:
                 raise ValueError("failed tool results require error_code")
+        if (
+            self.side_effect_certainty == SideEffectCertainty.COMPLETION_UNKNOWN
+            and self.idempotency
+            in {IdempotencyClass.NON_IDEMPOTENT, IdempotencyClass.UNKNOWN}
+            and self.retryable
+        ):
+            raise ValueError(
+                "completion_unknown side effects are not retryable for "
+                "non-idempotent or unknown-idempotency tool work"
+            )
+        if self.side_effect_record is not None:
+            if self.side_effect_record.certainty != self.side_effect_certainty:
+                raise ValueError(
+                    "side_effect_record certainty must match side_effect_certainty"
+                )
+            if self.side_effect_record.retry_allowed != self.retryable:
+                raise ValueError(
+                    "side_effect_record retry_allowed must match retryable"
+                )
+        return self
+
+
+class SideEffectRecord(BaseModel):
+    """Typed side-effect detail for uncertain, rolled back, or absent tool effects."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    certainty: SideEffectCertainty
+    detail_code: str
+    summary: str
+    retry_allowed: bool
+
+    @field_validator("detail_code", "summary")
+    @classmethod
+    def _strings_nonblank(cls, value: str, info: Any) -> str:
+        return _nonblank(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _unknown_mutation_is_not_retryable(self) -> SideEffectRecord:
+        if (
+            self.certainty == SideEffectCertainty.COMPLETION_UNKNOWN
+            and self.retry_allowed
+        ):
+            raise ValueError("completion_unknown side effects must not be retryable")
         return self
 
 
@@ -1139,6 +1568,10 @@ class HarnessExecutionResult(BaseModel):
     diagnostic: DiagnosticMetadata | None = Field(
         default=None, description="Diagnostic metadata"
     )
+    terminal_certainty: TerminalCertainty = Field(
+        default=TerminalCertainty.NOT_APPLICABLE,
+        description="Certainty of terminal-result commit ordering",
+    )
 
     @model_validator(mode="after")
     def _check_result_class_invariants(self) -> HarnessExecutionResult:
@@ -1169,6 +1602,15 @@ class HarnessExecutionResult(BaseModel):
                 raise ValueError("terminal_intent.run_id must match result")
             if self.terminal_intent.stage != self.stage:
                 raise ValueError("terminal_intent.stage must match result")
+        elif (
+            self.terminal_certainty == TerminalCertainty.COMMITTED
+            and self.result_class
+            not in {
+                ExecutionResultClass.DOMAIN_TERMINAL,
+                ExecutionResultClass.DOMAIN_REJECTED,
+            }
+        ):
+            raise ValueError("committed terminal_certainty requires a domain result")
         return self
 
 
@@ -1210,7 +1652,7 @@ class DiagnosticMetadata(BaseModel):
     ] = Field(description="Closed diagnostic category")
     message: str = Field(description="Human-readable diagnostic message")
     retryable: bool = Field(description="Whether retrying may resolve this diagnostic")
-    origin: str = Field(description="Failure origin or subsystem")
+    origin: str | TimeoutOrigin = Field(description="Failure origin or subsystem")
     fields: tuple[DiagnosticField, ...] = Field(
         default_factory=tuple,
         description="Tuple of bounded scalar diagnostic entries",
@@ -1240,6 +1682,7 @@ class TerminalResultArtifact(BaseModel):
     ]
     summary_artifact_paths: Tuple[str, ...] = Field(default_factory=tuple)
     compiled_harness_sha256: str
+    terminal_certainty: TerminalCertainty = TerminalCertainty.COMMITTED
 
     @field_validator("request_id", "run_id", "terminal_result")
     @classmethod
@@ -1287,6 +1730,7 @@ class ExecutionSummaryArtifact(BaseModel):
     status: ExecutionStatus
     result_class: ExecutionResultClass
     diagnostic_error_code: str | None = None
+    terminal_certainty: TerminalCertainty = TerminalCertainty.NOT_APPLICABLE
 
     @field_validator("request_id", "run_id", "diagnostic_error_code")
     @classmethod
@@ -1337,6 +1781,10 @@ class ArtifactManifestEntry(BaseModel):
     sha256_hex: str
     complete: bool
     producer: str
+    failure_code: str | None = Field(
+        default=None,
+        description="Stable failure code when this artifact is incomplete",
+    )
 
     @field_validator("artifact_id", "path", "media_type", "producer")
     @classmethod
@@ -1344,6 +1792,11 @@ class ArtifactManifestEntry(BaseModel):
         if not value.strip():
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return value
+
+    @field_validator("failure_code")
+    @classmethod
+    def _failure_code_nonblank(cls, value: str | None) -> str | None:
+        return None if value is None else _nonblank(value, "failure_code")
 
     @field_validator("path")
     @classmethod
@@ -1359,6 +1812,14 @@ class ArtifactManifestEntry(BaseModel):
         if not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError("sha256_hex must be exactly 64 lowercase hex characters")
         return value
+
+    @model_validator(mode="after")
+    def _completion_failure_consistent(self) -> ArtifactManifestEntry:
+        if self.complete and self.failure_code is not None:
+            raise ValueError("complete artifacts must not include failure_code")
+        if not self.complete and self.failure_code is None:
+            raise ValueError("incomplete artifacts require failure_code")
+        return self
 
 
 class ArtifactManifestArtifact(BaseModel):

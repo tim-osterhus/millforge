@@ -59,6 +59,7 @@ from millforge.model_backend import (
     TransportRequest,
     TransportResponse,
     build_auth_headers,
+    DEFAULT_REDACTION_POLICY,
     redact_mapping,
     redact_text,
     resolve_authentication_secret,
@@ -266,6 +267,9 @@ class _Token:
 
     def is_cancelled(self) -> bool:
         return self._cancelled
+
+    async def wait(self) -> None:
+        return None
 
     @property
     def reason(self) -> str | None:
@@ -585,6 +589,7 @@ def test_resolved_profile_exposes_canonical_immutable_profile_contract() -> None
 def test_redaction_covers_urls_tokens_error_fields_and_diagnostic_mappings() -> None:
     raw_secret = "sk-secret-value"
 
+    assert DEFAULT_REDACTION_POLICY.max_string_length == 2048
     assert raw_secret not in redact_text(
         f"Authorization: Bearer {raw_secret}",
         secret_values=(raw_secret,),

@@ -1237,6 +1237,12 @@ class ForgeToolBridge:
                 status=ToolExecutionStatus.HARD_FAILURE,
                 retryable=False,
                 side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                side_effect_detail_code="implementation_completion_unknown",
+                side_effect_detail_summary=(
+                    f"{node.model_tool_name} side-effect completion is unknown "
+                    "after implementation exception"
+                ),
+                side_effect_retry_allowed=False,
                 summary=f"tool implementation defect: {type(exc).__name__}",
             )
             self._append_event(
@@ -1262,6 +1268,12 @@ class ForgeToolBridge:
                 status=ToolExecutionStatus.HARD_FAILURE,
                 retryable=False,
                 side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                side_effect_detail_code="binding_completion_unknown",
+                side_effect_detail_summary=(
+                    f"{node.model_tool_name} side-effect completion is unknown "
+                    "after result boundary defect"
+                ),
+                side_effect_retry_allowed=False,
                 summary=f"tool binding defect: {result_defect}",
                 duration_ms=result.duration_ms,
             )
@@ -1284,6 +1296,12 @@ class ForgeToolBridge:
                 status=ToolExecutionStatus.HARD_FAILURE,
                 retryable=False,
                 side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                side_effect_detail_code="output_hash_completion_unknown",
+                side_effect_detail_summary=(
+                    f"{node.model_tool_name} side-effect completion is unknown "
+                    "after output hash mismatch"
+                ),
+                side_effect_retry_allowed=False,
                 output_sha256=result.output_sha256,
                 duration_ms=result.duration_ms,
                 summary="tool binding defect: output_sha256 mismatch",
@@ -1307,6 +1325,15 @@ class ForgeToolBridge:
             side_effect_certainty=result.side_effect_certainty,
             side_effect_class=result.side_effect_class,
             idempotency=result.idempotency,
+            side_effect_detail_code=result.side_effect_record.detail_code
+            if result.side_effect_record is not None
+            else None,
+            side_effect_detail_summary=result.side_effect_record.summary
+            if result.side_effect_record is not None
+            else None,
+            side_effect_retry_allowed=result.side_effect_record.retry_allowed
+            if result.side_effect_record is not None
+            else None,
             output_sha256=output_sha256,
             duration_ms=result.duration_ms,
             summary=result.summary,
@@ -1510,6 +1537,9 @@ class ForgeToolBridge:
         summary: str,
         side_effect_class: SideEffectClass | None = None,
         idempotency: IdempotencyClass | None = None,
+        side_effect_detail_code: str | None = None,
+        side_effect_detail_summary: str | None = None,
+        side_effect_retry_allowed: bool | None = None,
         output_sha256: str | None = None,
         duration_ms: float = 0.0,
     ) -> None:
@@ -1539,6 +1569,9 @@ class ForgeToolBridge:
                 ),
                 idempotency=_trace_idempotency(idempotency or node.idempotency),
                 side_effect_certainty=side_effect_certainty,
+                side_effect_detail_code=side_effect_detail_code,
+                side_effect_detail_summary=side_effect_detail_summary,
+                side_effect_retry_allowed=side_effect_retry_allowed,
                 output_sha256=output_sha256,
                 duration_ms=duration_ms,
                 summary=summary[:2048] or "tool trace",

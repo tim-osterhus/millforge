@@ -19,6 +19,7 @@ or network imports.
 
 from __future__ import annotations
 
+import asyncio
 import ast
 import hashlib
 import json
@@ -29,7 +30,17 @@ from typing import Any
 import pytest
 
 from millforge.artifacts import RuntimeArtifactWriter
-from millforge.compiled_plan import CompiledHarnessPlan, canonical_json_serialize
+from millforge.compiled_plan import (
+    CompiledHarnessPlan,
+    IdempotencyClass,
+    SessionEventType,
+    SideEffectCertainty,
+    SideEffectClass,
+    ToolExecutionStatus,
+    ToolTraceIdempotency,
+    ToolTraceSideEffectClass,
+    canonical_json_serialize,
+)
 from millforge._forge.errors import NonRetryableToolError
 from millforge.contracts import (
     ArtifactRef,
@@ -52,6 +63,7 @@ from millforge.contracts import (
     ParsedToolArguments,
     RunDirRef,
     StageIdentity,
+    TerminalCertainty,
     TimeoutRef,
     TokenUsage,
 )
@@ -86,6 +98,7 @@ from millforge.testing import (
     BuilderFakeModelClient,
     BuilderFakeToolExecutor,
     BuilderInMemoryWorkspace,
+    FailureInjectionLeakProbe,
     FakeGuardrailBackend,
 )
 
@@ -103,6 +116,8 @@ from tests.conftest import (
     make_test_compiled_plan,
     make_test_harness_execution_request,
     make_test_guarded_session_result,
+    make_test_session_event,
+    make_test_tool_trace_record,
 )
 
 # ---------------------------------------------------------------------------
@@ -622,6 +637,7 @@ def _assert_terminal_result_shape(
         "schema_version",
         "stage",
         "summary_artifact_paths",
+        "terminal_certainty",
         "terminal_result",
     }
     assert terminal_payload["schema_version"] == "1.0"
@@ -634,6 +650,7 @@ def _assert_terminal_result_shape(
     }
     assert terminal_payload["terminal_result"] == terminal_result
     assert terminal_payload["result_class"] == result_class
+    assert terminal_payload["terminal_certainty"] == TerminalCertainty.COMMITTED.value
     assert len(terminal_payload["compiled_harness_sha256"]) == 64
 
 
@@ -2238,6 +2255,261 @@ async def test_pre_backend_cancellation_recheck_prevents_backend_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancellation_after_plan_load_checkpoint_prevents_backend() -> None:
+    """Cancellation observed after plan loading stops before verification/backend."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _FifthCheckCancelledToken(FakeCancellationToken):
+        def __init__(self) -> None:
+            super().__init__(is_cancelled_return=False)
+            self.checks = 0
+
+        def is_cancelled(self) -> bool:
+            self.checks += 1
+            return self.checks >= 5
+
+    class _Resolver(FakeCancellationResolver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.token = _FifthCheckCancelledToken()
+
+        def resolve(self, ref: CancellationRef) -> FakeCancellationToken:
+            self.resolve_calls.append(ref)
+            return self.token
+
+    plan_loader = FakePlanLoader(plan=plan)
+    backend = FakeGuardrailBackend()
+    writer = FakeArtifactWriter()
+    runtime = _build_runtime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=writer,
+        cancellation_resolver=_Resolver(),
+    )
+
+    result = await runtime.execute(_valid_harness_request())
+
+    assert len(plan_loader.load_calls) == 1
+    assert len(backend.requests) == 0
+    assert result.status == ExecutionStatus.INTERRUPTED
+    assert result.result_class == ExecutionResultClass.CANCELLED
+    assert result.terminal_certainty == TerminalCertainty.NOT_APPLICABLE
+    assert writer.terminal_result_calls == []
+    assert writer.execution_summary_calls[0][1]["terminal_certainty"] == (
+        TerminalCertainty.NOT_APPLICABLE.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_terminal_commit_prevents_domain_success() -> None:
+    """Cancellation before terminal_result commit fails closed as interrupted."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _ThirdCheckCancelledToken(FakeCancellationToken):
+        def __init__(self) -> None:
+            super().__init__(is_cancelled_return=False)
+            self.checks = 0
+
+        def is_cancelled(self) -> bool:
+            self.checks += 1
+            return self.checks >= 3
+
+    class _Resolver(FakeCancellationResolver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.token = _ThirdCheckCancelledToken()
+
+        def resolve(self, ref: CancellationRef) -> FakeCancellationToken:
+            self.resolve_calls.append(ref)
+            return self.token
+
+    writer = FakeArtifactWriter()
+    runtime = _build_runtime(
+        backend=_backend_with_result(),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+        cancellation_resolver=_Resolver(),
+    )
+
+    result = await runtime.execute(_valid_harness_request())
+
+    assert result.status == ExecutionStatus.INTERRUPTED
+    assert result.result_class == ExecutionResultClass.CANCELLED
+    assert result.terminal_intent is None
+    assert writer.terminal_result_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_terminal_commit_does_not_overwrite_success() -> None:
+    """Cancellation after atomic terminal_result commit preserves domain success."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _MutableCancellationToken(FakeCancellationToken):
+        def __init__(self) -> None:
+            super().__init__(is_cancelled_return=False)
+            self.cancelled = False
+
+        def is_cancelled(self) -> bool:
+            return self.cancelled
+
+    class _Resolver(FakeCancellationResolver):
+        def __init__(self, token: _MutableCancellationToken) -> None:
+            super().__init__()
+            self.token = token
+
+        def resolve(self, ref: CancellationRef) -> FakeCancellationToken:
+            self.resolve_calls.append(ref)
+            return self.token
+
+    token = _MutableCancellationToken()
+
+    class _CancellingWriter(FakeArtifactWriter):
+        async def write_terminal_result(self, ref: ArtifactRef, data: Any) -> None:
+            await super().write_terminal_result(ref, data)
+            token.cancelled = True
+
+    writer = _CancellingWriter()
+    runtime = _build_runtime(
+        backend=_backend_with_result(),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+        cancellation_resolver=_Resolver(token),
+    )
+
+    result = await runtime.execute(_valid_harness_request())
+
+    _assert_success_result(result)
+    assert result.terminal_intent is not None
+    assert result.terminal_certainty == TerminalCertainty.COMMITTED
+    assert len(writer.terminal_result_calls) == 1
+    assert writer.events_calls == []
+    assert writer.execution_summary_calls == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_before_terminal_commit_prevents_domain_success() -> None:
+    """Deadline expiry before terminal_result commit yields timed_out."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _MutableClock(FakeClock):
+        def set_monotonic(self, value: float) -> None:
+            self._monotonic_value = value
+
+    clock = _MutableClock(monotonic_value=0.0)
+
+    class _ExpiringBackend(FakeGuardrailBackend):
+        async def run_session(self, request: Any) -> GuardedSessionResult:
+            result = await super().run_session(request)
+            clock.set_monotonic(3601.0)
+            return result.model_copy(update={"session_id": request.session_id})
+
+    writer = FakeArtifactWriter()
+    runtime = _build_runtime(
+        backend=_ExpiringBackend(responses=[make_test_guarded_session_result()]),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+        clock=clock,
+    )
+
+    result = await runtime.execute(_valid_harness_request(deadline_str=None))
+
+    assert result.status == ExecutionStatus.INTERRUPTED
+    assert result.result_class == ExecutionResultClass.TIMED_OUT
+    assert result.terminal_intent is None
+    assert result.terminal_certainty == TerminalCertainty.NOT_APPLICABLE
+    assert writer.terminal_result_calls == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_after_terminal_commit_does_not_overwrite_success() -> None:
+    """Deadline expiry after atomic terminal_result commit preserves success."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _MutableClock(FakeClock):
+        def set_monotonic(self, value: float) -> None:
+            self._monotonic_value = value
+
+    clock = _MutableClock(monotonic_value=0.0)
+
+    class _DeadlineExpiringWriter(FakeArtifactWriter):
+        async def write_terminal_result(self, ref: ArtifactRef, data: Any) -> None:
+            await super().write_terminal_result(ref, data)
+            clock.set_monotonic(3601.0)
+
+    writer = _DeadlineExpiringWriter()
+    runtime = _build_runtime(
+        backend=_backend_with_result(),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+        clock=clock,
+    )
+
+    result = await runtime.execute(_valid_harness_request(deadline_str=None))
+
+    _assert_success_result(result)
+    assert result.terminal_intent is not None
+    assert result.terminal_certainty == TerminalCertainty.COMMITTED
+    assert len(writer.terminal_result_calls) == 1
+    assert writer.events_calls == []
+    assert writer.execution_summary_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_terminal_commit_interruption_records_unknown_certainty() -> (
+    None
+):
+    """Interruption from terminal writer fails closed with unknown certainty."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _AmbiguousWriter(FakeArtifactWriter):
+        async def write_terminal_result(self, ref: ArtifactRef, data: Any) -> None:
+            await super().write_terminal_result(ref, data)
+            raise OperationCancelledError("commit completion ordering unknown")
+
+    writer = _AmbiguousWriter()
+    runtime = _build_runtime(
+        backend=_backend_with_result(),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+    )
+
+    result = await runtime.execute(_valid_harness_request())
+
+    assert result.status == ExecutionStatus.INTERRUPTED
+    assert result.result_class == ExecutionResultClass.CANCELLED
+    assert result.terminal_intent is None
+    assert result.terminal_certainty == TerminalCertainty.UNKNOWN
+    assert len(writer.terminal_result_calls) == 1
+    assert writer.execution_summary_calls[0][1]["terminal_certainty"] == (
+        TerminalCertainty.UNKNOWN.value
+    )
+
+
+@pytest.mark.asyncio
 async def test_backend_operation_cancelled_classifies_as_cancelled() -> None:
     """Backend-owned OperationCancelledError is public cancellation."""
     plan = make_test_compiled_plan(
@@ -2315,6 +2587,391 @@ async def test_terminal_intent_identity_mismatch_is_invalid_terminal() -> None:
     assert result.result_class == ExecutionResultClass.TERMINAL_RESULT_INVALID
     assert result.terminal_intent is None
     assert writer.terminal_result_calls == []
+
+
+def _matrix_request(
+    tmp_path: Path,
+    plan: CompiledHarnessPlan,
+    name: str,
+) -> HarnessExecutionRequest:
+    run_dir = tmp_path / name
+    input_path = Path("millforge/input.json")
+    input_target = run_dir / input_path
+    input_target.parent.mkdir(parents=True, exist_ok=True)
+    input_target.write_text('{"schema_version":"test"}\n', encoding="utf-8")
+    return _valid_harness_request(
+        request_id=f"req-{name}",
+        run_id=f"run-{name}",
+        hash_digest=plan.compiled_sha256,
+    ).model_copy(
+        update={
+            "run_directory": RunDirRef(run_id=f"run-{name}", path=run_dir),
+            "input_artifacts": (
+                ArtifactRef(
+                    artifact_id="art-input-001",
+                    path=input_path,
+                    content_type="application/json",
+                ),
+            ),
+        }
+    )
+
+
+class _TerminalCommitFailingWriter(RuntimeArtifactWriter):
+    async def write_terminal_result(self, ref: ArtifactRef, data: Any) -> None:
+        raise ArtifactWriteError("terminal commit failed")
+
+
+class _ManifestFailingRuntimeWriter(RuntimeArtifactWriter):
+    async def write_artifact_manifest(self, ref: ArtifactRef, data: Any) -> None:
+        raise ArtifactWriteError("manifest write failed")
+
+
+class _ClosedHttpClientProbe:
+    is_closed = True
+
+
+class _MatrixEchoBackend(FakeGuardrailBackend):
+    async def run_session(self, request: Any) -> GuardedSessionResult:
+        result = await super().run_session(request)
+        return result.model_copy(update={"session_id": request.session_id})
+
+
+def _matrix_session_result(
+    *,
+    request: HarnessExecutionRequest,
+    status: GuardedSessionStatus,
+    event_type: SessionEventType,
+    trace_status: ToolExecutionStatus = ToolExecutionStatus.HARD_FAILURE,
+    side_effect_certainty: SideEffectCertainty = SideEffectCertainty.CONFIRMED_ABSENT,
+    side_effect_class: SideEffectClass = SideEffectClass.READ_ONLY,
+    idempotency: IdempotencyClass = IdempotencyClass.IDEMPOTENT,
+    detail_code: str | None = None,
+    detail_summary: str | None = None,
+) -> GuardedSessionResult:
+    trace = make_test_tool_trace_record(session_id="sess-test-001").model_copy(
+        update={
+            "request_id": request.request_id,
+            "run_id": request.run_id,
+            "stage": request.stage,
+            "execution_status": trace_status,
+            "side_effect_class": ToolTraceSideEffectClass(side_effect_class.value),
+            "idempotency": ToolTraceIdempotency(idempotency.value),
+            "side_effect_certainty": side_effect_certainty,
+            "retryable": False,
+            "side_effect_detail_code": detail_code,
+            "side_effect_detail_summary": detail_summary,
+            "side_effect_retry_allowed": False if detail_code is not None else None,
+            "output_sha256": None,
+        }
+    )
+    return make_test_guarded_session_result(
+        session_id="sess-test-001",
+        status=status,
+        with_terminal_intent=False,
+        request_id=request.request_id,
+        run_id=request.run_id,
+    ).model_copy(
+        update={
+            "events": (
+                make_test_session_event(
+                    session_id="sess-test-001",
+                    request_id=request.request_id,
+                    run_id=request.run_id,
+                    stage=request.stage,
+                    event_type=event_type,
+                ),
+            ),
+            "tool_trace": (trace,),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "injection_point",
+        "expected_status",
+        "expected_result_class",
+        "expect_terminal",
+        "expect_session_trace",
+    ),
+    [
+        (
+            "before_plan_read",
+            ExecutionStatus.INTERRUPTED,
+            ExecutionResultClass.CANCELLED,
+            False,
+            False,
+        ),
+        (
+            "during_plan_read",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.COMPILED_HARNESS_INVALID,
+            False,
+            False,
+        ),
+        (
+            "after_plan_read_verification",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.COMPILED_HARNESS_INVALID,
+            False,
+            False,
+        ),
+        (
+            "backend_construction",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.BACKEND_FAILURE,
+            False,
+            False,
+        ),
+        (
+            "model_request",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.MODEL_FAILURE,
+            False,
+            False,
+        ),
+        (
+            "model_response",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.MODEL_FAILURE,
+            False,
+            True,
+        ),
+        (
+            "http_connect",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.MODEL_FAILURE,
+            False,
+            False,
+        ),
+        (
+            "http_read",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.MODEL_FAILURE,
+            False,
+            True,
+        ),
+        (
+            "tool_before_side_effect",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.TOOL_FAILURE,
+            False,
+            True,
+        ),
+        (
+            "tool_after_mutating_side_effect",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.TOOL_FAILURE,
+            False,
+            True,
+        ),
+        (
+            "terminal_validation",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.TERMINAL_RESULT_INVALID,
+            False,
+            False,
+        ),
+        (
+            "terminal_commit",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.ARTIFACT_FINALIZATION_FAILED,
+            False,
+            False,
+        ),
+        (
+            "final_artifact_write",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.ARTIFACT_FINALIZATION_FAILED,
+            True,
+            False,
+        ),
+        (
+            "cleanup",
+            ExecutionStatus.FAILED,
+            ExecutionResultClass.INTERNAL_FAILURE,
+            False,
+            False,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_deterministic_failure_injection_matrix_cleans_resources(
+    tmp_path: Path,
+    injection_point: str,
+    expected_status: ExecutionStatus,
+    expected_result_class: ExecutionResultClass,
+    expect_terminal: bool,
+    expect_session_trace: bool,
+) -> None:
+    """Every named injection point records deterministic result and cleanup state."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+    request = _matrix_request(tmp_path, plan, injection_point)
+    writer: Any = RuntimeArtifactWriter(request.run_directory.path)
+    backend: FakeGuardrailBackend = FakeGuardrailBackend()
+    plan_loader = FakePlanLoader(plan=plan)
+    cancellation_resolver: FakeCancellationResolver = FakeCancellationResolver()
+
+    if injection_point == "before_plan_read":
+        cancellation_resolver = FakeCancellationResolver(is_cancelled=True)
+    elif injection_point == "during_plan_read":
+        plan_loader = FakePlanLoader(exception=ValueError("plan parse failed"))
+    elif injection_point == "after_plan_read_verification":
+        request = request.model_copy(
+            update={
+                "compiled_harness": request.compiled_harness.model_copy(
+                    update={
+                        "expected_hash": CompiledHarnessHash(
+                            algorithm="sha256",
+                            digest="0" * 64,
+                        )
+                    }
+                )
+            }
+        )
+    elif injection_point == "backend_construction":
+        backend = FakeGuardrailBackend(
+            exceptions=[BackendTranslationError("backend construction failed")]
+        )
+    elif injection_point in {"model_request", "http_connect"}:
+        backend = FakeGuardrailBackend(
+            exceptions=[ModelTransportError(f"{injection_point} failed")]
+        )
+    elif injection_point == "model_response":
+        backend = _MatrixEchoBackend(
+            responses=[
+                _matrix_session_result(
+                    request=request,
+                    status=GuardedSessionStatus.MODEL_FAILED,
+                    event_type=SessionEventType.MODEL_REQUEST_FAILED,
+                )
+            ]
+        )
+    elif injection_point == "http_read":
+        backend = _MatrixEchoBackend(
+            responses=[
+                _matrix_session_result(
+                    request=request,
+                    status=GuardedSessionStatus.MODEL_FAILED,
+                    event_type=SessionEventType.MODEL_REQUEST_FAILED,
+                    detail_code="http_read_failed",
+                    detail_summary="HTTP read failed after model request dispatch",
+                )
+            ]
+        )
+    elif injection_point == "tool_before_side_effect":
+        backend = _MatrixEchoBackend(
+            responses=[
+                _matrix_session_result(
+                    request=request,
+                    status=GuardedSessionStatus.TOOL_FAILED,
+                    event_type=SessionEventType.TOOL_FAILED,
+                    trace_status=ToolExecutionStatus.NOT_EXECUTED,
+                    side_effect_certainty=SideEffectCertainty.NOT_ATTEMPTED,
+                )
+            ]
+        )
+    elif injection_point == "tool_after_mutating_side_effect":
+        backend = _MatrixEchoBackend(
+            responses=[
+                _matrix_session_result(
+                    request=request,
+                    status=GuardedSessionStatus.TOOL_FAILED,
+                    event_type=SessionEventType.TOOL_FAILED,
+                    trace_status=ToolExecutionStatus.AMBIGUOUS,
+                    side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                    side_effect_class=SideEffectClass.WORKSPACE_WRITE,
+                    idempotency=IdempotencyClass.NON_IDEMPOTENT,
+                    detail_code="mutating_completion_unknown",
+                    detail_summary="Workspace mutation may have completed",
+                )
+            ]
+        )
+    elif injection_point == "terminal_validation":
+        backend = FakeGuardrailBackend(
+            responses=[make_test_guarded_session_result(session_id="wrong-session")]
+        )
+    elif injection_point == "terminal_commit":
+        backend = _backend_with_result()
+        writer = _TerminalCommitFailingWriter(request.run_directory.path)
+    elif injection_point == "final_artifact_write":
+        backend = _backend_with_result()
+        writer = _ManifestFailingRuntimeWriter(request.run_directory.path)
+    elif injection_point == "cleanup":
+        backend = FakeGuardrailBackend(exceptions=[RuntimeError("cleanup failed")])
+
+    runtime = _build_runtime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=writer,
+        cancellation_resolver=cancellation_resolver,
+    )
+    probe = FailureInjectionLeakProbe(
+        request.run_directory.path,
+        owned_http_clients=(_ClosedHttpClientProbe(),),
+    )
+
+    result = await runtime.execute(request)
+    await probe.assert_clean(cleanup=lambda: None)
+
+    assert result.status == expected_status
+    assert result.result_class == expected_result_class
+    terminal_path = request.run_directory.path / "millforge/terminal_result.json"
+    assert terminal_path.exists() is expect_terminal
+    assert result.terminal_intent is None or expect_terminal
+
+    manifest_path = request.run_directory.path / "millforge/artifact_manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_ids = {artifact["artifact_id"] for artifact in manifest["artifacts"]}
+        assert "execution_summary" in manifest_ids
+        assert "metrics" in manifest_ids
+        assert "artifact_manifest" not in manifest_ids
+        if expect_session_trace:
+            assert {"events", "tool_trace"}.issubset(manifest_ids)
+            events = json.loads(
+                "["
+                + (request.run_directory.path / "millforge/events.jsonl")
+                .read_text(encoding="utf-8")
+                .strip()
+                .replace("\n", ",")
+                + "]"
+            )
+            trace = json.loads(
+                "["
+                + (request.run_directory.path / "millforge/tool_trace.jsonl")
+                .read_text(encoding="utf-8")
+                .strip()
+                .replace("\n", ",")
+                + "]"
+            )
+            assert events
+            assert trace
+            trace_record = trace[0]
+            assert trace_record["retryable"] is False
+            assert trace_record["side_effect_certainty"] in {
+                SideEffectCertainty.NOT_ATTEMPTED.value,
+                SideEffectCertainty.CONFIRMED_ABSENT.value,
+                SideEffectCertainty.COMPLETION_UNKNOWN.value,
+            }
+            if injection_point == "tool_after_mutating_side_effect":
+                assert (
+                    trace_record["side_effect_certainty"]
+                    == SideEffectCertainty.COMPLETION_UNKNOWN.value
+                )
+                assert (
+                    trace_record["side_effect_class"]
+                    == SideEffectClass.WORKSPACE_WRITE.value
+                )
+                assert (
+                    trace_record["idempotency"] == IdempotencyClass.NON_IDEMPOTENT.value
+                )
+                assert trace_record["side_effect_retry_allowed"] is False
 
 
 # ======================================================================
@@ -2735,6 +3392,48 @@ async def test_failure_backend_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backend_exception_message_secret_redacted_in_diagnostic(
+    tmp_path: Path,
+) -> None:
+    """Owned backend exception messages are redacted in persisted diagnostics."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+    sentinel = "api_key=sk-checker-secret-value"
+    request = _valid_harness_request().model_copy(
+        update={"run_directory": RunDirRef(run_id="run-runtime-001", path=tmp_path)}
+    )
+    input_target = tmp_path / "millforge" / "input.json"
+    input_target.parent.mkdir(parents=True, exist_ok=True)
+    input_target.write_text('{"schema_version":"test"}\n', encoding="utf-8")
+    runtime = _build_runtime(
+        backend=FakeGuardrailBackend(
+            exceptions=[BackendTranslationError(f"Backend refused: {sentinel}")]
+        ),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=RuntimeArtifactWriter(tmp_path, producer="test/v1"),
+    )
+
+    result = await runtime.execute(request)
+
+    _assert_failure_result(
+        result,
+        expected_status=ExecutionStatus.FAILED,
+        expected_result_class=ExecutionResultClass.BACKEND_FAILURE,
+    )
+    assert result.diagnostic is not None
+    assert result.diagnostic.message == "Backend refused: api_key**redacted**"
+    millforge_dir = tmp_path / "millforge"
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "backend_failure"
+    assert diagnostic["category"] == "backend"
+    assert diagnostic["message"] == "Backend refused: api_key**redacted**"
+    assert sentinel not in json.dumps(diagnostic, sort_keys=True)
+
+
+@pytest.mark.asyncio
 async def test_failure_model_failure() -> None:
     """Backend raises ModelTransportError -> model_failure."""
     plan = make_test_compiled_plan(
@@ -2962,6 +3661,50 @@ async def test_base_exception_propagates() -> None:
 
     with pytest.raises(KeyboardInterrupt):
         await runtime.execute(request)
+
+
+@pytest.mark.asyncio
+async def test_external_cancelled_error_finalizes_partial_evidence_then_reraises(
+    tmp_path: Path,
+) -> None:
+    """External asyncio cancellation writes bounded evidence before propagation."""
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+
+    class _ExternallyCancelledBackend(FakeGuardrailBackend):
+        async def run_session(self, request: Any) -> Any:
+            raise asyncio.CancelledError
+
+    runtime = _build_runtime(
+        backend=_ExternallyCancelledBackend(),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=RuntimeArtifactWriter(tmp_path, producer="test/v1"),
+    )
+    request = _valid_harness_request().model_copy(
+        update={"run_directory": RunDirRef(run_id="run-runtime-001", path=tmp_path)}
+    )
+    input_target = tmp_path / "millforge" / "input.json"
+    input_target.parent.mkdir(parents=True, exist_ok=True)
+    input_target.write_text('{"schema_version":"test"}\n', encoding="utf-8")
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.execute(request)
+
+    millforge_dir = tmp_path / "millforge"
+    assert not (millforge_dir / "terminal_result.json").exists()
+    assert (millforge_dir / "execution_summary.json").exists()
+    assert (millforge_dir / "metrics.json").exists()
+    assert (millforge_dir / "artifact_manifest.json").exists()
+    assert (millforge_dir / "diagnostic.json").exists()
+    summary = _read_json(millforge_dir / "execution_summary.json")
+    assert summary["status"] == ExecutionStatus.INTERRUPTED.value
+    assert summary["result_class"] == ExecutionResultClass.CANCELLED.value
+    assert summary["terminal_certainty"] == TerminalCertainty.NOT_APPLICABLE.value
+    diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
+    assert diagnostic["error_code"] == "already_cancelled"
 
 
 # ======================================================================

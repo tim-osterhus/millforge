@@ -10,7 +10,6 @@ from __future__ import annotations
 import inspect
 import json
 import math
-import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,10 +31,14 @@ from millforge.contracts import (
     ModelMessage,
     ModelToolCall,
     ParsedToolArguments,
+    RedactionPolicy,
     SanitizedMetadataValue,
     SamplingRequest,
     SecretRef,
     TokenUsage,
+    redact_diagnostic_mapping,
+    redact_diagnostic_text,
+    redact_diagnostic_value,
 )
 from millforge.exceptions import (
     MillforgeConfigError,
@@ -43,25 +46,9 @@ from millforge.exceptions import (
 )
 
 _CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
-_MAX_SANITIZED_VALUE_LENGTH = 512
-_MAX_SANITIZED_FIELDS = 24
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^&\s]+)"),
-    re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+"),
-    re.compile(r"\b(sk|pk|org|sess)-[a-zA-Z0-9]{8,}\b"),
-)
-_URL_PATTERN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s<>'\"]+", re.IGNORECASE)
-_SENSITIVE_FIELD_MARKERS = (
-    "authorization",
-    "api-key",
-    "apikey",
-    "token",
-    "secret",
-    "password",
-    "credential",
-    "cookie",
-    "set-cookie",
-)
+DEFAULT_REDACTION_POLICY = RedactionPolicy()
+_MAX_SANITIZED_VALUE_LENGTH = min(DEFAULT_REDACTION_POLICY.max_string_length, 512)
+_MAX_SANITIZED_FIELDS = min(DEFAULT_REDACTION_POLICY.max_collection_items, 24)
 _FORBIDDEN_CUSTOM_AUTH_HEADERS = {
     "accept",
     "authorization",
@@ -770,6 +757,10 @@ class ModelCancellationToken(Protocol):
 
     def is_cancelled(self) -> bool:
         """Return whether cancellation has been requested."""
+        ...
+
+    async def wait(self) -> None:
+        """Wait until cancellation is requested."""
         ...
 
     @property
@@ -1642,7 +1633,7 @@ def redact_url(value: str) -> str:
     """Redact URL userinfo and query values for diagnostics."""
     split = urlsplit(value)
     if not split.scheme or not split.netloc:
-        return _redact_secret_patterns(value)
+        return redact_diagnostic_text(value)
     host = split.hostname or ""
     if split.port:
         host = f"{host}:{split.port}"
@@ -1656,33 +1647,19 @@ def redact_url(value: str) -> str:
             host,
             split.path,
             query,
-            "**redacted**" if split.fragment else "",
+            DEFAULT_REDACTION_POLICY.replacement if split.fragment else "",
         )
     )
 
 
-def _redact_secret_patterns(text: str) -> str:
-    text = _SECRET_PATTERNS[0].sub(
-        lambda match: (
-            match.group(0)
-            if match.group(2) == "**redacted**"
-            else f"{match.group(1)}**redacted**"
-        ),
-        text,
-    )
-    for pattern in _SECRET_PATTERNS[1:]:
-        text = pattern.sub(lambda match: f"{match.group(1)}**redacted**", text)
-    return text
-
-
 def redact_text(value: object, *, secret_values: tuple[str, ...] = ()) -> str:
     """Redact auth headers, explicit secrets, URL details, and token/key patterns."""
-    text = str(value)
-    for secret in secret_values:
-        if secret:
-            text = text.replace(secret, "**redacted**")
-    text = _URL_PATTERN.sub(lambda match: redact_url(match.group(0)), text)
-    return _redact_secret_patterns(text)
+    if isinstance(value, str):
+        return redact_diagnostic_text(value, secret_values=secret_values)
+    redacted = redact_diagnostic_value(value, secret_values=secret_values)
+    return (
+        redacted if isinstance(redacted, str) else redact_diagnostic_text(str(redacted))
+    )
 
 
 def sanitize_provider_error_fields(
@@ -1691,21 +1668,15 @@ def sanitize_provider_error_fields(
     secret_values: tuple[str, ...] = (),
 ) -> dict[str, SanitizedMetadataValue]:
     """Bound and redact provider error fields for safe persistence."""
-    sanitized: dict[str, SanitizedMetadataValue] = {}
-    for index, (key, value) in enumerate(fields.items()):
-        if index >= _MAX_SANITIZED_FIELDS:
-            break
-        clean_key = _bounded(redact_text(key), length=64)
-        lowered = clean_key.lower()
-        if any(marker in lowered for marker in _SENSITIVE_FIELD_MARKERS):
-            sanitized[clean_key] = "**redacted**"
-        elif isinstance(value, str):
-            sanitized[clean_key] = _bounded(
-                redact_text(value, secret_values=secret_values)
-            )
-        else:
-            sanitized[clean_key] = value
-    return sanitized
+    bounded_fields = {
+        key: value
+        for index, (key, value) in enumerate(fields.items())
+        if index < _MAX_SANITIZED_FIELDS
+    }
+    return cast(
+        dict[str, SanitizedMetadataValue],
+        redact_diagnostic_mapping(bounded_fields, secret_values=secret_values),
+    )
 
 
 def redact_mapping(
@@ -1714,19 +1685,7 @@ def redact_mapping(
     secret_values: tuple[str, ...] = (),
 ) -> dict[str, SanitizedMetadataValue]:
     """Redact debug summaries, events, traces, metrics, manifests, and diagnostics."""
-    sanitized: dict[str, SanitizedMetadataValue] = {}
-    for key, value in values.items():
-        lowered = key.lower()
-        if any(marker in lowered for marker in _SENSITIVE_FIELD_MARKERS):
-            sanitized[key] = "**redacted**"
-        elif isinstance(value, (str, int, float, bool)) or value is None:
-            sanitized[key] = (
-                _bounded(redact_text(value, secret_values=secret_values))
-                if isinstance(value, str)
-                else value
-            )
-        else:
-            sanitized[key] = _bounded(
-                redact_text(repr(value), secret_values=secret_values)
-            )
-    return sanitized
+    return cast(
+        dict[str, SanitizedMetadataValue],
+        redact_diagnostic_mapping(values, secret_values=secret_values),
+    )

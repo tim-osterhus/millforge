@@ -617,6 +617,9 @@ class ToolTraceRecord(BaseModel):
     side_effect_class: ToolTraceSideEffectClass
     idempotency: ToolTraceIdempotency
     side_effect_certainty: SideEffectCertainty
+    side_effect_detail_code: str | None = None
+    side_effect_detail_summary: str | None = None
+    side_effect_retry_allowed: bool | None = None
     output_sha256: str | None = None
     duration_ms: float = Field(ge=0)
     summary: str
@@ -645,6 +648,11 @@ class ToolTraceRecord(BaseModel):
     def _output_sha256_valid(cls, value: str | None) -> str | None:
         return None if value is None else _validate_sha256(value, "output_sha256")
 
+    @field_validator("side_effect_detail_code", "side_effect_detail_summary")
+    @classmethod
+    def _optional_detail_nonblank(cls, value: str | None, info: Any) -> str | None:
+        return None if value is None else _nonblank(value, info.field_name)
+
     @field_validator("prerequisite_decisions", "capability_decisions")
     @classmethod
     def _decision_keys_unique(
@@ -656,7 +664,7 @@ class ToolTraceRecord(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _denied_or_not_executed_has_no_output(self) -> ToolTraceRecord:
+    def _trace_consistency(self) -> ToolTraceRecord:
         denied = any(
             record.decision == ToolTraceDecision.DENIED
             for record in (*self.prerequisite_decisions, *self.capability_decisions)
@@ -671,6 +679,28 @@ class ToolTraceRecord(BaseModel):
                 raise ValueError(
                     "denied or not_executed calls must not have output_sha256"
                 )
+        detail_fields = (
+            self.side_effect_detail_code,
+            self.side_effect_detail_summary,
+            self.side_effect_retry_allowed,
+        )
+        if any(item is not None for item in detail_fields) and not all(
+            item is not None for item in detail_fields
+        ):
+            raise ValueError("side-effect detail fields must be provided together")
+        if (
+            self.side_effect_certainty == SideEffectCertainty.COMPLETION_UNKNOWN
+            and self.idempotency
+            in {ToolTraceIdempotency.NON_IDEMPOTENT, ToolTraceIdempotency.UNKNOWN}
+            and self.retryable
+        ):
+            raise ValueError(
+                "completion_unknown side effects are not retryable for "
+                "non-idempotent or unknown-idempotency tool work"
+            )
+        if self.side_effect_retry_allowed is not None:
+            if self.side_effect_retry_allowed != self.retryable:
+                raise ValueError("side_effect_retry_allowed must match retryable")
         return self
 
 

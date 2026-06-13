@@ -267,6 +267,7 @@ async def test_complete_7_artifact_tree(temp_dir: Path) -> None:
     manifest = json.loads(_read_text(millforge_dir / "artifact_manifest.json"))
     assert "artifacts" in manifest
     assert manifest["request_id"] == "req-test-001"
+    assert all(entry["failure_code"] is None for entry in manifest["artifacts"])
 
     # Verify tracked artifacts
     tracked = writer.tracked_artifacts
@@ -274,6 +275,7 @@ async def test_complete_7_artifact_tree(temp_dir: Path) -> None:
     assert "terminal_result" in tracked
     assert "execution_summary" in tracked
     assert "diagnostic" in tracked
+    assert tracked["diagnostic"]["failure_code"] is None
 
 
 # ======================================================================

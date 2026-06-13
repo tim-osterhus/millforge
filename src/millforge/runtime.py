@@ -5,12 +5,14 @@ cancellation_resolver) and executes one compiled-harness request through the ful
 21-step pipeline. It never calls ``ModelClient`` or ``ToolExecutor`` independently —
 the backend is the sole owner of model/tool interaction.
 
-BaseException is never caught — cancellation semantics are preserved.  Only
-Millforge-owned exceptions are translated at the public boundary.
+External ``asyncio.CancelledError`` is re-raised after bounded partial-evidence
+finalization when the run directory has already been prepared.  Other
+``BaseException`` subclasses propagate unchanged.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -30,6 +32,7 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    TerminalCertainty,
     TerminalIntent,
     TimingMetadata,
     UsageMetadata,
@@ -191,6 +194,14 @@ _SESSION_STATUS_MATRIX: dict[
         ExecutionStatus.FAILED,
     ),
 }
+
+
+class _AmbiguousTerminalCommitError(Exception):
+    """Raised when interruption ordering around terminal commit is unknown."""
+
+    def __init__(self, origin: FailureOrigin, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.origin = origin
 
 
 def classify_failure(
@@ -427,6 +438,7 @@ class DefaultHarnessRuntime:
         request: HarnessExecutionRequest,
         terminal_intent: TerminalIntent | None = None,
         message: str | None = None,
+        terminal_certainty: TerminalCertainty = TerminalCertainty.NOT_APPLICABLE,
     ) -> HarnessExecutionResult:
         """Build a failure ``HarnessExecutionResult`` with the correct classification.
 
@@ -470,6 +482,7 @@ class DefaultHarnessRuntime:
             usage=None,
             timing=self._timing(request),
             diagnostic=diagnostic,
+            terminal_certainty=terminal_certainty,
         )
 
     async def _write_non_terminal_artifacts(
@@ -480,6 +493,7 @@ class DefaultHarnessRuntime:
         result_class: ExecutionResultClass,
         session_result: GuardedSessionResult | None = None,
         diagnostic: DiagnosticMetadata | None = None,
+        terminal_certainty: TerminalCertainty = TerminalCertainty.NOT_APPLICABLE,
     ) -> tuple[ArtifactRef, ...]:
         """Write non-terminal runtime artifacts without terminal_result intent."""
         exec_summary_ref = _build_artifact_ref("execution_summary")
@@ -495,6 +509,7 @@ class DefaultHarnessRuntime:
                 "diagnostic_error_code": diagnostic.error_code
                 if diagnostic is not None
                 else None,
+                "terminal_certainty": terminal_certainty.value,
             },
         )
 
@@ -564,6 +579,7 @@ class DefaultHarnessRuntime:
         request: HarnessExecutionRequest,
         *,
         message: str | None = None,
+        terminal_certainty: TerminalCertainty = TerminalCertainty.NOT_APPLICABLE,
     ) -> HarnessExecutionResult:
         """Finalize a runtime-owned failure without writing terminal_result."""
         self._enter_non_terminal_finalizing()
@@ -591,18 +607,21 @@ class DefaultHarnessRuntime:
                 status=status,
                 result_class=result_class,
                 diagnostic=diagnostic,
+                terminal_certainty=terminal_certainty,
             )
         except (ArtifactWriteError, OSError) as e:
             return self._failure_result(
                 FailureOrigin.ARTIFACT_WRITE_FAILURE,
                 request=request,
                 message=f"Artifact finalization failed: {e}",
+                terminal_certainty=terminal_certainty,
             )
         except Exception as e:
             return self._failure_result(
                 FailureOrigin.ARTIFACT_WRITE_FAILURE,
                 request=request,
                 message=f"Artifact finalization failed: {e}",
+                terminal_certainty=terminal_certainty,
             )
 
         if status == ExecutionStatus.INTERRUPTED:
@@ -622,6 +641,7 @@ class DefaultHarnessRuntime:
             usage=None,
             timing=self._timing(request),
             diagnostic=diagnostic,
+            terminal_certainty=terminal_certainty,
         )
 
     async def _finalize_non_domain_session_result(
@@ -641,6 +661,7 @@ class DefaultHarnessRuntime:
                 result_class=result_class,
                 session_result=session_result,
                 diagnostic=session_result.diagnostic,
+                terminal_certainty=TerminalCertainty.NOT_APPLICABLE,
             )
         except (ArtifactWriteError, OSError) as e:
             return self._failure_result(
@@ -709,6 +730,7 @@ class DefaultHarnessRuntime:
             usage=usage,
             timing=self._timing(request),
             diagnostic=diagnostic,
+            terminal_certainty=TerminalCertainty.COMMITTED,
         )
 
     def _timing(self, request: HarnessExecutionRequest | None) -> TimingMetadata:
@@ -756,6 +778,11 @@ class DefaultHarnessRuntime:
         now = self._clock.monotonic()
         if now >= deadline.effective_deadline_monotonic:
             raise DeadlineExceededError("Effective monotonic deadline has expired")
+
+    async def _checkpoint_invocation(self, token: Any, deadline: Deadline) -> None:
+        """Check cancellation and deadline before starting an operation."""
+        await self._check_cancelled(token)
+        await self._check_deadline(deadline)
 
     def _deadline_from_timeout(
         self,
@@ -986,25 +1013,40 @@ class DefaultHarnessRuntime:
         terminal_intent: TerminalIntent,
         result_class: ExecutionResultClass,
         status: ExecutionStatus,
+        cancellation_token: Any,
+        deadline: Deadline,
     ) -> None:
         """Write the standard runtime artifacts (steps 16-20)."""
         # Step 16: terminal result
         terminal_ref = _build_artifact_ref("terminal_result")
-        await self._artifact_writer.write_terminal_result(
-            terminal_ref,
-            {
-                "schema_version": "1.0",
-                "request_id": request.request_id,
-                "run_id": request.run_id,
-                "stage": request.stage.model_dump(mode="json"),
-                "terminal_result": terminal_intent.terminal_result,
-                "result_class": result_class.value,
-                "summary_artifact_paths": tuple(
-                    str(artifact.path) for artifact in terminal_intent.artifact_refs
-                ),
-                "compiled_harness_sha256": request.compiled_harness.expected_hash.digest,
-            },
-        )
+        await self._checkpoint_invocation(cancellation_token, deadline)
+        try:
+            await self._artifact_writer.write_terminal_result(
+                terminal_ref,
+                {
+                    "schema_version": "1.0",
+                    "request_id": request.request_id,
+                    "run_id": request.run_id,
+                    "stage": request.stage.model_dump(mode="json"),
+                    "terminal_result": terminal_intent.terminal_result,
+                    "result_class": result_class.value,
+                    "summary_artifact_paths": tuple(
+                        str(artifact.path) for artifact in terminal_intent.artifact_refs
+                    ),
+                    "compiled_harness_sha256": request.compiled_harness.expected_hash.digest,
+                    "terminal_certainty": TerminalCertainty.COMMITTED.value,
+                },
+            )
+        except OperationCancelledError as e:
+            raise _AmbiguousTerminalCommitError(
+                FailureOrigin.ALREADY_CANCELLED,
+                e,
+            ) from e
+        except DeadlineExceededError as e:
+            raise _AmbiguousTerminalCommitError(
+                FailureOrigin.EXPIRED_DEADLINE,
+                e,
+            ) from e
 
         # Step 17: events
         events_ref = _build_artifact_ref("events")
@@ -1013,6 +1055,10 @@ class DefaultHarnessRuntime:
             if session_result.events
             else []
         )
+        if not await self._checkpoint_after_terminal_commit(
+            cancellation_token, deadline
+        ):
+            return
         await self._artifact_writer.write_events(events_ref, events_list)
 
         # Step 18: tool trace
@@ -1022,6 +1068,10 @@ class DefaultHarnessRuntime:
             if session_result.tool_trace
             else []
         )
+        if not await self._checkpoint_after_terminal_commit(
+            cancellation_token, deadline
+        ):
+            return
         await self._artifact_writer.write_tool_trace(tool_trace_ref, tool_trace_list)
 
         # Step 19: metrics
@@ -1035,10 +1085,18 @@ class DefaultHarnessRuntime:
         }
         if session_result.usage is not None:
             metrics_data["usage"] = session_result.usage.model_dump(mode="json")
+        if not await self._checkpoint_after_terminal_commit(
+            cancellation_token, deadline
+        ):
+            return
         await self._artifact_writer.write_metrics(metrics_ref, metrics_data)
 
-        # Step 19b: execution summary (always written for every return path)
+        # Step 19b: execution summary
         exec_summary_ref = _build_artifact_ref("execution_summary")
+        if not await self._checkpoint_after_terminal_commit(
+            cancellation_token, deadline
+        ):
+            return
         await self._artifact_writer.write_execution_summary(
             exec_summary_ref,
             {
@@ -1049,11 +1107,16 @@ class DefaultHarnessRuntime:
                 "status": status.value,
                 "result_class": result_class.value,
                 "diagnostic_error_code": None,
+                "terminal_certainty": TerminalCertainty.COMMITTED.value,
             },
         )
 
         if session_result.diagnostic is not None:
             diagnostic_ref = _build_artifact_ref("diagnostic")
+            if not await self._checkpoint_after_terminal_commit(
+                cancellation_token, deadline
+            ):
+                return
             await self._artifact_writer.write_diagnostic(
                 diagnostic_ref, session_result.diagnostic
             )
@@ -1069,6 +1132,10 @@ class DefaultHarnessRuntime:
         ]
         if session_result.diagnostic is not None:
             manifest_artifacts.append({"artifact_id": "diagnostic"})
+        if not await self._checkpoint_after_terminal_commit(
+            cancellation_token, deadline
+        ):
+            return
         await self._artifact_writer.write_artifact_manifest(
             manifest_ref,
             {
@@ -1078,6 +1145,18 @@ class DefaultHarnessRuntime:
                 "artifacts": manifest_artifacts,
             },
         )
+
+    async def _checkpoint_after_terminal_commit(
+        self,
+        token: Any,
+        deadline: Deadline,
+    ) -> bool:
+        """Return whether post-commit finalization should continue."""
+        try:
+            await self._checkpoint_invocation(token, deadline)
+        except (OperationCancelledError, DeadlineExceededError):
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # 21-step execution algorithm
@@ -1101,22 +1180,26 @@ class DefaultHarnessRuntime:
         self._started_at = self._clock.utc_now()
         cancellation_token: Any = None
         run_directory_prepared = False
+        external_cancel_finalized = False
 
         async def fail(
             origin: FailureOrigin,
             *,
             message: str | None = None,
+            terminal_certainty: TerminalCertainty = TerminalCertainty.NOT_APPLICABLE,
         ) -> HarnessExecutionResult:
             if run_directory_prepared:
                 return await self._finalize_non_terminal_failure(
                     origin,
                     request=request,
                     message=message,
+                    terminal_certainty=terminal_certainty,
                 )
             return self._failure_result(
                 origin,
                 request=request,
                 message=message,
+                terminal_certainty=terminal_certainty,
             )
 
         try:
@@ -1183,8 +1266,20 @@ class DefaultHarnessRuntime:
             # Step 6b: Validate/create run directory before plan load
             # ----------------------------------------------------------
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._prepare_run_directory(request)
                 run_directory_prepared = True
+                await self._checkpoint_invocation(cancellation_token, deadline)
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
             except MillforgeConfigError as e:
                 return await fail(
                     FailureOrigin.INFRASTRUCTURE_FAILURE,
@@ -1195,7 +1290,19 @@ class DefaultHarnessRuntime:
             # Steps 7-8: Load & verify compiled plan
             # ----------------------------------------------------------
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 plan = await self._plan_loader.load(request.compiled_harness)
+                await self._checkpoint_invocation(cancellation_token, deadline)
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
             except (FileNotFoundError, ValueError, TypeError) as e:
                 return await fail(
                     FailureOrigin.COMPILED_HARNESS_INVALID,
@@ -1208,18 +1315,42 @@ class DefaultHarnessRuntime:
                 )
 
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._verify_plan_identity(plan, request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except HarnessMismatchError as e:
                 return await fail(
                     FailureOrigin.IDENTITY_MISMATCH,
                     message=str(e),
                 )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
 
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._verify_plan_hash(plan, request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except HarnessMismatchError as e:
                 return await fail(
                     FailureOrigin.HASH_MISMATCH,
+                    message=str(e),
+                )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
                     message=str(e),
                 )
 
@@ -1227,34 +1358,82 @@ class DefaultHarnessRuntime:
             # Step 9: Verify stage, profile, capabilities, and inputs
             # ----------------------------------------------------------
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._check_stage(plan, request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except MillforgeConfigError as e:
                 return await fail(
                     FailureOrigin.INCOMPATIBLE_STAGE,
                     message=str(e),
                 )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
 
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._check_model_profile(plan, request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except MillforgeConfigError as e:
                 return await fail(
                     FailureOrigin.IDENTITY_MISMATCH,
                     message=str(e),
                 )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
 
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._check_capabilities(plan, request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except MillforgeConfigError as e:
                 return await fail(
                     FailureOrigin.MISSING_CAPABILITY,
                     message=str(e),
                 )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
 
             try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
                 await self._check_input_artifacts(request)
+                await self._checkpoint_invocation(cancellation_token, deadline)
             except MillforgeConfigError as e:
                 return await fail(
                     FailureOrigin.MISSING_CAPABILITY,
+                    message=str(e),
+                )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
                     message=str(e),
                 )
 
@@ -1266,15 +1445,36 @@ class DefaultHarnessRuntime:
             # ----------------------------------------------------------
             # Step 11: Construct guarded session
             # ----------------------------------------------------------
-            session_request = GuardedSessionRequest(
-                session_id=str(uuid.uuid4()),
-                execution_request=request,
-                deadline=self._deadline_from_timeout(
-                    request.timeout.timeout_seconds,
-                    request.timeout.deadline,
-                    source="request_and_harness",
-                ),
-            )
+            try:
+                await self._checkpoint_invocation(cancellation_token, deadline)
+                session_request = GuardedSessionRequest(
+                    session_id=str(uuid.uuid4()),
+                    execution_request=request,
+                    deadline=self._deadline_from_timeout(
+                        request.timeout.timeout_seconds,
+                        request.timeout.deadline,
+                        source="request",
+                    ),
+                )
+                await self._checkpoint_invocation(
+                    cancellation_token,
+                    session_request.deadline,
+                )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
+                )
+            except MillforgeConfigError as e:
+                return await fail(
+                    FailureOrigin.INFRASTRUCTURE_FAILURE,
+                    message=str(e),
+                )
 
             # ----------------------------------------------------------
             # Step 12: Record session constructed → BACKEND_SESSION_CONSTRUCTED
@@ -1310,6 +1510,13 @@ class DefaultHarnessRuntime:
             # ----------------------------------------------------------
             try:
                 session_result = await self._backend.run_session(session_request)
+            except asyncio.CancelledError:
+                external_cancel_finalized = True
+                await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message="External asyncio cancellation interrupted execution",
+                )
+                raise
             except OperationCancelledError as e:
                 return await fail(
                     FailureOrigin.ALREADY_CANCELLED,
@@ -1422,6 +1629,24 @@ class DefaultHarnessRuntime:
                     terminal_intent,
                     session_result_class,
                     session_status,
+                    cancellation_token,
+                    session_request.deadline,
+                )
+            except _AmbiguousTerminalCommitError as e:
+                return await fail(
+                    e.origin,
+                    message=str(e),
+                    terminal_certainty=TerminalCertainty.UNKNOWN,
+                )
+            except OperationCancelledError as e:
+                return await fail(
+                    FailureOrigin.ALREADY_CANCELLED,
+                    message=str(e),
+                )
+            except DeadlineExceededError as e:
+                return await fail(
+                    FailureOrigin.EXPIRED_DEADLINE,
+                    message=str(e),
                 )
             except (ArtifactWriteError, OSError) as e:
                 return await fail(
@@ -1446,7 +1671,17 @@ class DefaultHarnessRuntime:
             )
 
         # At the public boundary, only Millforge-owned exceptions are translated.
-        # BaseException is never caught.
+        except asyncio.CancelledError:
+            if run_directory_prepared and not external_cancel_finalized:
+                try:
+                    await self._finalize_non_terminal_failure(
+                        FailureOrigin.ALREADY_CANCELLED,
+                        request=request,
+                        message="External asyncio cancellation interrupted execution",
+                    )
+                except Exception:
+                    pass
+            raise
         except MillforgeError:
             raise
 

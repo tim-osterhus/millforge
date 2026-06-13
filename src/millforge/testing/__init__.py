@@ -7,7 +7,10 @@ so tests can verify both happy-path and error-handling behaviour.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,6 +91,130 @@ class BuilderArtifactRecord:
     sequence: int
     artifact_ref: ArtifactRef
     sha256: str
+
+
+class FailureInjectionLeakProbe:
+    """Reusable cleanup/resource assertions for deterministic failure injection.
+
+    The probe records resources owned by the current runtime invocation before a
+    failure-injection case and verifies that the case leaves no owned pending
+    tasks, run-directory file handles, untracked temporary artifacts, child
+    subprocesses, or unclosed owned HTTP clients behind.
+    """
+
+    def __init__(
+        self,
+        run_directory: Path,
+        *,
+        owned_task_name_prefixes: tuple[str, ...] = ("millforge",),
+        owned_http_clients: tuple[Any, ...] = (),
+    ) -> None:
+        self._run_directory = run_directory.resolve()
+        self._owned_task_name_prefixes = owned_task_name_prefixes
+        self._owned_http_clients = owned_http_clients
+        self._before_fds = self._runtime_file_descriptors()
+        self._before_temp_artifacts = self._temporary_artifacts()
+        self._before_children = self._child_process_ids()
+
+    async def assert_clean(
+        self,
+        cleanup: Callable[[], Any] | None = None,
+    ) -> None:
+        """Assert resource cleanup and optionally run cleanup twice first."""
+        if cleanup is not None:
+            await self._maybe_await(cleanup())
+            await self._maybe_await(cleanup())
+
+        await asyncio.sleep(0)
+        self._assert_no_owned_pending_tasks()
+        self._assert_owned_http_clients_closed()
+
+        leaked_fds = self._runtime_file_descriptors() - self._before_fds
+        if leaked_fds:
+            raise AssertionError(
+                f"Open runtime file handles leaked: {sorted(leaked_fds)}"
+            )
+
+        leaked_temp_artifacts = (
+            self._temporary_artifacts() - self._before_temp_artifacts
+        )
+        if leaked_temp_artifacts:
+            raise AssertionError(
+                "Untracked temporary artifacts leaked: "
+                f"{sorted(str(path) for path in leaked_temp_artifacts)}"
+            )
+
+        leaked_children = self._child_process_ids() - self._before_children
+        if leaked_children:
+            raise AssertionError(
+                f"Subprocess leftovers leaked: {sorted(leaked_children)}"
+            )
+
+    async def _maybe_await(self, value: Any) -> None:
+        if inspect.isawaitable(value):
+            await value
+
+    def _assert_no_owned_pending_tasks(self) -> None:
+        current = asyncio.current_task()
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not current
+            and not task.done()
+            and task.get_name().startswith(self._owned_task_name_prefixes)
+        ]
+        if pending:
+            names = [task.get_name() for task in pending]
+            raise AssertionError(f"Owned pending tasks leaked: {names}")
+
+    def _assert_owned_http_clients_closed(self) -> None:
+        for client in self._owned_http_clients:
+            closed = getattr(client, "is_closed", getattr(client, "closed", None))
+            if callable(closed):
+                closed = closed()
+            if closed is not True:
+                raise AssertionError(f"Owned HTTP client was not closed: {client!r}")
+
+    def _runtime_file_descriptors(self) -> set[str]:
+        fd_dir = Path("/proc/self/fd")
+        if not fd_dir.exists():
+            return set()
+        open_targets: set[str] = set()
+        for fd in fd_dir.iterdir():
+            try:
+                target = fd.resolve()
+            except OSError:
+                continue
+            try:
+                relative = target.relative_to(self._run_directory)
+            except ValueError:
+                continue
+            open_targets.add(str(relative))
+        return open_targets
+
+    def _temporary_artifacts(self) -> set[Path]:
+        if not self._run_directory.exists():
+            return set()
+        return {
+            path.relative_to(self._run_directory)
+            for path in self._run_directory.rglob("*")
+            if path.is_file()
+            and (
+                path.name.endswith(".tmp")
+                or path.name.startswith(".tmp")
+                or ".tmp." in path.name
+            )
+        }
+
+    def _child_process_ids(self) -> set[int]:
+        children_path = Path("/proc/self/task") / str(_current_thread_id()) / "children"
+        try:
+            raw = children_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return set()
+        if not raw:
+            return set()
+        return {int(item) for item in raw.split()}
 
 
 class FixedClock:
@@ -932,6 +1059,13 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json_serialize(value).encode("utf-8")).hexdigest()
 
 
+def _current_thread_id() -> int:
+    try:
+        return threading.get_native_id()
+    except AttributeError:
+        return 0
+
+
 __all__: list[str] = [
     "BUILDER_WORKSPACE_FIXED",
     "BUILDER_WORKSPACE_INITIAL",
@@ -947,6 +1081,7 @@ __all__: list[str] = [
     "BuilderWorkspaceMutationRecord",
     "DeterministicDurationSource",
     "DeterministicIdSource",
+    "FailureInjectionLeakProbe",
     "FakeModelClient",
     "FakeGuardrailBackend",
     "FakeToolExecutor",

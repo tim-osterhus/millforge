@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from millforge.contracts import redact_diagnostic_text
+
 
 class MillforgeError(Exception):
     """Base exception for all millforge errors.
@@ -25,12 +27,12 @@ class MillforgeError(Exception):
             self.__cause__ = cause
 
     def __str__(self) -> str:
-        """Return only the owned message without cause text."""
-        return self.args[0] if self.args else ""
+        """Return the redacted owned message without cause text."""
+        return redact_diagnostic_text(self.args[0]) if self.args else ""
 
     def __repr__(self) -> str:
-        """Return only the owned message without cause text."""
-        return self.args[0] if self.args else ""
+        """Return the redacted owned message without cause text."""
+        return redact_diagnostic_text(self.args[0]) if self.args else ""
 
 
 class MillforgeConfigError(MillforgeError):

@@ -53,6 +53,7 @@ CONCRETE_EXCEPTIONS = [
     OperationCancelledError,
     ArtifactWriteError,
 ]
+ALL_MILLFORGE_EXCEPTIONS = [MillforgeError, *CONCRETE_EXCEPTIONS]
 
 
 class TestHierarchy:
@@ -171,6 +172,26 @@ class TestStrReprRepresentation:
         r = repr(exc)
         assert r == msg
         assert "secret-token-abc123" not in r
+
+    @pytest.mark.parametrize("exc_cls", ALL_MILLFORGE_EXCEPTIONS)
+    def test_owned_message_secret_redacted_without_cause_text(
+        self, exc_cls: type[MillforgeError]
+    ) -> None:
+        sentinel = "api_key=sk-checker-secret-value"
+        cause = RuntimeError("cause token=sk-cause-secret-value")
+        exc = exc_cls(f"provider failed: {sentinel}", cause=cause)
+
+        s = str(exc)
+        r = repr(exc)
+
+        assert s == "provider failed: api_key**redacted**"
+        assert r == "provider failed: api_key**redacted**"
+        assert sentinel not in s
+        assert sentinel not in r
+        assert "sk-cause-secret-value" not in s
+        assert "sk-cause-secret-value" not in r
+        assert exc.__cause__ is cause
+        assert exc._cause is cause
 
     @pytest.mark.parametrize("exc_cls", CONCRETE_EXCEPTIONS)
     def test_cause_preserved_for_programmatic_access(

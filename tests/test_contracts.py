@@ -59,18 +59,24 @@ from millforge.contracts import (
     ModelToolDefinition,
     ModelToolCall,
     ParsedToolArguments,
+    RedactionPolicy,
     SamplingRequest,
     SanitizedMetadata,
+    SideEffectRecord,
     StageIdentity,
     TerminalIntent,
     TimingMetadata,
     TokenUsage,
+    TimeoutOrigin,
     ToolExecutionResult,
     ToolResultMessage,
     UsageMetadata,
     ValidatedToolCall,
     UserMessage,
     SystemMessage,
+    redact_diagnostic_mapping,
+    redact_diagnostic_text,
+    redact_diagnostic_value,
 )
 from tests.conftest import (
     BUILDER_FIXTURE_COMPILED_SHA256,
@@ -576,11 +582,21 @@ def test_deadline_remaining_and_closed_source() -> None:
     deadline = Deadline(
         started_monotonic=10.0,
         outer_deadline_monotonic=30.0,
+        compiled_harness_deadline_monotonic=25.0,
         effective_deadline_monotonic=25.0,
-        source="request_and_harness",
+        source="compiled_harness",
     )
+    assert deadline.request_deadline_monotonic == 30.0
     assert deadline.remaining(lambda: 15.0) == 10.0
     assert deadline.remaining(lambda: 40.0) == 0.0
+    assert (
+        Deadline.from_deadlines(
+            started_monotonic=10.0,
+            request_deadline_monotonic=30.0,
+            compiled_harness_deadline_monotonic=25.0,
+        )
+        == deadline
+    )
     with pytest.raises(ValidationError):
         Deadline.model_validate(
             {
@@ -589,6 +605,21 @@ def test_deadline_remaining_and_closed_source() -> None:
                 "effective_deadline_monotonic": 25.0,
                 "source": "manual",
             }
+        )
+    with pytest.raises(ValidationError, match="must equal the smaller"):
+        Deadline(
+            started_monotonic=10.0,
+            outer_deadline_monotonic=30.0,
+            compiled_harness_deadline_monotonic=25.0,
+            effective_deadline_monotonic=30.0,
+            source="request_and_harness",
+        )
+    with pytest.raises(ValidationError, match="must equal outer deadline"):
+        Deadline(
+            started_monotonic=10.0,
+            outer_deadline_monotonic=30.0,
+            effective_deadline_monotonic=25.0,
+            source="request",
         )
 
 
@@ -1312,6 +1343,46 @@ def test_tool_execution_result_success_error_and_hash_invariants() -> None:
         )
 
 
+def test_tool_execution_result_rejects_unsafe_unknown_mutation_retry() -> None:
+    with pytest.raises(ValidationError, match="completion_unknown"):
+        ToolExecutionResult(
+            call_id="call-unsafe",
+            status=ToolExecutionStatus.AMBIGUOUS,
+            summary="mutation may have completed",
+            error_code="completion_unknown",
+            retryable=True,
+            side_effect_class=SideEffectClass.WORKSPACE_WRITE,
+            idempotency=IdempotencyClass.NON_IDEMPOTENT,
+            side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+            input_sha256=SHA_B,
+            timing=TimingMetadata(
+                started_at="start", completed_at="end", duration_ms=0.0
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="retry_allowed"):
+        ToolExecutionResult(
+            call_id="call-detail",
+            status=ToolExecutionStatus.SOFT_FAILURE,
+            summary="retryable failure",
+            error_code="retryable_failure",
+            retryable=True,
+            side_effect_class=SideEffectClass.READ_ONLY,
+            idempotency=IdempotencyClass.IDEMPOTENT,
+            side_effect_certainty=SideEffectCertainty.CONFIRMED_ABSENT,
+            side_effect_record=SideEffectRecord(
+                certainty=SideEffectCertainty.CONFIRMED_ABSENT,
+                detail_code="absent",
+                summary="No side effect occurred",
+                retry_allowed=False,
+            ),
+            input_sha256=SHA_B,
+            timing=TimingMetadata(
+                started_at="start", completed_at="end", duration_ms=0.0
+            ),
+        )
+
+
 def test_public_bridge_exports_canonical_tool_definition_name_only() -> None:
     assert "ModelToolDefinition" in millforge.__all__
     assert millforge.ModelToolDefinition is ModelToolDefinition
@@ -1471,6 +1542,25 @@ def test_tool_trace_rejects_off_contract_shapes() -> None:
                 ),
             }
         )
+    with pytest.raises(ValidationError, match="completion_unknown"):
+        ToolTraceRecord.model_validate(
+            {
+                **trace_payload,
+                "execution_status": ToolExecutionStatus.AMBIGUOUS,
+                "retryable": True,
+                "side_effect_class": ToolTraceSideEffectClass.WORKSPACE_WRITE,
+                "idempotency": ToolTraceIdempotency.NON_IDEMPOTENT,
+                "side_effect_certainty": SideEffectCertainty.COMPLETION_UNKNOWN,
+                "output_sha256": None,
+            }
+        )
+    with pytest.raises(ValidationError, match="provided together"):
+        ToolTraceRecord.model_validate(
+            {
+                **trace_payload,
+                "side_effect_detail_code": "rolled_back",
+            }
+        )
 
 
 def test_session_event_and_tool_trace_closed_values() -> None:
@@ -1569,6 +1659,169 @@ def test_tool_trace_enum_values_are_separate_from_compiled_node_enums() -> None:
         "rolled_back",
         "completion_unknown",
     }
+
+
+def test_timeout_origins_are_closed_while_timeout_result_class_stays_stable() -> None:
+    assert ExecutionResultClass.TIMED_OUT.value == "timed_out"
+    assert {item.value for item in TimeoutOrigin} == {
+        "session_deadline",
+        "model_connect_timeout",
+        "model_read_timeout",
+        "model_write_timeout",
+        "model_pool_timeout",
+        "tool_timeout",
+        "backend_timeout",
+        "artifact_finalization_timeout",
+        "cleanup_timeout",
+    }
+    diagnostic = DiagnosticMetadata(
+        error_code="E_TIMEOUT",
+        category="timeout",
+        message="Timed out",
+        retryable=False,
+        origin=TimeoutOrigin.SESSION_DEADLINE,
+    )
+    assert diagnostic.model_dump(mode="json")["origin"] == "session_deadline"
+
+
+def test_side_effect_record_detail_rejects_unknown_retry() -> None:
+    record = SideEffectRecord(
+        certainty=SideEffectCertainty.ROLLED_BACK,
+        detail_code="rolled_back",
+        summary="Mutation was rolled back",
+        retry_allowed=True,
+    )
+    assert record.certainty is SideEffectCertainty.ROLLED_BACK
+
+    with pytest.raises(ValidationError, match="completion_unknown"):
+        SideEffectRecord(
+            certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+            detail_code="unknown",
+            summary="Mutation may have completed",
+            retry_allowed=True,
+        )
+
+
+def test_artifact_manifest_entry_supports_failure_metadata() -> None:
+    incomplete = millforge.ArtifactManifestEntry(
+        artifact_id="diagnostic",
+        path="millforge/diagnostic.json",
+        media_type="application/json",
+        byte_size=0,
+        sha256_hex=SHA_A,
+        complete=False,
+        producer="test/v1",
+        failure_code="artifact_finalization_timeout",
+    )
+    assert incomplete.failure_code == "artifact_finalization_timeout"
+
+    with pytest.raises(ValidationError, match="incomplete"):
+        millforge.ArtifactManifestEntry(
+            artifact_id="diagnostic",
+            path="millforge/diagnostic.json",
+            media_type="application/json",
+            byte_size=0,
+            sha256_hex=SHA_A,
+            complete=False,
+            producer="test/v1",
+        )
+    with pytest.raises(ValidationError, match="complete artifacts"):
+        millforge.ArtifactManifestEntry(
+            artifact_id="diagnostic",
+            path="millforge/diagnostic.json",
+            media_type="application/json",
+            byte_size=0,
+            sha256_hex=SHA_A,
+            complete=True,
+            producer="test/v1",
+            failure_code="unexpected",
+        )
+
+
+def test_redaction_policy_contract_is_bounded_and_exported() -> None:
+    policy = RedactionPolicy()
+    assert policy.max_depth == 8
+    assert policy.max_collection_items == 64
+    assert policy.max_string_length == 2048
+    assert policy.max_total_bytes == 32768
+    assert "authorization" in policy.sensitive_field_markers
+    assert "RedactionPolicy" in millforge.__all__
+
+    with pytest.raises(ValidationError, match="extra"):
+        RedactionPolicy(raw_secret="no")  # type: ignore[call-arg]
+    with pytest.raises(ValidationError, match="unique"):
+        RedactionPolicy(sensitive_field_markers=("token", "TOKEN"))
+
+
+def test_shared_redaction_policy_sanitizes_sentinel_corpus_without_repr() -> None:
+    class SecretRepr:
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not be called")
+
+        def __str__(self) -> str:
+            raise AssertionError("str must not be called")
+
+    secret = "sk-secret-value"
+    cause = RuntimeError("nested bearer sk-secret-value")
+    parent = RuntimeError("provider body api_key=sk-secret-value")
+    parent.__cause__ = cause
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+
+    redacted = redact_diagnostic_mapping(
+        {
+            "Authorization": f"Bearer {secret}",
+            "X-Api-Key": secret,
+            "credential_url": "https://user:pass@example.test/v1?api_key=abc",
+            "provider_error_body": f"provider failed with token={secret}",
+            "tool_input": {"password": secret, "nested": [secret, secret]},
+            "tool_output": f"result contains {secret}",
+            "exception": parent,
+            "cycle": cyclic,
+            "unsafe_object": SecretRepr(),
+        },
+        secret_values=(secret,),
+    )
+    serialized = str(redacted)
+
+    assert secret not in serialized
+    assert "api_key=abc" not in serialized
+    assert redacted["Authorization"] == "**redacted**"
+    assert redacted["X-Api-Key"] == "**redacted**"
+    assert redacted["tool_input"] == {
+        "password": "**redacted**",
+        "nested": ["**redacted**", "**redacted**"],
+    }
+    assert redacted["cycle"] == {"self": "[cycle]"}
+    assert redacted["unsafe_object"] == (
+        "<tests.test_contracts.test_shared_redaction_policy_sanitizes_sentinel_corpus_"
+        "without_repr.<locals>.SecretRepr>"
+    )
+
+
+def test_shared_redaction_policy_bounds_depth_collection_string_and_total_bytes() -> (
+    None
+):
+    policy = RedactionPolicy(
+        max_depth=2,
+        max_collection_items=2,
+        max_string_length=8,
+        max_total_bytes=4096,
+    )
+
+    assert redact_diagnostic_text("x" * 20, policy=policy) == "xxxxxxxx[truncated]"
+    assert redact_diagnostic_value(
+        {"a": {"b": {"c": "secret=too-deep"}}, "list": [1, 2, 3]},
+        policy=policy,
+    ) == {
+        "a": {"b": "[max_depth]"},
+        "list": ["[max_depth]", "[max_depth]", "[truncated]"],
+    }
+    assert redact_diagnostic_value(["a", "b", "c"], policy=policy) == [
+        "a",
+        "b",
+        "[truncated]",
+    ]
 
 
 def test_harness_execution_result_invariants() -> None:

@@ -110,7 +110,7 @@ class RuntimeArtifactWriter:
         self._millforge_dir: Path = self._run_directory / "millforge"
         self._millforge_dir.mkdir(parents=True, exist_ok=True)
         self._producer: str = producer
-        # artifact_id -> {path, media_type, byte_size, sha256_hex, complete, producer}
+        # artifact_id -> manifest metadata for written complete artifacts.
         self._artifacts: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
@@ -297,6 +297,7 @@ class RuntimeArtifactWriter:
             "sha256_hex": meta["sha256_hex"],
             "complete": True,
             "producer": self._producer,
+            "failure_code": None,
         }
 
     @staticmethod
@@ -477,6 +478,7 @@ class RuntimeArtifactWriter:
                     "sha256_hex": tracked["sha256_hex"],
                     "complete": tracked["complete"],
                     "producer": tracked["producer"],
+                    "failure_code": tracked["failure_code"],
                 }
             )
 
@@ -548,7 +550,8 @@ class RuntimeArtifactWriter:
         """Return a shallow copy of artifacts tracked by this writer.
 
         Each value is a dict with keys ``path``, ``media_type``,
-        ``byte_size``, ``sha256_hex``, ``complete``, ``producer``.
+        ``byte_size``, ``sha256_hex``, ``complete``, ``producer``,
+        ``failure_code``.
         """
         return dict(self._artifacts)
 

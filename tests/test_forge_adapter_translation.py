@@ -48,6 +48,7 @@ from millforge.contracts import (
     ModelCompletionResponse,
     ModelToolCall,
     ParsedToolArguments,
+    SideEffectRecord,
     TimingMetadata,
     ToolExecutionResult,
     ToolResultMessage,
@@ -1342,6 +1343,12 @@ async def test_tool_bridge_preserves_result_owned_trace_metadata() -> None:
             "side_effect_class": SideEffectClass.NETWORK_WRITE,
             "idempotency": IdempotencyClass.NON_IDEMPOTENT,
             "side_effect_certainty": SideEffectCertainty.COMPLETION_UNKNOWN,
+            "side_effect_record": SideEffectRecord(
+                certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                detail_code="network_completion_unknown",
+                summary="Remote write may have completed",
+                retry_allowed=False,
+            ),
             "timing": TimingMetadata(
                 started_at="start", completed_at="end", duration_ms=12.5
             ),
@@ -1361,6 +1368,9 @@ async def test_tool_bridge_preserves_result_owned_trace_metadata() -> None:
     assert trace.side_effect_class == ToolTraceSideEffectClass.NETWORK_WRITE
     assert trace.idempotency == ToolTraceIdempotency.NON_IDEMPOTENT
     assert trace.side_effect_certainty == SideEffectCertainty.COMPLETION_UNKNOWN
+    assert trace.side_effect_detail_code == "network_completion_unknown"
+    assert trace.side_effect_detail_summary == "Remote write may have completed"
+    assert trace.side_effect_retry_allowed is False
     assert trace.duration_ms == 12.5
     assert trace.model_dump(mode="json")["duration_ms"] == 12.5
     assert result.model_dump(mode="json")["timing"] == {
@@ -1368,6 +1378,84 @@ async def test_tool_bridge_preserves_result_owned_trace_metadata() -> None:
         "completed_at": "end",
         "duration_ms": 12.5,
     }
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_records_mutating_failure_before_side_effect() -> None:
+    result = _tool_result(
+        "call-prepare",
+        "workspace write rejected before mutation",
+        status=ToolExecutionStatus.HARD_FAILURE,
+        error_code="precondition_failed",
+    ).model_copy(
+        update={
+            "side_effect_class": SideEffectClass.WORKSPACE_WRITE,
+            "idempotency": IdempotencyClass.NON_IDEMPOTENT,
+            "side_effect_certainty": SideEffectCertainty.CONFIRMED_ABSENT,
+            "retryable": False,
+        }
+    )
+    executor = FakeToolExecutor(
+        supported_tools={"prepare"},
+        results={"prepare": [result]},
+    )
+    bridge = _tool_bridge(executor=executor)
+
+    with pytest.raises(NonRetryableToolError):
+        await bridge.invoke("prepare", {"path": "input.txt"})
+
+    trace = bridge.tool_trace[0]
+    assert trace.execution_status == ToolExecutionStatus.HARD_FAILURE
+    assert trace.side_effect_class == ToolTraceSideEffectClass.WORKSPACE_WRITE
+    assert trace.idempotency == ToolTraceIdempotency.NON_IDEMPOTENT
+    assert trace.side_effect_certainty == SideEffectCertainty.CONFIRMED_ABSENT
+    assert trace.retryable is False
+    assert trace.side_effect_retry_allowed is None
+    assert bridge.events[-1].event_type == SessionEventType.TOOL_FAILED
+    assert bridge.terminal_intent is None
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_records_mutating_failure_after_side_effect() -> None:
+    result = _tool_result(
+        "call-prepare",
+        "workspace write completion unknown",
+        status=ToolExecutionStatus.AMBIGUOUS,
+        error_code="completion_unknown",
+    ).model_copy(
+        update={
+            "side_effect_class": SideEffectClass.WORKSPACE_WRITE,
+            "idempotency": IdempotencyClass.NON_IDEMPOTENT,
+            "side_effect_certainty": SideEffectCertainty.COMPLETION_UNKNOWN,
+            "retryable": False,
+            "side_effect_record": SideEffectRecord(
+                certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                detail_code="workspace_completion_unknown",
+                summary="Workspace write may have completed",
+                retry_allowed=False,
+            ),
+        }
+    )
+    executor = FakeToolExecutor(
+        supported_tools={"prepare"},
+        results={"prepare": [result]},
+    )
+    bridge = _tool_bridge(executor=executor)
+
+    with pytest.raises(NonRetryableToolError):
+        await bridge.invoke("prepare", {"path": "input.txt"})
+
+    trace = bridge.tool_trace[0]
+    assert trace.execution_status == ToolExecutionStatus.AMBIGUOUS
+    assert trace.side_effect_class == ToolTraceSideEffectClass.WORKSPACE_WRITE
+    assert trace.idempotency == ToolTraceIdempotency.NON_IDEMPOTENT
+    assert trace.side_effect_certainty == SideEffectCertainty.COMPLETION_UNKNOWN
+    assert trace.retryable is False
+    assert trace.side_effect_detail_code == "workspace_completion_unknown"
+    assert trace.side_effect_detail_summary == "Workspace write may have completed"
+    assert trace.side_effect_retry_allowed is False
+    assert bridge.events[-1].event_type == SessionEventType.TOOL_FAILED
+    assert bridge.terminal_intent is None
 
 
 @pytest.mark.asyncio
@@ -1386,5 +1474,13 @@ async def test_tool_bridge_records_implementation_defect_trace_before_reraising(
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.HARD_FAILURE
     assert bridge.tool_trace[0].summary == "tool implementation defect: RuntimeError"
+    assert bridge.tool_trace[0].side_effect_certainty == (
+        SideEffectCertainty.COMPLETION_UNKNOWN
+    )
+    assert (
+        bridge.tool_trace[0].side_effect_detail_code
+        == "implementation_completion_unknown"
+    )
+    assert bridge.tool_trace[0].side_effect_retry_allowed is False
     assert bridge.events[-1].code == "implementation_defect"
     assert bridge.terminal_intent is None
