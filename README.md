@@ -59,6 +59,96 @@ only.
 - Lint: `ruff check .`
 - Format: `ruff format --check .`
 
+## Millforge 03A Closure Evidence
+
+Closure evidence for 03A was refreshed on `2026-06-14T09:11:34Z` for
+`task-03a-r2-04-closure-evidence-and-gates`.
+
+Contract coverage:
+
+- Source contract field table: `HarnessSource`, `StageScopeSource`,
+  `PromptSource`, `BudgetSource`, `ContextPolicySource`, `HarnessGraphSource`,
+  `HarnessNodeSource`, `PrerequisiteSource`, `ArgumentMatchSource`,
+  `ArtifactPolicySource`, and terminal artifact policies are implemented in
+  `src/millforge/compiler/source.py` with strict Pydantic v2 models,
+  `extra="forbid"`, frozen contracts, explicit defaults, identifier bounds,
+  collection bounds, tuple-backed snapshots, and mapping-to-record conversion.
+- Canonical YAML and equivalent JSON examples are covered by
+  `tests/compiler/test_parsing.py`; both front ends validate into the same
+  `HarnessSource` model.
+- Parser threat and limit matrix coverage includes duplicate keys, decoded key
+  equivalence, unsafe YAML aliases/anchors/merge keys/tags, non-string keys,
+  multiple documents, non-finite numbers, controls, invalid UTF-8, source size,
+  nesting depth, entry count, scalar size, numeric lexeme limits, JSON leading
+  whitespace, trailing JSON content, and top-level object requirements.
+- Diagnostic trigger evidence covers request, parse, schema, cross-field,
+  source-secret, ordering, truncation, and redaction cases in
+  `tests/compiler/test_diagnostics.py`, `tests/compiler/test_parsing.py`, and
+  `tests/compiler/test_requests.py`, including public unsupported-format parser
+  coverage for `MF-S005`, exact schema trigger coverage for `MF-S021`
+  unknown fields, `MF-S022` identifiers, `MF-S023` unversioned tool
+  references, `MF-S024` budgets, and `MF-S025` context policy values, plus
+  request-admission precedence for `MF-S018`.
+- Source-location examples cover parser and schema diagnostics with RFC 6901
+  field paths and one-based line/column locations.
+- Request and result serialized examples, result invariant matrix, raw request
+  admission examples, path-containment evidence, output-directory evidence,
+  source hash examples, replacement-race evidence, deep-snapshot proof, and
+  no-I/O/deferred-boundary proof are covered by `tests/compiler/test_requests.py`,
+  `tests/compiler/test_source.py`, and
+  `tests/compiler/test_frontend_boundaries.py`.
+- Schema-phase failure results preserve `source_document_sha256` and parsed
+  `harness_id` after a successful source parse, while request-phase and
+  parse-phase failures continue to omit parsed identity; `tests/compiler/test_requests.py`
+  covers the expected-harness mismatch and adjacent cross-field failure
+  boundaries.
+- Secret-helper evidence is covered without recording suspected source scalar
+  values; diagnostics and serialized outputs use redacted fields only.
+- Dependency and deferred-boundary audit evidence confirms compiler modules do
+  not import `_forge`, runtime execution, catalog resolution, HTTP/network,
+  subprocess, or model/tool invocation boundaries.
+
+Verification commands and results:
+
+```text
+python -m pytest
+732 passed, 1 skipped in 8.89s
+
+python -m ruff check .
+All checks passed!
+
+python -m ruff format --check .
+58 files already formatted
+
+python -m mypy .
+Success: no issues found in 35 source files
+
+python -m build
+Successfully built millforge-0.1.0.tar.gz and millforge-0.1.0-py3-none-any.whl
+```
+
+Source-control evidence:
+
+```text
+git diff --stat acd4491b905e635d6d3f9e9878206042a74692eb
+ README.md                                  |   90 ++
+ src/millforge/compiler/__init__.py         |  103 ++
+ src/millforge/compiler/diagnostics.py      |  400 ++++++++
+ src/millforge/compiler/parsing.py          | 1424 ++++++++++++++++++++++++++++
+ src/millforge/compiler/requests.py         | 1152 ++++++++++++++++++++++
+ src/millforge/compiler/source.py           |  375 ++++++++
+ src/millforge/compiler/validators.py       |  171 ++++
+ tests/compiler/test_diagnostics.py         |  159 ++++
+ tests/compiler/test_frontend_boundaries.py |   71 ++
+ tests/compiler/test_parsing.py             |  579 +++++++++++
+ tests/compiler/test_requests.py            |  955 +++++++++++++++++++
+ tests/compiler/test_source.py              |  203 ++++
+ 12 files changed, 5682 insertions(+)
+
+git status --short --branch
+## main...origin/main [ahead 1]
+```
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider
