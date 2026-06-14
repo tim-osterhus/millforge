@@ -149,6 +149,52 @@ git status --short --branch
 ## main...origin/main [ahead 1]
 ```
 
+## Millforge 03B Semantic Compiler Boundary
+
+03B adds a private semantic compiler layer under `src/millforge/compiler/`.
+It consumes an accepted 03A `CompileInvocation` and `HarnessSource` plus one
+tool catalog snapshot and one model-profile snapshot. It resolves exact tool
+bindings and the compiled model profile, validates graph legality, top-level
+argument matches, required capability grants, and terminal-required artifacts,
+then produces a private immutable `ResolvedHarness` for later lowering.
+
+The resolved IR is not a public API and is not a compiled plan. 03B performs no
+source or output path I/O, source-file rereads, catalog refresh, plugin
+discovery, network calls, subprocess calls, runtime execution, output writes,
+compiled-plan hashing, or lowering. Those responsibilities remain deferred to
+03C and later production registry/runtime work.
+
+Remediated 03B closure evidence was refreshed on `2026-06-14T18:35:03Z` for
+`task-03b-r1-05-exact-closure-evidence-and-offline-gates`. The closure target is
+exact semantic parity with the canonical 03B root-source contract, not a new
+public compiled-plan or runtime result family. The evidence expects exact
+code-to-trigger coverage for catalog resolution, schema normalization, graph and
+argument validation, capability aggregation, artifact satisfiability, deferred
+scope, source-control state, and full offline gates.
+
+Representative 03B fixtures live under `tests/compiler/`:
+
+- `test_catalogs.py` covers catalog metadata capture, closed lookup outcomes,
+  `resolve_exact` protocol shape, immutable descriptor admission, model-profile
+  admission, lookup exception redaction, and reusable static snapshot fixtures.
+- `test_schema_validation.py` covers the compiler-owned JSON Schema subset,
+  scalar `const` replacement for `type`, `null` const values, declared enum
+  order, numeric scalar duplicate identity, deterministic normalization,
+  compatibility bytes, and checked-in golden parity vectors without importing
+  private Forge modules.
+- `test_graph.py`, `test_capabilities.py`, and
+  `test_artifact_validation.py` cover graph reachability and legality,
+  terminal-prerequisite separation from argument-match failures, exact
+  capability aggregation, artifact satisfiability, duplicate artifact IDs,
+  terminal-gated producer evidence, determinism, and no-cascade behavior.
+- `test_semantic.py` covers successful semantic compilation into the private
+  immutable IR, 03A failure pass-through without catalog access, catalog
+  resolution failures including `MF-R009` internal failures, duplicate bindings,
+  duplicate model tool names, capability and artifact failures, and
+  unresolved-node suppression.
+- `test_frontend_boundaries.py` audits compiler modules for deferred imports
+  and forbidden I/O/runtime invocation calls.
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider

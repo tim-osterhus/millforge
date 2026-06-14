@@ -2,6 +2,7 @@
 
 from millforge.compiler.diagnostics import (
     DIAGNOSTIC_REGISTRY,
+    DIAGNOSTIC_TRIGGER_MEANINGS,
     CompilerDiagnostic,
     CompilerPhase,
     DiagnosticField,
@@ -10,6 +11,33 @@ from millforge.compiler.diagnostics import (
     SourceReference,
     detect_secret_candidate,
     sort_diagnostics,
+)
+from millforge.compiler.catalogs import (
+    CatalogLookupClassification,
+    CatalogMetadataError,
+    CatalogSnapshotMetadata,
+    ModelProfileCatalogLookup,
+    ModelProfileCatalogSnapshot,
+    RawToolDescriptor,
+    ToolCatalogEntry,
+    ToolCatalogLookup,
+    ToolCatalogSnapshot,
+    admit_model_profile,
+    capture_catalog_snapshot_metadata,
+)
+from millforge.compiler.artifact_validation import (
+    ArtifactProducerEvidence,
+    ArtifactValidationResult,
+    validate_artifacts,
+)
+from millforge.compiler.capabilities import (
+    CapabilityValidationResult,
+    validate_capability_grants,
+)
+from millforge.compiler.graph import (
+    GraphValidationResult,
+    ResolvedNodeDescriptor,
+    validate_harness_graph,
 )
 from millforge.compiler.parsing import (
     HarnessSourceParser,
@@ -25,6 +53,24 @@ from millforge.compiler.requests import (
     HarnessCompileResult,
     HarnessRequestAdmissionResult,
     PlanCommitCertainty,
+)
+from millforge.compiler.semantic import (
+    ResolvedHarness,
+    ResolvedToolBinding,
+    ResolvedToolBindingRef,
+    SemanticCompileResult,
+    compile_semantic,
+    compile_semantic_from_admission,
+)
+from millforge.compiler.schema_validation import (
+    SCHEMA_ALLOWED_KEYWORDS,
+    SCHEMA_ANNOTATION_KEYWORDS,
+    SCHEMA_STRUCTURAL_KEYWORDS,
+    SchemaSubsetError,
+    normalize_json_schema,
+    normalized_schema_bytes,
+    property_schema_compatibility_bytes,
+    validate_json_schema_subset,
 )
 from millforge.compiler.source import (
     ArgumentMatchSource,
@@ -57,14 +103,21 @@ from millforge.compiler.validators import (
 
 __all__ = [
     "ArgumentMatchSource",
+    "ArtifactProducerEvidence",
     "ArtifactPolicySource",
+    "ArtifactValidationResult",
     "BudgetSource",
+    "CapabilityValidationResult",
+    "CatalogLookupClassification",
+    "CatalogMetadataError",
+    "CatalogSnapshotMetadata",
     "CompileInvocation",
     "CompileStatus",
     "CompilerDiagnostic",
     "CompilerPhase",
     "ContextPolicySource",
     "DIAGNOSTIC_REGISTRY",
+    "DIAGNOSTIC_TRIGGER_MEANINGS",
     "DefaultHarnessCompileRequestAdmission",
     "DiagnosticField",
     "DiagnosticSeverity",
@@ -76,6 +129,9 @@ __all__ = [
     "HarnessRequestAdmissionResult",
     "HarnessSource",
     "HarnessSourceParser",
+    "GraphValidationResult",
+    "ModelProfileCatalogLookup",
+    "ModelProfileCatalogSnapshot",
     "ParsedHarnessSource",
     "PlanCommitCertainty",
     "PrerequisiteSource",
@@ -85,14 +141,37 @@ __all__ = [
     "SourceReference",
     "StageScopeSource",
     "TerminalArtifactPolicySource",
+    "RawToolDescriptor",
+    "ResolvedHarness",
+    "ResolvedNodeDescriptor",
+    "ResolvedToolBinding",
+    "ResolvedToolBindingRef",
+    "SCHEMA_ALLOWED_KEYWORDS",
+    "SCHEMA_ANNOTATION_KEYWORDS",
+    "SCHEMA_STRUCTURAL_KEYWORDS",
+    "SchemaSubsetError",
+    "SemanticCompileResult",
+    "ToolCatalogEntry",
+    "ToolCatalogLookup",
+    "ToolCatalogSnapshot",
     "ToolReference",
+    "admit_model_profile",
+    "capture_catalog_snapshot_metadata",
+    "compile_semantic",
+    "compile_semantic_from_admission",
     "detect_secret_candidate",
+    "normalize_json_schema",
+    "normalized_schema_bytes",
     "parse_tool_reference",
+    "property_schema_compatibility_bytes",
     "sort_diagnostics",
+    "validate_artifacts",
     "validate_argument_name",
     "validate_artifact_id",
     "validate_canonical_tool_id",
     "validate_harness_id",
+    "validate_harness_graph",
+    "validate_capability_grants",
     "validate_node_id",
     "validate_policy_id",
     "validate_profile_id",
@@ -100,4 +179,5 @@ __all__ = [
     "validate_stage_kind_id",
     "validate_terminal_result",
     "validate_tool_reference",
+    "validate_json_schema_subset",
 ]

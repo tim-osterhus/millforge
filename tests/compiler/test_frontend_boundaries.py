@@ -16,17 +16,22 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "http",
     "subprocess",
 )
-FORBIDDEN_VALIDATOR_CALLS = {
+FORBIDDEN_COMPILER_CALLS = {
     "open",
     "exec",
     "eval",
     "compile",
 }
-FORBIDDEN_VALIDATOR_ATTRS = {
+FORBIDDEN_COMPILER_ATTRS = {
     ("os", "environ"),
     ("Path", "open"),
     ("Path", "read_text"),
     ("Path", "read_bytes"),
+    ("Path", "write_text"),
+    ("Path", "write_bytes"),
+    ("Path", "mkdir"),
+    ("Path", "glob"),
+    ("Path", "rglob"),
 }
 
 
@@ -58,14 +63,18 @@ def test_compiler_front_end_does_not_import_deferred_runtime_boundaries() -> Non
     )
 
 
-def test_compiler_validators_do_not_perform_io_or_runtime_invocation() -> None:
-    tree = _module_tree(COMPILER_ROOT / "validators.py")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            target = node.func
-            if isinstance(target, ast.Name):
-                assert target.id not in FORBIDDEN_VALIDATOR_CALLS
-            elif isinstance(target, ast.Attribute):
-                owner = target.value
-                if isinstance(owner, ast.Name):
-                    assert (owner.id, target.attr) not in FORBIDDEN_VALIDATOR_ATTRS
+def test_compiler_modules_do_not_perform_io_or_runtime_invocation() -> None:
+    for path in COMPILER_ROOT.glob("*.py"):
+        tree = _module_tree(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                target = node.func
+                if isinstance(target, ast.Name):
+                    assert target.id not in FORBIDDEN_COMPILER_CALLS, path.as_posix()
+                elif isinstance(target, ast.Attribute):
+                    owner = target.value
+                    if isinstance(owner, ast.Name):
+                        assert (
+                            owner.id,
+                            target.attr,
+                        ) not in FORBIDDEN_COMPILER_ATTRS, path.as_posix()

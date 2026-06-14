@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from millforge.compiler import (
     DIAGNOSTIC_REGISTRY,
+    DIAGNOSTIC_TRIGGER_MEANINGS,
     CompilerDiagnostic,
     CompilerPhase,
     DiagnosticField,
@@ -50,6 +51,38 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
         "MF-S027",
         "MF-S028",
         "MF-S029",
+        "MF-R001",
+        "MF-R002",
+        "MF-R003",
+        "MF-R004",
+        "MF-R005",
+        "MF-R006",
+        "MF-R007",
+        "MF-R008",
+        "MF-R009",
+        "MF-R010",
+        "MF-R011",
+        "MF-G001",
+        "MF-G002",
+        "MF-G003",
+        "MF-G004",
+        "MF-G005",
+        "MF-G006",
+        "MF-G007",
+        "MF-G008",
+        "MF-G009",
+        "MF-G010",
+        "MF-G011",
+        "MF-G012",
+        "MF-G013",
+        "MF-C001",
+        "MF-A001",
+        "MF-A002",
+        "MF-A003",
+        "MF-A004",
+        "MF-A005",
+        "MF-A006",
+        "MF-A007",
         "MF-D001",
     }
     assert DIAGNOSTIC_REGISTRY["MF-S018"] == (
@@ -60,10 +93,68 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
         CompilerPhase.SCHEMA,
         DiagnosticSeverity.ERROR,
     )
+    assert DIAGNOSTIC_REGISTRY["MF-R009"] == (
+        CompilerPhase.RESOLUTION,
+        DiagnosticSeverity.ERROR,
+    )
+    assert DIAGNOSTIC_REGISTRY["MF-C001"] == (
+        CompilerPhase.CAPABILITY,
+        DiagnosticSeverity.ERROR,
+    )
+    assert DIAGNOSTIC_REGISTRY["MF-A007"] == (
+        CompilerPhase.ARTIFACT,
+        DiagnosticSeverity.ERROR,
+    )
     assert DIAGNOSTIC_REGISTRY["MF-D001"] == (
         CompilerPhase.INTERNAL,
         DiagnosticSeverity.WARNING,
     )
+
+
+def test_semantic_diagnostic_code_table_matches_03b_trigger_meanings() -> None:
+    expected = {
+        "MF-R001": ("unknown-model-profile", CompilerPhase.RESOLUTION),
+        "MF-R002": ("unknown-tool-reference", CompilerPhase.RESOLUTION),
+        "MF-R003": ("catalog-entry-identity-mismatch", CompilerPhase.RESOLUTION),
+        "MF-R004": ("malformed-catalog-entry", CompilerPhase.RESOLUTION),
+        "MF-R005": ("duplicate-tool-binding", CompilerPhase.RESOLUTION),
+        "MF-R006": ("duplicate-model-tool-name", CompilerPhase.RESOLUTION),
+        "MF-R007": ("unsupported-tool-schema", CompilerPhase.RESOLUTION),
+        "MF-R008": ("catalog-snapshot-drift", CompilerPhase.RESOLUTION),
+        "MF-R009": ("catalog-internal-failure", CompilerPhase.RESOLUTION),
+        "MF-R010": ("malformed-model-profile", CompilerPhase.RESOLUTION),
+        "MF-R011": ("invalid-tool-reference", CompilerPhase.RESOLUTION),
+        "MF-G001": ("unknown-prerequisite-node", CompilerPhase.GRAPH),
+        "MF-G002": ("self-prerequisite", CompilerPhase.GRAPH),
+        "MF-G003": ("duplicate-prerequisite", CompilerPhase.GRAPH),
+        "MF-G004": ("prerequisite-cycle", CompilerPhase.GRAPH),
+        "MF-G005": ("unreachable-node", CompilerPhase.GRAPH),
+        "MF-G006": ("unreachable-terminal", CompilerPhase.GRAPH),
+        "MF-G007": ("unreachable-required-node", CompilerPhase.GRAPH),
+        "MF-G008": ("terminal-node-required", CompilerPhase.GRAPH),
+        "MF-G009": ("terminal-result-illegal", CompilerPhase.GRAPH),
+        "MF-G010": ("terminal-result-duplicate", CompilerPhase.GRAPH),
+        "MF-G011": ("terminal-missing", CompilerPhase.GRAPH),
+        "MF-G012": ("invalid-argument-match", CompilerPhase.GRAPH),
+        "MF-G013": ("terminal-prerequisite", CompilerPhase.GRAPH),
+        "MF-C001": ("capability-envelope-mismatch", CompilerPhase.CAPABILITY),
+        "MF-A001": ("undeclared-produced-artifact", CompilerPhase.ARTIFACT),
+        "MF-A002": ("tool-cannot-produce-artifact", CompilerPhase.ARTIFACT),
+        "MF-A003": ("unknown-terminal-artifact-policy", CompilerPhase.ARTIFACT),
+        "MF-A004": ("required-artifact-without-producer", CompilerPhase.ARTIFACT),
+        "MF-A005": ("required-artifact-not-terminal-gated", CompilerPhase.ARTIFACT),
+        "MF-A006": ("duplicate-artifact-id", CompilerPhase.ARTIFACT),
+        "MF-A007": (
+            "undeclared-terminal-required-artifact",
+            CompilerPhase.ARTIFACT,
+        ),
+    }
+
+    assert DIAGNOSTIC_TRIGGER_MEANINGS == {
+        code: meaning for code, (meaning, _phase) in expected.items()
+    }
+    for code, (_meaning, phase) in expected.items():
+        assert DIAGNOSTIC_REGISTRY[code] == (phase, DiagnosticSeverity.ERROR)
 
 
 def test_compiler_diagnostic_rejects_dynamic_phase_or_severity() -> None:

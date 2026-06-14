@@ -1,0 +1,262 @@
+{
+  "accepted": [
+    {
+      "name": "object_nested_arrays",
+      "schema": {
+        "type": "object",
+        "description": "Ignored root annotation.",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Ignored field annotation.",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "default": "manual"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "metadata",
+          "name"
+        ]
+      },
+      "normalized": {
+        "additionalProperties": false,
+        "properties": {
+          "metadata": {
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "metadata",
+          "name"
+        ],
+        "type": "object"
+      },
+      "bytes": "{\"additionalProperties\":false,\"properties\":{\"metadata\":{\"additionalProperties\":false,\"properties\":{\"source\":{\"type\":\"string\"}},\"required\":[\"source\"],\"type\":\"object\"},\"name\":{\"type\":\"string\"},\"tags\":{\"items\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"type\":\"array\"}},\"required\":[\"metadata\",\"name\"],\"type\":\"object\"}"
+    },
+    {
+      "name": "scalar_const_enum",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "final",
+              "draft"
+            ]
+          },
+          "count": {
+            "const": 1
+          },
+          "enabled": {
+            "type": "boolean",
+            "enum": [
+              true,
+              false
+            ]
+          }
+        },
+        "required": [
+          "count",
+          "enabled",
+          "mode"
+        ]
+      },
+      "normalized": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "const": 1
+          },
+          "enabled": {
+            "enum": [
+              true,
+              false
+            ],
+            "type": "boolean"
+          },
+          "mode": {
+            "enum": [
+              "final",
+              "draft"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "enabled",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "bytes": "{\"additionalProperties\":false,\"properties\":{\"count\":{\"const\":1},\"enabled\":{\"enum\":[true,false],\"type\":\"boolean\"},\"mode\":{\"enum\":[\"final\",\"draft\"],\"type\":\"string\"}},\"required\":[\"count\",\"enabled\",\"mode\"],\"type\":\"object\"}"
+    },
+    {
+      "name": "const_only_null",
+      "schema": {
+        "const": null,
+        "description": "Ignored annotation.",
+        "default": null
+      },
+      "normalized": {
+        "const": null
+      },
+      "bytes": "{\"const\":null}"
+    },
+    {
+      "name": "enum_declared_order",
+      "schema": {
+        "type": "string",
+        "enum": [
+          "final",
+          "draft",
+          "review"
+        ]
+      },
+      "normalized": {
+        "enum": [
+          "final",
+          "draft",
+          "review"
+        ],
+        "type": "string"
+      },
+      "bytes": "{\"enum\":[\"final\",\"draft\",\"review\"],\"type\":\"string\"}"
+    }
+  ],
+  "rejected": [
+    {
+      "name": "unsupported_keyword",
+      "schema": {
+        "type": "string",
+        "minLength": 3
+      },
+      "message": "minLength"
+    },
+    {
+      "name": "additional_properties_true",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {}
+      },
+      "message": "additionalProperties"
+    },
+    {
+      "name": "array_missing_items",
+      "schema": {
+        "type": "array"
+      },
+      "message": "items"
+    },
+    {
+      "name": "required_missing_property",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "present": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "missing"
+        ]
+      },
+      "message": "required"
+    },
+    {
+      "name": "type_mismatched_const",
+      "schema": {
+        "type": "integer",
+        "const": "1"
+      },
+      "message": "const"
+    },
+    {
+      "name": "scalar_const_with_type",
+      "schema": {
+        "type": "integer",
+        "const": 1
+      },
+      "message": "non-annotation"
+    },
+    {
+      "name": "enum_duplicate_scalar_identity",
+      "schema": {
+        "type": "number",
+        "enum": [
+          1,
+          1.0
+        ]
+      },
+      "message": "duplicate"
+    },
+    {
+      "name": "const_only_with_structural_keyword",
+      "schema": {
+        "const": "ready",
+        "enum": [
+          "ready"
+        ]
+      },
+      "message": "non-annotation"
+    },
+    {
+      "name": "non_scalar_enum",
+      "schema": {
+        "type": "string",
+        "enum": [
+          {
+            "bad": true
+          }
+        ]
+      },
+      "message": "scalar"
+    }
+  ]
+}

@@ -80,7 +80,55 @@ DIAGNOSTIC_REGISTRY: dict[str, tuple[CompilerPhase, DiagnosticSeverity]] = {
         f"MF-S{number:03d}": (CompilerPhase.SCHEMA, DiagnosticSeverity.ERROR)
         for number in range(20, 30)
     },
+    **{
+        f"MF-R{number:03d}": (CompilerPhase.RESOLUTION, DiagnosticSeverity.ERROR)
+        for number in range(1, 12)
+    },
+    **{
+        f"MF-G{number:03d}": (CompilerPhase.GRAPH, DiagnosticSeverity.ERROR)
+        for number in range(1, 14)
+    },
+    "MF-C001": (CompilerPhase.CAPABILITY, DiagnosticSeverity.ERROR),
+    **{
+        f"MF-A{number:03d}": (CompilerPhase.ARTIFACT, DiagnosticSeverity.ERROR)
+        for number in range(1, 8)
+    },
     "MF-D001": (CompilerPhase.INTERNAL, DiagnosticSeverity.WARNING),
+}
+
+DIAGNOSTIC_TRIGGER_MEANINGS: dict[str, str] = {
+    "MF-R001": "unknown-model-profile",
+    "MF-R002": "unknown-tool-reference",
+    "MF-R003": "catalog-entry-identity-mismatch",
+    "MF-R004": "malformed-catalog-entry",
+    "MF-R005": "duplicate-tool-binding",
+    "MF-R006": "duplicate-model-tool-name",
+    "MF-R007": "unsupported-tool-schema",
+    "MF-R008": "catalog-snapshot-drift",
+    "MF-R009": "catalog-internal-failure",
+    "MF-R010": "malformed-model-profile",
+    "MF-R011": "invalid-tool-reference",
+    "MF-G001": "unknown-prerequisite-node",
+    "MF-G002": "self-prerequisite",
+    "MF-G003": "duplicate-prerequisite",
+    "MF-G004": "prerequisite-cycle",
+    "MF-G005": "unreachable-node",
+    "MF-G006": "unreachable-terminal",
+    "MF-G007": "unreachable-required-node",
+    "MF-G008": "terminal-node-required",
+    "MF-G009": "terminal-result-illegal",
+    "MF-G010": "terminal-result-duplicate",
+    "MF-G011": "terminal-missing",
+    "MF-G012": "invalid-argument-match",
+    "MF-G013": "terminal-prerequisite",
+    "MF-C001": "capability-envelope-mismatch",
+    "MF-A001": "undeclared-produced-artifact",
+    "MF-A002": "tool-cannot-produce-artifact",
+    "MF-A003": "unknown-terminal-artifact-policy",
+    "MF-A004": "required-artifact-without-producer",
+    "MF-A005": "required-artifact-not-terminal-gated",
+    "MF-A006": "duplicate-artifact-id",
+    "MF-A007": "undeclared-terminal-required-artifact",
 }
 
 _REQUEST_DIAGNOSTIC_ORDER = {
