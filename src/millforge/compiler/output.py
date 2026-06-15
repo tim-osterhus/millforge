@@ -370,6 +370,8 @@ def _publish_content_addressed_file(
                 error = (_field("errno", exc.errno or errno.EIO),)
         else:
             result = _PublishResult.PUBLISHED
+    except FileExistsError as exc:
+        return _PublishOutcome(error=(_field("errno", exc.errno or errno.EEXIST),))
     except OSError as exc:
         error = (_field("errno", exc.errno or errno.EIO),)
     cleanup_error = _unlink_if_present(output_dir=output_dir, filename=temp_name)
@@ -394,6 +396,8 @@ def _write_diagnostics_report(
         )
         if not _fsync_directory(output_dir.fd):
             raise OSError(errno.EIO, os.strerror(errno.EIO))
+    except FileExistsError as exc:
+        return (_field("errno", exc.errno or errno.EEXIST),)
     except OSError as exc:
         _unlink_if_present(output_dir=output_dir, filename=temp_name)
         return (_field("errno", exc.errno or errno.EIO),)

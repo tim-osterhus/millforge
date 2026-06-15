@@ -253,7 +253,7 @@ Emitted plan bytes are canonical compact UTF-8 JSON with one trailing newline
 and are published under the admitted output directory as relative
 `<url-escaped-harness-id>@<harness-version>.<compiled-sha256>.compiled.json`
 paths, for example
-`compiled/millforge.test.golden.compiler.v1@1.4456175a8853c4814f4a5d93d2f0c4b3453d1c40fedad5c47d92218c811a3944.compiled.json`.
+`compiled/millforge.test.golden.compiler.v1@1.1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52.compiled.json`.
 Diagnostics remain request-addressed and use request-only,
 source-document-hash plus request-hash, or compiled-digest plus request-hash
 path forms such as
@@ -285,6 +285,40 @@ temporary cleanup boundaries. The evidence continues to preserve the typed
 addressing, same-plan concurrency, different-request diagnostics non-collision,
 and runtime compatibility through emitted compiled bytes loaded without the
 original source tree.
+
+## Millforge 03D Compiler Hardening and Spec 03 Closure
+
+03D closes the implemented Spec 03 compiler packet while preserving the
+accepted 03C baseline at commit
+`ebfa3ed205758780fef431674cf525e50f1559a5`. The final closure evidence is
+retained in the run-local conformance matrix and refreshed closure report for
+`task-03d-r4-03-closure-evidence-gate-refresh`, which preserved the exact
+offline gate set after the matrix parity pass and redacted the broad
+secret-pattern scan outputs.
+
+03D hardening adds or retains exact evidence for bounded parser adversarial
+coverage, source-contract property checks, graph oracle tests, catalog drift,
+descriptor-change hash behavior, capability/artifact validation, service
+failure precedence, deterministic compile variants, diagnostics sentinel
+redaction, filesystem/output failure injection, runtime loading from emitted
+compiled bytes, package/dependency boundaries, archive contents, Forge
+provenance, and unchanged `ref-forge/` state.
+
+Default verification remains offline and deterministic: the compiler suite,
+full pytest suite, Ruff lint, Ruff format check, MyPy, package build, wheel
+listing (`python -m zipfile -l dist/*.whl`), sdist listing
+(`tar -tzf dist/*.tar.gz`), baseline diff stat (`git diff --stat
+ebfa3ed205758780fef431674cf525e50f1559a5`), and source-control status
+(`git status --short --branch --untracked-files=all`) are the closure gates.
+The live OpenAI-compatible backend smoke remains opt-in and is not part of
+default closure.
+
+03D does not implement or claim Millrace runner binding, production built-in
+tool registry behavior, admitted connector compilation, small-model Millrace
+workflow behavior, production Spec 07 preset compilation, comparative
+evaluation workflow behavior, or live provider/model/tool execution. Those
+remain deferred to Spec 01, Spec 04, Spec 05, Spec 06, Spec 07, and Spec 08
+respectively.
 
 ### Opt-In Live Model Backend Smoke
 

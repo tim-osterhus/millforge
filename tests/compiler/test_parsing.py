@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 import pytest
 from typing import cast
@@ -303,6 +304,257 @@ def test_json_parser_rejects_unsafe_or_ambiguous_input(
 
     assert parsed.source is None
     assert parsed.diagnostics[0].code == code
+
+
+def test_parser_adversarial_matrix_is_bounded_and_does_not_echo_payloads() -> None:
+    def _json_bytes(payload: object) -> bytes:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def _deep_yaml() -> bytes:
+        return (
+            "".join(f"{'  ' * index}a{index}:\n" for index in range(33))
+            + "  " * 33
+            + "leaf: value\n"
+        ).encode()
+
+    large_scalar = "SENSITIVE_SCALAR_" + ("x" * 65_537)
+    huge_integer = "9" * 129
+    confusable_harness_id = "millforge.test.bu\u0456lder.v1"
+    confusable_payload = _source_payload()
+    confusable_payload["harness_id"] = confusable_harness_id
+    confusable_payload_bytes = _json_bytes(confusable_payload)
+    bool_budget_payload = _source_payload()
+    budgets = bool_budget_payload["budgets"]
+    assert isinstance(budgets, dict)
+    budgets["max_iterations"] = True
+    bool_budget_payload_bytes = _json_bytes(bool_budget_payload)
+    wide_json_payload = {f"key_{index}": index for index in range(10_001)}
+    wide_json_payload_bytes = _json_bytes(wide_json_payload)
+    wide_yaml_sequence = ("items:\n" + "  - x\n" * 10_001).encode()
+    deep_yaml = _deep_yaml()
+    cases = [
+        ("json-empty", "json", b"", "MF-S011", "parse", None),
+        ("json-whitespace", "json", b" \n\t ", "MF-S011", "parse", None),
+        ("json-invalid-utf8", "json", b"\xff", "MF-S004", "parse", None),
+        (
+            "json-top-level-scalar",
+            "json",
+            b'"not_object"',
+            "MF-S012",
+            "parse",
+            "not_object",
+        ),
+        (
+            "json-top-level-array",
+            "json",
+            b'["not","object"]',
+            "MF-S012",
+            "parse",
+            None,
+        ),
+        (
+            "json-trailing-content",
+            "json",
+            b'{"schema_version":"1.0"} []',
+            "MF-S011",
+            "parse",
+            None,
+        ),
+        (
+            "json-duplicate-keys",
+            "json",
+            b'{"schema_version":"1.0","schema_version":"1.0"}',
+            "MF-S006",
+            "parse",
+            None,
+        ),
+        (
+            "json-nan",
+            "json",
+            b'{"schema_version":NaN}',
+            "MF-S011",
+            "parse",
+            "NaN",
+        ),
+        (
+            "json-infinity",
+            "json",
+            b'{"schema_version":Infinity}',
+            "MF-S011",
+            "parse",
+            "Infinity",
+        ),
+        (
+            "json-negative-infinity",
+            "json",
+            b'{"schema_version":-Infinity}',
+            "MF-S011",
+            "parse",
+            "-Infinity",
+        ),
+        (
+            "json-embedded-nul",
+            "json",
+            b'{"schema_version":"\\u0000"}',
+            "MF-S011",
+            "parse",
+            "\\u0000",
+        ),
+        (
+            "json-wide-limit",
+            "json",
+            wide_json_payload_bytes,
+            "MF-S010",
+            "parse",
+            "key_10000",
+        ),
+        (
+            "json-large-scalar",
+            "json",
+            f'{{"secret":"{large_scalar}"}}'.encode(),
+            "MF-S010",
+            "parse",
+            large_scalar,
+        ),
+        (
+            "json-extreme-integer",
+            "json",
+            f'{{"value":{huge_integer}}}'.encode(),
+            "MF-S010",
+            "parse",
+            huge_integer,
+        ),
+        (
+            "json-confusable-harness-id",
+            "json",
+            confusable_payload_bytes,
+            "MF-S022",
+            "schema",
+            confusable_harness_id,
+        ),
+        (
+            "json-bool-int-field",
+            "json",
+            bool_budget_payload_bytes,
+            "MF-S024",
+            "schema",
+            "true",
+        ),
+        ("yaml-empty", "yaml", b"", "MF-S012", "parse", None),
+        ("yaml-whitespace", "yaml", b" \n  \n", "MF-S012", "parse", None),
+        (
+            "yaml-multiple-documents",
+            "yaml",
+            b"---\na: b\n---\nc: d\n",
+            "MF-S009",
+            "parse",
+            None,
+        ),
+        (
+            "yaml-duplicate-keys",
+            "yaml",
+            b"schema_version: 1\nschema_version: 2\n",
+            "MF-S006",
+            "parse",
+            None,
+        ),
+        (
+            "yaml-anchor-alias",
+            "yaml",
+            b"schema_version: &v 1\nother: *v\n",
+            "MF-S007",
+            "parse",
+            "&v",
+        ),
+        (
+            "yaml-unsafe-tag",
+            "yaml",
+            b"schema_version: !custom value\n",
+            "MF-S008",
+            "parse",
+            "!custom",
+        ),
+        (
+            "yaml-timestamp",
+            "yaml",
+            b"schema_version: 2026-06-14\n",
+            "MF-S008",
+            "parse",
+            "2026-06-14",
+        ),
+        (
+            "yaml-binary",
+            "yaml",
+            b"binary: !!binary SGVsbG8=\n",
+            "MF-S008",
+            "parse",
+            "!!binary",
+        ),
+        (
+            "yaml-set",
+            "yaml",
+            b"set: !!set {a: null}\n",
+            "MF-S008",
+            "parse",
+            "!!set",
+        ),
+        (
+            "yaml-non-string-key",
+            "yaml",
+            b"? [a, b]: value\n",
+            "MF-S008",
+            "parse",
+            "[a, b]",
+        ),
+        (
+            "yaml-wide-sequence-limit",
+            "yaml",
+            wide_yaml_sequence,
+            "MF-S010",
+            "parse",
+            None,
+        ),
+        (
+            "yaml-merge",
+            "yaml",
+            b"base: &base {a: b}\n<<: *base\n",
+            "MF-S007",
+            "parse",
+            None,
+        ),
+        ("yaml-deep-structure", "yaml", deep_yaml, "MF-S010", "parse", None),
+    ]
+
+    parser = HarnessSourceParser()
+    for (
+        name,
+        source_format,
+        content,
+        expected_code,
+        expected_phase,
+        rejected_text,
+    ) in cases:
+        started = time.perf_counter()
+        parsed = parser.parse(
+            SourceDocument(
+                logical_path=f"{name}.{'json' if source_format == 'json' else 'yaml'}",
+                format=source_format,
+                content=content,
+            )
+        )
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 5.0, name
+        assert parsed.source is None, name
+        diagnostic = parsed.diagnostics[0]
+        assert diagnostic.code == expected_code, name
+        assert diagnostic.phase.value == expected_phase, name
+        rendered = diagnostic.model_dump_json() + repr(diagnostic) + str(diagnostic)
+        decoded = content.decode("utf-8", errors="ignore")
+        if decoded:
+            assert decoded not in rendered
+        if rejected_text is not None:
+            assert rejected_text not in rendered
 
 
 def test_yaml_duplicate_keys_compare_decoded_scalars() -> None:

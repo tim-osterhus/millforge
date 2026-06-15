@@ -216,7 +216,7 @@ class HarnessCompileResult(BaseModel):
     def _relative_output_path_valid(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        if not value.strip() or value.startswith("/") or "\\" in value:
+        if not value.strip() or _relative_posix_parts(value) is None:
             raise ValueError("output path must be a relative POSIX path string")
         return validate_utf8_size(value, "output path", 1024)
 
@@ -663,6 +663,7 @@ def _is_forbidden_path_part(part: str) -> bool:
     stem = part.split(".", 1)[0].casefold()
     return (
         part in {"", ".", ".."}
+        or part.endswith((" ", "."))
         or ":" in part
         or "\x00" in part
         or stem in reserved_names

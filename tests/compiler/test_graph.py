@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +15,7 @@ from millforge.compiler import (
     ToolCatalogEntry,
     validate_harness_graph,
 )
+from millforge.compiler.source import MAX_NODES
 from tests.compiler.conftest import make_raw_tool_descriptor
 
 
@@ -91,6 +93,65 @@ def _code_node_pairs(
     return [(diagnostic.code, diagnostic.node_id) for diagnostic in diagnostics]
 
 
+def _simple_oracle(
+    nodes: Mapping[str, Mapping[str, Any]],
+) -> tuple[bool, dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    prerequisites = {
+        node_id: tuple(prereq["node_id"] for prereq in payload.get("prerequisites", ()))
+        for node_id, payload in nodes.items()
+    }
+    cycle_nodes: set[str] = set()
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            cycle_nodes.update(visiting)
+            return
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for prerequisite in prerequisites[node_id]:
+            if prerequisite in prerequisites:
+                visit(prerequisite)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    for node_id in sorted(nodes):
+        visit(node_id)
+
+    ancestor_cache: dict[str, tuple[str, ...]] = {}
+
+    def ancestors(node_id: str) -> tuple[str, ...]:
+        if node_id in ancestor_cache:
+            return ancestor_cache[node_id]
+        found: set[str] = set()
+        stack = list(prerequisites[node_id])
+        while stack:
+            current = stack.pop()
+            if current in found or current not in prerequisites:
+                continue
+            found.add(current)
+            stack.extend(prerequisites[current])
+        ancestor_cache[node_id] = tuple(sorted(found))
+        return ancestor_cache[node_id]
+
+    required = {
+        node_id for node_id, payload in nodes.items() if payload.get("required", False)
+    }
+    terminal_gaps = {
+        node_id: tuple(sorted(required - set(ancestors(node_id)) - {node_id}))
+        for node_id, payload in nodes.items()
+        if payload.get("terminal_result") is not None
+    }
+    terminal_gaps = {node_id: gaps for node_id, gaps in terminal_gaps.items() if gaps}
+    return (
+        not cycle_nodes,
+        {node_id: ancestors(node_id) for node_id in nodes},
+        terminal_gaps,
+    )
+
+
 def test_graph_diagnostic_registry_adds_mf_g001_through_mf_g013() -> None:
     diagnostic = CompilerDiagnostic(
         code="MF-G013",
@@ -166,6 +227,122 @@ def test_valid_graph_accepts_disconnected_optional_prerequisite_chain() -> None:
     assert result.ok
     assert result.terminal_result_map == {"done": "BUILDER_COMPLETE"}
     assert result.required_node_ids == ("inspect",)
+
+
+def test_graph_oracle_metamorphic_required_terminal_gating_and_bounds() -> None:
+    nodes: dict[str, dict[str, Any]] = {
+        "setup": {"tool_ref": "tools.setup@1", "required": True},
+        "collect": {
+            "tool_ref": "tools.collect@1",
+            "prerequisites": [{"node_id": "setup"}],
+        },
+        "complete": {
+            "tool_ref": "tools.complete@1",
+            "terminal_result": "BUILDER_COMPLETE",
+            "prerequisites": [{"node_id": "collect"}],
+        },
+        "blocked": {
+            "tool_ref": "tools.blocked@1",
+            "terminal_result": "BLOCKED",
+            "prerequisites": [{"node_id": "collect"}],
+        },
+        "unused_root": {"tool_ref": "tools.unused_root@1"},
+        "unused_child": {
+            "tool_ref": "tools.unused_child@1",
+            "prerequisites": [{"node_id": "unused_root"}],
+        },
+    }
+    source = _source(nodes)
+    oracle_ok, oracle_ancestors, oracle_gaps = _simple_oracle(nodes)
+
+    result = validate_harness_graph(
+        source,
+        _entries(source),
+        allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"},
+    )
+
+    assert oracle_ok
+    assert oracle_gaps == {}
+    assert {"setup", "collect"} <= set(oracle_ancestors["complete"])
+    assert {"setup", "collect"} <= set(oracle_ancestors["blocked"])
+    assert result.ok
+
+    permuted = _source(dict(reversed(tuple(nodes.items()))))
+    renamed_nodes = {
+        node_id.replace("collect", "gather"): {
+            **payload,
+            "tool_ref": payload["tool_ref"].replace("collect", "gather"),
+            "prerequisites": [
+                {
+                    **prereq,
+                    "node_id": prereq["node_id"].replace("collect", "gather"),
+                }
+                for prereq in payload.get("prerequisites", ())
+            ],
+        }
+        for node_id, payload in nodes.items()
+    }
+    renamed = _source(renamed_nodes)
+
+    assert (
+        validate_harness_graph(
+            permuted,
+            _entries(permuted),
+            allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"},
+        ).diagnostics
+        == result.diagnostics
+    )
+    assert validate_harness_graph(
+        renamed,
+        _entries(renamed),
+        allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"},
+    ).ok
+
+    ungated_nodes = {
+        **nodes,
+        "complete": {
+            **nodes["complete"],
+            "prerequisites": [],
+        },
+    }
+    ungated_source = _source(ungated_nodes)
+    _, _, ungated_gaps = _simple_oracle(ungated_nodes)
+    ungated_result = validate_harness_graph(
+        ungated_source,
+        _entries(ungated_source),
+        allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"},
+    )
+
+    assert ungated_gaps == {"complete": ("setup",)}
+    assert _code_node_pairs(ungated_result.diagnostics) == [("MF-G006", "complete")]
+    assert ungated_result.diagnostics[0].related_ids == ("setup",)
+
+    bounded_nodes: dict[str, dict[str, Any]] = {
+        "root": {"tool_ref": "tools.root@1", "required": True},
+        "collect": {
+            "tool_ref": "tools.collect@1",
+            "prerequisites": [{"node_id": "root"}],
+        },
+        "complete": {
+            "tool_ref": "tools.complete@1",
+            "terminal_result": "BUILDER_COMPLETE",
+            "prerequisites": [{"node_id": "collect"}],
+        },
+    }
+    for index in range(1, MAX_NODES - 2):
+        node_id = f"node_{index:03d}"
+        bounded_nodes[node_id] = {
+            "tool_ref": f"tools.{node_id}@1",
+            "prerequisites": [{"node_id": "root"}],
+        }
+    assert len(bounded_nodes) == MAX_NODES
+    bounded_source = _source(bounded_nodes)
+    started = time.perf_counter()
+    bounded_result = validate_harness_graph(bounded_source, _entries(bounded_source))
+    elapsed = time.perf_counter() - started
+
+    assert bounded_result.ok
+    assert elapsed < 1.0
 
 
 def test_graph_validation_emits_stable_topology_and_terminal_diagnostics() -> None:

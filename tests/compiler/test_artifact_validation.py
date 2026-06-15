@@ -250,6 +250,131 @@ def test_terminal_required_artifact_without_gated_producer_is_mf_a005() -> None:
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-A005"]
 
 
+def test_branch_only_producer_is_not_valid_for_other_terminal_requirement() -> None:
+    source = _source(
+        {
+            "producer": {
+                "tool_ref": "tools.producer@1",
+                "produces": ["report"],
+            },
+            "blocked": {
+                "tool_ref": "tools.blocked@1",
+                "terminal_result": "BLOCKED",
+                "prerequisites": [{"node_id": "producer"}],
+            },
+            "complete": {
+                "tool_ref": "tools.complete@1",
+                "terminal_result": "BUILDER_COMPLETE",
+            },
+        },
+        required_by_terminal={"BUILDER_COMPLETE": ("report",)},
+    )
+    entries = _entries(source, {"producer": ("report",)})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert graph.diagnostics == ()
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-A005"]
+    assert result.producer_evidence[0].all_producer_node_ids == ("producer",)
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == ()
+
+
+def test_global_required_producer_satisfies_terminal_artifact_requirement() -> None:
+    source = _source(
+        {
+            "producer": {
+                "tool_ref": "tools.producer@1",
+                "required": True,
+                "produces": ["report"],
+            },
+            "complete": {
+                "tool_ref": "tools.complete@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "producer"}],
+            },
+        }
+    )
+    entries = _entries(source, {"producer": ("report",)})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert graph.diagnostics == ()
+    assert result.ok
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == ("producer",)
+
+
+def test_multiple_valid_producers_record_all_and_accept_terminal_gated_one() -> None:
+    source = _source(
+        {
+            "branch": {
+                "tool_ref": "tools.branch@1",
+                "produces": ["report"],
+            },
+            "producer": {
+                "tool_ref": "tools.producer@1",
+                "produces": ["report"],
+            },
+            "blocked": {
+                "tool_ref": "tools.blocked@1",
+                "terminal_result": "BLOCKED",
+                "prerequisites": [{"node_id": "branch"}],
+            },
+            "complete": {
+                "tool_ref": "tools.complete@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "producer"}],
+            },
+        },
+        required_by_terminal={"BUILDER_COMPLETE": ("report",)},
+    )
+    entries = _entries(source, {"branch": ("report",), "producer": ("report",)})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BLOCKED", "BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert graph.diagnostics == ()
+    assert result.ok
+    assert result.producer_evidence[0].all_producer_node_ids == ("branch", "producer")
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == ("producer",)
+
+
+def test_graph_invalidity_suppresses_dependent_producer_reachability_diagnostics() -> (
+    None
+):
+    source = _source(
+        {
+            "producer": {
+                "tool_ref": "tools.producer@1",
+                "produces": ["report"],
+            },
+            "complete": {
+                "tool_ref": "tools.complete@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "missing"}],
+            },
+        }
+    )
+    entries = _entries(source, {"producer": ("report",)})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert [diagnostic.code for diagnostic in graph.diagnostics] == ["MF-G001"]
+    assert result.diagnostics == ()
+    assert result.producer_evidence[0].all_producer_node_ids == ("producer",)
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == ()
+
+
 def test_undeclared_terminal_required_artifact_is_mf_a007_without_cascades() -> None:
     source = _source(
         {

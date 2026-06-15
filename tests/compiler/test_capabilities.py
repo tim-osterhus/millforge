@@ -52,6 +52,16 @@ def test_required_capabilities_are_aggregated_from_descriptors_only() -> None:
     assert result.diagnostics[0].fields[0].value == "artifact.write"
 
 
+def test_no_required_capabilities_and_unrelated_grants_are_accepted() -> None:
+    result = validate_capability_grants(
+        {"done": _entry("tools.done", ())},
+        CapabilityEnvelope(grants=(CapabilityGrant(capability_id="network.http"),)),
+    )
+
+    assert result.ok
+    assert result.required_capability_ids == ()
+
+
 def test_matching_capability_grants_pass_exactly() -> None:
     result = validate_capability_grants(
         {"read": _entry("tools.read", ("workspace.read",))},
@@ -60,3 +70,73 @@ def test_matching_capability_grants_pass_exactly() -> None:
 
     assert result.ok
     assert result.required_capability_ids == ("workspace.read",)
+
+
+def test_duplicate_descriptor_capability_declarations_are_collapsed() -> None:
+    entry = _entry("tools.read", ("workspace.read",))
+    duplicated = entry.model_copy(
+        update={"required_capabilities": ("workspace.read", "workspace.read")}
+    )
+
+    result = validate_capability_grants(
+        {"read": duplicated},
+        CapabilityEnvelope(grants=(CapabilityGrant(capability_id="workspace.read"),)),
+    )
+
+    assert result.ok
+    assert result.required_capability_ids == ("workspace.read",)
+
+
+def test_missing_capability_lists_all_affected_nodes_deterministically() -> None:
+    result = validate_capability_grants(
+        {
+            "zeta": _entry("tools.zeta", ("artifact.write",)),
+            "alpha": _entry("tools.alpha", ("artifact.write",)),
+            "read": _entry("tools.read", ("workspace.read",)),
+        },
+        CapabilityEnvelope(grants=(CapabilityGrant(capability_id="workspace.read"),)),
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-C001"]
+    assert result.diagnostics[0].node_id == "alpha"
+    assert result.diagnostics[0].related_ids == ("zeta",)
+    assert result.diagnostics[0].fields[0].value == "artifact.write"
+
+
+def test_runtime_only_grant_constraints_do_not_block_compile_time_capability_match() -> (
+    None
+):
+    result = validate_capability_grants(
+        {"read": _entry("tools.read", ("workspace.read",))},
+        CapabilityEnvelope(
+            grants=(
+                CapabilityGrant(
+                    capability_id="workspace.read",
+                    constraints={"paths": ("docs",), "runtime_checked": True},
+                ),
+            )
+        ),
+    )
+
+    assert result.ok
+
+
+def test_offline_envelope_accepts_network_capability_tools_by_explicit_grant() -> None:
+    result = validate_capability_grants(
+        {"fetch": _entry("tools.fetch", ("network.http",))},
+        CapabilityEnvelope(grants=(CapabilityGrant(capability_id="network.http"),)),
+    )
+
+    assert result.ok
+    assert result.required_capability_ids == ("network.http",)
+
+
+def test_terminal_node_capability_requirements_are_aggregated() -> None:
+    result = validate_capability_grants(
+        {"complete": _entry("tools.complete", ("evidence.emit",))},
+        CapabilityEnvelope(grants=()),
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-C001"]
+    assert result.diagnostics[0].node_id == "complete"
+    assert result.diagnostics[0].fields[0].value == "evidence.emit"

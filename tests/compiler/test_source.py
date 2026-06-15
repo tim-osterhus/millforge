@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -145,6 +147,18 @@ def test_source_models_deep_snapshot_mutable_inputs() -> None:
     assert source.artifacts.declared_artifact_ids == ("patch_summary",)
 
 
+def test_source_dump_then_validate_is_stable_and_deeply_immutable() -> None:
+    source = HarnessSource.model_validate(_source_payload())
+    dumped = source.model_dump(mode="json")
+    restored = HarnessSource.model_validate(json.loads(json.dumps(dumped)))
+
+    assert restored == source
+    with pytest.raises(ValidationError):
+        source.graph.nodes[0].node_id = "other_node"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate({**dumped, "unknown": "field"})
+
+
 @pytest.mark.parametrize(
     ("validator", "valid", "invalid"),
     [
@@ -199,5 +213,42 @@ def test_budget_and_context_ranges_match_contract() -> None:
     context = payload["context"]
     assert isinstance(context, dict)
     context["budget_tokens"] = 255
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate(payload)
+
+    payload = _source_payload()
+    budgets = payload["budgets"]
+    assert isinstance(budgets, dict)
+    budgets["max_iterations"] = True
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate(payload)
+
+    payload = _source_payload()
+    context = payload["context"]
+    assert isinstance(context, dict)
+    context["phase_thresholds"] = [0.6, float("inf"), 0.9]
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate(payload)
+
+
+def test_source_rejects_duplicate_artifact_stage_and_confusable_identifier_values() -> (
+    None
+):
+    payload = _source_payload()
+    stage_scope = payload["stage_scope"]
+    assert isinstance(stage_scope, dict)
+    stage_scope["stage_kind_ids"] = ["builder", "builder"]
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate(payload)
+
+    payload = _source_payload()
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, dict)
+    artifacts["declared_artifact_ids"] = ["patch_summary", "patch_summary"]
+    with pytest.raises(ValidationError):
+        HarnessSource.model_validate(payload)
+
+    payload = _source_payload()
+    payload["harness_id"] = "millforge.test.bu\u0456lder.v1"
     with pytest.raises(ValidationError):
         HarnessSource.model_validate(payload)

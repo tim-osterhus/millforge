@@ -466,6 +466,55 @@ def test_semantic_compile_rejects_mutation_of_terminal_result_map() -> None:
         cast(Any, result.resolved_harness.terminal_result_map)["extra"] = "BLOCKED"
 
 
+def test_semantic_ir_does_not_retain_mutable_caller_or_catalog_references() -> None:
+    class MutableModelSnapshot:
+        def __init__(self) -> None:
+            self._profiles = {
+                "profile.standard": CompiledModelProfile(profile_id="profile.standard")
+            }
+
+        @property
+        def snapshot_id(self) -> str:
+            return SHA_C
+
+        @property
+        def snapshot_sha256(self) -> str:
+            return SHA_B
+
+        def resolve_exact(self, profile_id: str) -> ModelProfileCatalogLookup:
+            profile = self._profiles.get(profile_id)
+            if profile is None:
+                return ModelProfileCatalogLookup.missing(
+                    error_code="profile.missing",
+                    evidence={"profile_id": profile_id},
+                )
+            return ModelProfileCatalogLookup.found(profile)
+
+    source = _source()
+    tool_snapshot = _tool_snapshot()
+    model_snapshot = MutableModelSnapshot()
+
+    result = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        source,
+        tool_snapshot=tool_snapshot,
+        model_profile_snapshot=model_snapshot,
+    )
+
+    assert result.ok
+    assert result.resolved_harness is not None
+    tool_snapshot._entries[("tools.done", 1)] = _entry("tools.other")  # noqa: SLF001
+    model_snapshot._profiles["profile.standard"] = CompiledModelProfile(  # noqa: SLF001
+        profile_id="profile.other"
+    )
+
+    assert result.resolved_harness.source == source
+    assert result.resolved_harness.model_profile.profile_id == "profile.standard"
+    assert {
+        binding.descriptor.tool_id for binding in result.resolved_harness.resolved_nodes
+    } == {"tools.inspect", "tools.work", "tools.done"}
+
+
 def test_frontend_failure_returns_03a_result_without_touching_catalogs() -> None:
     diagnostic = CompilerDiagnostic(
         code="MF-S001",
@@ -678,6 +727,87 @@ def test_catalog_snapshot_drift_emits_mf_r008_on_repeated_invocation() -> None:
     assert [diagnostic.code for diagnostic in second.diagnostics] == ["MF-R008"]
     assert second.resolved_harness is None
     assert snapshot.lookups == [("tools.done", 1), ("tools.done", 1)]
+
+
+def test_resolution_failure_does_not_retry_or_refresh_catalog_snapshot() -> None:
+    class MissingThenFoundSnapshot(CountingToolSnapshot):
+        def resolve_exact(self, tool_id: str, tool_version: int) -> ToolCatalogLookup:
+            self.lookups.append((tool_id, tool_version))
+            if len(self.lookups) == 1:
+                return ToolCatalogLookup.missing(
+                    error_code="tool.missing",
+                    evidence={"tool_ref": f"{tool_id}@{tool_version}"},
+                )
+            return ToolCatalogLookup.found(_entry(tool_id))
+
+    snapshot = MissingThenFoundSnapshot({})
+    result = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        _minimal_source("tools.done@1"),
+        tool_snapshot=snapshot,
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-R002"]
+    assert result.resolved_harness is None
+    assert snapshot.metadata_reads == ["id", "sha"]
+    assert snapshot.lookups == [("tools.done", 1)]
+
+
+def test_source_and_catalog_iteration_order_are_semantically_deterministic() -> None:
+    source = _source(
+        {
+            "done": {
+                "tool_ref": "tools.done@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "work"}],
+            },
+            "work": {
+                "tool_ref": "tools.work@1",
+                "prerequisites": [{"node_id": "inspect"}],
+            },
+            "inspect": {
+                "tool_ref": "tools.inspect@1",
+                "required": True,
+                "produces": ["report"],
+            },
+        }
+    )
+    entries = {
+        ("tools.inspect", 1): _entry(
+            "tools.inspect", produced_artifact_ids=("report",)
+        ),
+        ("tools.work", 1): _entry("tools.work"),
+        ("tools.done", 1): _entry("tools.done"),
+    }
+    forward = CountingToolSnapshot(entries)
+    reverse = CountingToolSnapshot(dict(reversed(tuple(entries.items()))))
+
+    first = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        source,
+        tool_snapshot=forward,
+        model_profile_snapshot=_model_snapshot(),
+    )
+    second = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        source,
+        tool_snapshot=reverse,
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert first.ok
+    assert second.ok
+    assert first.resolved_harness == second.resolved_harness
+    assert (
+        forward.lookups
+        == reverse.lookups
+        == [
+            ("tools.done", 1),
+            ("tools.inspect", 1),
+            ("tools.work", 1),
+        ]
+    )
 
 
 def test_duplicate_exact_tool_bindings_are_rejected_before_lookup() -> None:

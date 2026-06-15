@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from millforge import (
     CompiledHarnessPlan,
     FileCompiledHarnessLoader,
+    STANDARD_ARTIFACT_FILENAMES,
     verify_compiled_plan_sha256,
 )
 from millforge.compiler import (
@@ -91,10 +92,10 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "b5b3af7ab011b595c62642fc2acb18f1d2608ac0f1f7aa954d663c07a1f397b6"
         ),
         source_sha256=(
-            "8e2bc3139692270706ba14d02cefda6537d22a88edc25161d7a2df04714f3c72"
+            "300d4655196b4d421a85969d4d381c07df70de9f92e12ee695a2f06ff04487b1"
         ),
         compiled_sha256=(
-            "4456175a8853c4814f4a5d93d2f0c4b3453d1c40fedad5c47d92218c811a3944"
+            "1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52"
         ),
     ),
     RepresentativeServiceFixture(
@@ -107,10 +108,10 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "02571dfdbc9b1cc2266dd9bd82901f8f7528afd645e176dc32d10fd654d5b388"
         ),
         source_sha256=(
-            "cfe1c0566a00fab8294c1ba44d247b20a3e3dc30ac14021b85bf264eb02f0832"
+            "cff26dee6692c2059385c24934042c51eb8719c638f578a6b869fca21cc627f2"
         ),
         compiled_sha256=(
-            "fc90e12d7246d91178d8ce22fa79f92416897e272fdaf4ba550df49bf97df6c2"
+            "29e604298ecf09500b092ff95a3ad96686a386c52bb2e3c4819a54d83454d78b"
         ),
     ),
     RepresentativeServiceFixture(
@@ -123,10 +124,10 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "d3bc48422c1450e803e2187d8200ca003c62c57e55d67becac5ef76de5e856ba"
         ),
         source_sha256=(
-            "1a39381f7fe3cbef4d1cc62b0619dbef70ef8b337dc3878da42ef6b8eb7157f7"
+            "b1fcca877db492fa8fa5ad834e9507546bc033d42c21278d93b9ce8195665318"
         ),
         compiled_sha256=(
-            "3825417d4ff5848d0bcf174b07a81d4ebab1bf139f8e917dc7b722ca261efc72"
+            "9a68e99b7ce3185bd6a88724f40c4875ce5f4bd3836b691824e3564f42f58f4c"
         ),
     ),
 )
@@ -545,6 +546,65 @@ def test_representative_diagnostics_report_shape_uses_hashes_and_relative_paths(
         assert forbidden not in serialized
 
 
+def test_compiler_output_does_not_publish_runtime_artifact_files(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+
+    result = compile_harness(
+        request,
+        tool_catalog=_tool_catalog(),
+        model_profile_catalog=_model_catalog(),
+    )
+
+    assert result.status == CompileStatus.COMMITTED
+    output_names = {
+        path.name for path in Path(request.output_root, request.output_dir).iterdir()
+    }
+    runtime_artifact_names = {
+        Path(filename).name for filename in STANDARD_ARTIFACT_FILENAMES.values()
+    }
+    assert output_names.isdisjoint(runtime_artifact_names)
+    assert all(
+        name.endswith((".compiled.json", ".diagnostics.json")) for name in output_names
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_loader_rejects_unsupported_compiled_plan_fields(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    compile_result = compile_harness(
+        request,
+        tool_catalog=_tool_catalog(),
+        model_profile_catalog=_model_catalog(),
+    )
+    assert compile_result.compiled_plan_path is not None
+    assert compile_result.compiled_sha256 is not None
+    emitted_plan_path = Path(request.output_root, compile_result.compiled_plan_path)
+    payload = json.loads(emitted_plan_path.read_text(encoding="utf-8"))
+    payload["unsupported_runtime_field"] = True
+    unsupported_path = emitted_plan_path.with_name("unsupported.compiled.json")
+    unsupported_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="extra"):
+        await FileCompiledHarnessLoader().load(
+            CompiledHarnessRef(
+                identity=CompiledHarnessIdentity(
+                    compiled_plan_id=unsupported_path.stem,
+                    harness_id="millforge.test.service.v1",
+                    harness_version=1,
+                ),
+                path=unsupported_path,
+                expected_hash=CompiledHarnessHash(
+                    algorithm="sha256",
+                    digest=compile_result.compiled_sha256,
+                ),
+            )
+        )
+
+
 @pytest.mark.asyncio
 async def test_emitted_compiled_bytes_load_and_pass_runtime_preflight_without_source(
     tmp_path: Path,
@@ -667,6 +727,72 @@ async def test_emitted_compiled_bytes_load_and_pass_runtime_preflight_without_so
     assert guarded_request.execution_request.compiled_harness.path == emitted_plan_path
 
 
+@pytest.mark.asyncio
+async def test_runtime_rejects_compiled_hash_mismatch_before_backend_activity(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    compile_result = compile_harness(
+        request,
+        tool_catalog=_tool_catalog(),
+        model_profile_catalog=_model_catalog(),
+    )
+    assert compile_result.status == CompileStatus.COMMITTED
+    assert compile_result.compiled_plan_path is not None
+    assert compile_result.compiled_sha256 is not None
+    emitted_plan_path = Path(request.output_root, compile_result.compiled_plan_path)
+    runtime_run_dir = tmp_path / "runtime-hash-mismatch"
+    backend = FakeGuardrailBackend()
+    runtime = DefaultHarnessRuntime(
+        backend=backend,
+        plan_loader=FileCompiledHarnessLoader(),
+        artifact_writer=FakeArtifactWriter(),
+        clock=FakeClock(),
+        cancellation_resolver=FakeCancellationResolver(),
+    )
+
+    result = await runtime.execute(
+        HarnessExecutionRequest(
+            request_id="request.runtime.hash_mismatch",
+            run_id="run-runtime-hash-mismatch",
+            work_item_id="task-runtime-compat",
+            stage=StageIdentity(
+                plane="execution",
+                node_id="builder",
+                stage_kind_id="builder",
+            ),
+            compiled_harness=CompiledHarnessRef(
+                identity=CompiledHarnessIdentity(
+                    compiled_plan_id=emitted_plan_path.stem,
+                    harness_id="millforge.test.service.v1",
+                    harness_version=1,
+                ),
+                path=emitted_plan_path,
+                expected_hash=CompiledHarnessHash(
+                    algorithm="sha256",
+                    digest="e" * 64,
+                ),
+            ),
+            capability_envelope=CapabilityEnvelope(
+                grants=(CapabilityGrant(capability_id="workspace.read"),)
+            ),
+            input_artifacts=(),
+            run_directory=RunDirRef(
+                run_id="run-runtime-hash-mismatch",
+                path=runtime_run_dir,
+            ),
+            timeout=TimeoutRef(timeout_seconds=120, deadline=None),
+            cancellation=CancellationRef(cancellation_id="cancel-runtime-compat"),
+            secret_refs=(),
+            model_profile=ModelProfileRef(profile_id="profile.standard"),
+        )
+    )
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.COMPILED_HARNESS_INVALID
+    assert backend.requests == []
+
+
 def test_compile_raw_frontend_failure_does_not_touch_catalogs(tmp_path: Path) -> None:
     request = _request(tmp_path).model_dump(mode="python")
     Path(str(request["source_root"]), str(request["source_path"])).write_text(
@@ -750,6 +876,42 @@ def test_semantic_failure_returns_diagnostics_without_public_exception(
     assert result.status == CompileStatus.FAILED
     assert result.failure_phase == CompilerPhase.RESOLUTION
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-R002"]
+    assert result.compiled_plan_path is None
+
+
+def test_service_reports_capability_before_dependent_artifact_failure(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    payload = _source_payload()
+    payload["artifacts"] = {
+        "declared_artifact_ids": ["report"],
+        "required_by_terminal": {"BUILDER_COMPLETE": ["report"]},
+    }
+    Path(request.source_root, request.source_path).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    descriptor = make_raw_tool_descriptor(
+        tool_id="tools.echo",
+        implementation_id="impl.tools.echo.v1",
+        model_tool_name="echo",
+        required_capabilities=("artifact.write",),
+        produced_artifact_ids=(),
+    )
+
+    result = compile_harness(
+        request,
+        tool_catalog=StaticToolCatalogSnapshot(entries={("tools.echo", 1): descriptor}),
+        model_profile_catalog=_model_catalog(),
+    )
+
+    assert result.status == CompileStatus.FAILED
+    assert result.failure_phase == CompilerPhase.CAPABILITY
+    assert [diagnostic.code for diagnostic in result.diagnostics] == [
+        "MF-C001",
+        "MF-A004",
+    ]
     assert result.compiled_plan_path is None
 
 

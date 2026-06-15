@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Literal
 
 import pytest
@@ -211,18 +212,20 @@ class StaticToolCatalogSnapshot:
     ) -> None:
         self._snapshot_id = snapshot_id
         self._snapshot_sha256 = snapshot_sha256
-        self._entries = {
-            key: (
-                value
-                if isinstance(value, ToolCatalogEntry)
-                else ToolCatalogEntry.admit(
-                    value,
-                    expected_tool_id=key[0],
-                    expected_tool_version=key[1],
+        self._entries = MappingProxyType(
+            {
+                key: (
+                    value
+                    if isinstance(value, ToolCatalogEntry)
+                    else ToolCatalogEntry.admit(
+                        value,
+                        expected_tool_id=key[0],
+                        expected_tool_version=key[1],
+                    )
                 )
-            )
-            for key, value in entries.items()
-        }
+                for key, value in entries.items()
+            }
+        )
 
     @property
     def snapshot_id(self) -> str:
@@ -254,10 +257,12 @@ class StaticModelProfileCatalogSnapshot:
     ) -> None:
         self._snapshot_id = snapshot_id
         self._snapshot_sha256 = snapshot_sha256
-        self._profiles = {
-            profile_id: admit_model_profile(profile, expected_profile_id=profile_id)
-            for profile_id, profile in profiles.items()
-        }
+        self._profiles = MappingProxyType(
+            {
+                profile_id: admit_model_profile(profile, expected_profile_id=profile_id)
+                for profile_id, profile in profiles.items()
+            }
+        )
 
     @property
     def snapshot_id(self) -> str:

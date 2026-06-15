@@ -9,10 +9,12 @@ from typing import Any, Literal, NamedTuple
 
 import pytest
 from millforge import (
+    IdempotencyClass,
     CapabilityEnvelope,
     CapabilityGrant,
     CompiledHarnessPlan,
     CompiledModelProfile,
+    SideEffectClass,
     canonical_compiled_plan_bytes,
     canonical_json_serialize,
     verify_compiled_plan_sha256,
@@ -42,10 +44,10 @@ from tests.compiler.conftest import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EXPECTED_GOLDEN_COMPILED_SHA256 = (
-    "4456175a8853c4814f4a5d93d2f0c4b3453d1c40fedad5c47d92218c811a3944"
+    "1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52"
 )
 EXPECTED_GOLDEN_COMPILED_BYTES_SHA256 = (
-    "1491aa674bffd8ef7e4077c4e23b0777eeb08a337d1d901c023551c8a9f676b1"
+    "0149933a3971fa1fdec513e81b19b712fb38332a8a50dac561f5fc7101ddc610"
 )
 
 
@@ -76,7 +78,7 @@ REPRESENTATIVE_COMPILED_FIXTURES: tuple[RepresentativeCompiledFixture, ...] = (
         json_filename="golden_harness.json",
         harness_id="millforge.test.golden.compiler.v1",
         legal_terminal_results=("BLOCKED", "BUILDER_COMPLETE"),
-        source_sha256="8e2bc3139692270706ba14d02cefda6537d22a88edc25161d7a2df04714f3c72",
+        source_sha256="300d4655196b4d421a85969d4d381c07df70de9f92e12ee695a2f06ff04487b1",
         compiled_sha256=EXPECTED_GOLDEN_COMPILED_SHA256,
         compiled_byte_sha256=EXPECTED_GOLDEN_COMPILED_BYTES_SHA256,
         compiled_byte_size=4942,
@@ -118,9 +120,9 @@ REPRESENTATIVE_COMPILED_FIXTURES: tuple[RepresentativeCompiledFixture, ...] = (
         json_filename="representative_simple_success.json",
         harness_id="millforge.test.representative.simple.v1",
         legal_terminal_results=("BUILDER_COMPLETE",),
-        source_sha256="cfe1c0566a00fab8294c1ba44d247b20a3e3dc30ac14021b85bf264eb02f0832",
-        compiled_sha256="fc90e12d7246d91178d8ce22fa79f92416897e272fdaf4ba550df49bf97df6c2",
-        compiled_byte_sha256="1a057dee276f18360774b05783a98fb32495269ae10ddbbb7e8bdd82151eb622",
+        source_sha256="cff26dee6692c2059385c24934042c51eb8719c638f578a6b869fca21cc627f2",
+        compiled_sha256="29e604298ecf09500b092ff95a3ad96686a386c52bb2e3c4819a54d83454d78b",
+        compiled_byte_sha256="90deb0edaf767a95a7bfa2080624abc7fdd19fffca34f4776accc7a1c4f9f82f",
         compiled_byte_size=2527,
         stage_kind_ids=("builder",),
         node_ids=("collect_context", "complete"),
@@ -143,9 +145,9 @@ REPRESENTATIVE_COMPILED_FIXTURES: tuple[RepresentativeCompiledFixture, ...] = (
         json_filename="representative_blocked_artifact.json",
         harness_id="millforge.test.representative.blocked.v1",
         legal_terminal_results=("BLOCKED",),
-        source_sha256="1a39381f7fe3cbef4d1cc62b0619dbef70ef8b337dc3878da42ef6b8eb7157f7",
-        compiled_sha256="3825417d4ff5848d0bcf174b07a81d4ebab1bf139f8e917dc7b722ca261efc72",
-        compiled_byte_sha256="f02712916eb3e30a0bca652726f5ab22637fffe368af48f5aeee16b9a29e4d33",
+        source_sha256="b1fcca877db492fa8fa5ad834e9507546bc033d42c21278d93b9ce8195665318",
+        compiled_sha256="9a68e99b7ce3185bd6a88724f40c4875ce5f4bd3836b691824e3564f42f58f4c",
+        compiled_byte_sha256="45d16f1bbf8be7cfcae054deeac02f25bc6d08646dc6ed7f3688b91a5485e28e",
         compiled_byte_size=3322,
         stage_kind_ids=("builder", "checker"),
         node_ids=("blocked", "collect_context", "write_failure_report"),
@@ -272,35 +274,43 @@ def _source(*, ordered: bool = True) -> HarnessSource:
     )
 
 
-def _tool_snapshot() -> StaticToolCatalogSnapshot:
+def _tool_snapshot(
+    *,
+    read_descriptor_update: Mapping[str, Any] | None = None,
+    snapshot_id: str | None = None,
+    snapshot_sha256: str | None = None,
+) -> StaticToolCatalogSnapshot:
+    read_descriptor = make_raw_tool_descriptor(
+        tool_id="tools.read_file",
+        implementation_id="impl.tools.read_file.v1",
+        model_tool_name="read_file",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "alpha": {"type": "string"},
+                "beta": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["alpha", "beta", "path"],
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "alpha": {"type": "string"},
+                "beta": {"type": "string"},
+            },
+            "required": ["alpha", "beta"],
+            "additionalProperties": False,
+        },
+        required_capabilities=("workspace.read", "artifact.write"),
+        produced_artifact_ids=("report", "draft"),
+    )
+    if read_descriptor_update is not None:
+        read_descriptor = {**read_descriptor, **read_descriptor_update}
     return StaticToolCatalogSnapshot(
         entries={
-            ("tools.read_file", 1): make_raw_tool_descriptor(
-                tool_id="tools.read_file",
-                implementation_id="impl.tools.read_file.v1",
-                model_tool_name="read_file",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "alpha": {"type": "string"},
-                        "beta": {"type": "string"},
-                        "path": {"type": "string"},
-                    },
-                    "required": ["alpha", "beta", "path"],
-                    "additionalProperties": False,
-                },
-                output_schema={
-                    "type": "object",
-                    "properties": {
-                        "alpha": {"type": "string"},
-                        "beta": {"type": "string"},
-                    },
-                    "required": ["alpha", "beta"],
-                    "additionalProperties": False,
-                },
-                required_capabilities=("workspace.read", "artifact.write"),
-                produced_artifact_ids=("report", "draft"),
-            ),
+            ("tools.read_file", 1): read_descriptor,
             ("tools.write_report", 1): make_raw_tool_descriptor(
                 tool_id="tools.write_report",
                 implementation_id="impl.tools.write_report.v1",
@@ -324,7 +334,9 @@ def _tool_snapshot() -> StaticToolCatalogSnapshot:
                 required_capabilities=(),
                 produced_artifact_ids=(),
             ),
-        }
+        },
+        **({} if snapshot_id is None else {"snapshot_id": snapshot_id}),
+        **({} if snapshot_sha256 is None else {"snapshot_sha256": snapshot_sha256}),
     )
 
 
@@ -337,10 +349,16 @@ def _model_snapshot() -> StaticModelProfileCatalogSnapshot:
 
 
 def _resolved(source: HarnessSource) -> Any:
+    return _resolved_with(source, tool_snapshot=_tool_snapshot())
+
+
+def _resolved_with(
+    source: HarnessSource, *, tool_snapshot: StaticToolCatalogSnapshot
+) -> Any:
     result = compile_semantic(
         CompileInvocation.from_request(_request()),
         source,
-        tool_snapshot=_tool_snapshot(),
+        tool_snapshot=tool_snapshot,
         model_profile_snapshot=_model_snapshot(),
     )
     assert result.diagnostics == ()
@@ -423,6 +441,113 @@ def test_lowered_plan_hash_verifies_and_ordering_is_deterministic() -> None:
     assert warnings == []
     assert restored == left
     assert computed == left.compiled_sha256
+
+
+def test_compiled_hash_matrix_tracks_source_and_represented_descriptor_changes() -> (
+    None
+):
+    baseline = lower_resolved_harness(_resolved(_source()))
+
+    source_changed = _source().model_copy(
+        update={
+            "prompt": _source().prompt.model_copy(
+                update={"system_instructions": "Complete a different request."}
+            )
+        }
+    )
+    descriptor_cases: dict[str, Mapping[str, Any]] = {
+        "descriptor_sha256": {"descriptor_sha256": "9" * 64},
+        "implementation_id": {"implementation_id": "impl.tools.read_file.v2"},
+        "model_tool_name": {"model_tool_name": "read_file_v2"},
+        "description": {"description": "Read a file and emit normalized content."},
+        "input_schema": {
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "alpha": {"type": "string"},
+                    "beta": {"type": "string"},
+                    "path": {"type": "string"},
+                    "mode": {"type": "string"},
+                },
+                "required": ["alpha", "beta", "path"],
+                "additionalProperties": False,
+            }
+        },
+        "capabilities": {"required_capabilities": ("workspace.read",)},
+        "side_effect_class": {"side_effect_class": SideEffectClass.ARTIFACT_WRITE},
+        "idempotency": {"idempotency": IdempotencyClass.IDEMPOTENT_WITH_KEY},
+    }
+    changed_hashes = {
+        "source": lower_resolved_harness(_resolved(source_changed)).compiled_sha256
+    }
+    for case_name, update in descriptor_cases.items():
+        plan = lower_resolved_harness(
+            _resolved_with(
+                _source(),
+                tool_snapshot=_tool_snapshot(read_descriptor_update=update),
+            )
+        )
+        changed_hashes[case_name] = plan.compiled_sha256
+
+    metadata_changed = lower_resolved_harness(
+        _resolved_with(
+            _source(),
+            tool_snapshot=_tool_snapshot(
+                snapshot_id="d" * 64,
+                snapshot_sha256="e" * 64,
+            ),
+        )
+    )
+    output_schema_only = lower_resolved_harness(
+        _resolved_with(
+            _source(),
+            tool_snapshot=_tool_snapshot(
+                read_descriptor_update={
+                    "output_schema": {
+                        "type": "object",
+                        "properties": {
+                            "alpha": {"type": "string"},
+                            "beta": {"type": "string"},
+                            "gamma": {"type": "string"},
+                        },
+                        "required": ["alpha", "beta"],
+                        "additionalProperties": False,
+                    }
+                }
+            ),
+        )
+    )
+    output_schema_with_descriptor_hash = lower_resolved_harness(
+        _resolved_with(
+            _source(),
+            tool_snapshot=_tool_snapshot(
+                read_descriptor_update={
+                    "descriptor_sha256": "8" * 64,
+                    "output_schema": {
+                        "type": "object",
+                        "properties": {
+                            "alpha": {"type": "string"},
+                            "beta": {"type": "string"},
+                            "gamma": {"type": "string"},
+                        },
+                        "required": ["alpha", "beta"],
+                        "additionalProperties": False,
+                    },
+                }
+            ),
+        )
+    )
+
+    assert set(changed_hashes.values()).isdisjoint({baseline.compiled_sha256})
+    assert metadata_changed.compiled_sha256 == baseline.compiled_sha256
+    assert output_schema_only.compiled_sha256 == baseline.compiled_sha256
+    assert output_schema_with_descriptor_hash.compiled_sha256 not in {
+        baseline.compiled_sha256,
+        output_schema_only.compiled_sha256,
+    }
+    assert "output_schema" not in canonical_json_serialize(
+        baseline.model_dump(mode="json")
+    )
 
 
 def test_lowering_excludes_request_paths_catalog_metadata_and_catalog_objects() -> None:

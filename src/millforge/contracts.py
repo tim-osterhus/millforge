@@ -38,6 +38,9 @@ _REDACTION_MAX_COLLECTION_ITEMS = 64
 _REDACTION_MAX_STRING_LENGTH = 2048
 _REDACTION_MAX_TOTAL_BYTES = 32768
 _SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*=([^\s]+)"
+    ),
     re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^&\s]+)"),
     re.compile(r"(?i)(bearer\s+)[a-z0-9._~+/=-]+"),
     re.compile(r"\b(sk|pk|org|sess)-[a-zA-Z0-9]{8,}\b"),
@@ -800,13 +803,21 @@ def _redact_url(value: str, policy: RedactionPolicy) -> str:
 def _redact_secret_patterns(text: str, policy: RedactionPolicy) -> str:
     text = _SECRET_PATTERNS[0].sub(
         lambda match: (
+            match.group(0).split("=", 1)[0] + "=" + policy.replacement
+            if match.group(1) != policy.replacement
+            else match.group(0)
+        ),
+        text,
+    )
+    text = _SECRET_PATTERNS[1].sub(
+        lambda match: (
             match.group(0)
             if match.group(2) == policy.replacement
             else f"{match.group(1)}{policy.replacement}"
         ),
         text,
     )
-    for pattern in _SECRET_PATTERNS[1:]:
+    for pattern in _SECRET_PATTERNS[2:]:
         text = pattern.sub(lambda match: f"{match.group(1)}{policy.replacement}", text)
     return text
 

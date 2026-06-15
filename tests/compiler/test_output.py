@@ -6,12 +6,14 @@ import hashlib
 import errno
 import json
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from millforge.compiled_plan import canonical_compiled_plan_bytes
+from millforge.compiled_plan import finalize_compiled_plan_sha256
 from millforge.compiler import (
     CompileStatus,
     CompilerDiagnostic,
@@ -586,6 +588,42 @@ def test_plan_temporary_write_failure_preserves_prepared_diagnostics_and_cleanup
     assert result.diagnostics_path == _compiled_diagnostics_path(request, plan)
 
 
+def test_plan_temporary_name_collision_preserves_existing_temp_and_bounds_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    request = _request(tmp_path)
+    plan = make_canonical_builder_compiled_plan()
+    sentinels = _prepare_output_sentinels(request, tmp_path)
+    plan_name = Path(compiled_plan_output_path(request, plan)).name
+    temp_name = f".{plan_name}.fixedtmp.tmp"
+    existing_temp = Path(request.output_root, request.output_dir, temp_name)
+    existing_temp.write_text("pre-existing temp file\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "millforge.compiler.output.secrets.token_hex", lambda _: "fixedtmp"
+    )
+
+    result = persist_compile_outputs(
+        request=request,
+        plan=plan,
+        source_document_sha256="a" * 64,
+    )
+
+    _assert_output_failure_row(
+        result,
+        request,
+        certainty=PlanCommitCertainty.ABSENT,
+        diagnostics_state=DiagnosticReportState.PREPARED,
+        diagnostic_codes=("MF-O003",),
+        plan_path_state="absent",
+        diagnostics_path_state="present",
+        temp_file_state="present",
+        sentinels=sentinels,
+    )
+    assert existing_temp.read_text(encoding="utf-8") == "pre-existing temp file\n"
+
+
 def test_plan_write_failure_after_fsync_before_publication_cleans_temp_file(
     tmp_path: Path,
     monkeypatch,
@@ -838,6 +876,39 @@ def test_output_admission_failure_returns_in_memory_diagnostics_without_writes(
     assert not Path(request.output_root, "missing").exists()
 
 
+def test_read_only_admitted_output_directory_fails_closed_and_preserves_output(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    plan = make_canonical_builder_compiled_plan()
+    sentinels = _prepare_output_sentinels(request, tmp_path)
+    output_dir = Path(request.output_root, request.output_dir)
+    original_mode = stat.S_IMODE(output_dir.stat().st_mode)
+    result: HarnessCompileResult | None = None
+
+    try:
+        os.chmod(output_dir, 0o500)
+        result = persist_compile_outputs(
+            request=request,
+            plan=plan,
+            source_document_sha256="a" * 64,
+        )
+    finally:
+        os.chmod(output_dir, original_mode)
+
+    assert result is not None
+    _assert_output_failure_row(
+        result,
+        request,
+        certainty=PlanCommitCertainty.ABSENT,
+        diagnostics_state=DiagnosticReportState.ABSENT,
+        diagnostic_codes=("MF-O002",),
+        plan_path_state="absent",
+        diagnostics_path_state="absent",
+        sentinels=sentinels,
+    )
+
+
 def test_plan_durability_unknown_reports_unknown_certainty_and_committed_diagnostics(
     tmp_path: Path,
     monkeypatch,
@@ -1069,3 +1140,56 @@ def test_identical_plan_bytes_from_different_requests_keep_distinct_diagnostics(
     )
     assert first_report["request_id"] == request.request_id
     assert second_report["request_id"] == other_request.request_id
+
+
+def test_concurrent_different_semantic_plans_for_same_identity_publish_separately(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    baseline = make_canonical_builder_compiled_plan()
+    changed = finalize_compiled_plan_sha256(
+        baseline.model_copy(
+            update={
+                "source_sha256": "d" * 64,
+                "compiled_sha256": "0" * 64,
+            }
+        )
+    )
+    assert changed.harness_id == baseline.harness_id
+    assert changed.harness_version == baseline.harness_version
+    assert changed.compiled_sha256 != baseline.compiled_sha256
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(
+            executor.map(
+                lambda plan: persist_compile_outputs(
+                    request=request,
+                    plan=plan,
+                    source_document_sha256="a" * 64,
+                ),
+                (
+                    baseline,
+                    changed,
+                    baseline,
+                    changed,
+                    baseline,
+                    changed,
+                    baseline,
+                    changed,
+                ),
+            )
+        )
+
+    assert {result.status for result in results} == {CompileStatus.COMMITTED}
+    assert {result.compiled_sha256 for result in results} == {
+        baseline.compiled_sha256,
+        changed.compiled_sha256,
+    }
+    output_dir = Path(request.output_root, request.output_dir)
+    assert len(list(output_dir.glob("*.compiled.json"))) == 2
+    assert len(list(output_dir.glob("*.diagnostics.json"))) == 2
+    assert list(output_dir.glob("*.tmp")) == []
+    for plan in (baseline, changed):
+        assert Path(
+            request.output_root, compiled_plan_output_path(request, plan)
+        ).read_bytes() == (canonical_compiled_plan_bytes(plan))

@@ -224,6 +224,12 @@ def validate_harness_graph(
     unresolved_blocked = _nodes_blocked_by_unresolved(
         nodes_by_id, adjacency, resolved_by_id
     )
+    required_ancestors_by_terminal = _required_ancestor_gaps(
+        nodes_by_id,
+        adjacency,
+        terminal_node_ids=terminal_node_ids,
+        required_node_ids=required_node_ids,
+    )
     for node in sorted(source.graph.nodes, key=lambda item: item.node_id):
         if node.node_id in cycle_nodes:
             continue
@@ -248,6 +254,26 @@ def validate_harness_graph(
                     node_id=node.node_id,
                 )
             )
+            continue
+        if node.terminal_result is not None:
+            missing_required = required_ancestors_by_terminal.get(node.node_id, ())
+            if (
+                node.node_id not in required_node_ids
+                and missing_required
+                and all(required_id in satisfiable for required_id in missing_required)
+                and not any(
+                    (node.node_id, prereq.node_id) in invalid_edges
+                    for prereq in node.prerequisites
+                )
+            ):
+                diagnostics.append(
+                    _diagnostic(
+                        "MF-G006",
+                        f"Terminal node {node.node_id!r} is not gated by required nodes.",
+                        node_id=node.node_id,
+                        related_ids=missing_required,
+                    )
+                )
 
     diagnostics.extend(
         _argument_diagnostics(
@@ -444,6 +470,31 @@ def _nodes_blocked_by_unresolved(
             blocked.add(dependent)
             stack.append(dependent)
     return blocked
+
+
+def _required_ancestor_gaps(
+    nodes_by_id: Mapping[str, HarnessNodeSource],
+    adjacency: Mapping[str, tuple[str, ...]],
+    *,
+    terminal_node_ids: Sequence[str],
+    required_node_ids: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    reverse = _reverse_adjacency(nodes_by_id, adjacency)
+    required = set(required_node_ids)
+    gaps: dict[str, tuple[str, ...]] = {}
+    for terminal_node_id in sorted(terminal_node_ids):
+        ancestors: set[str] = set()
+        stack = list(reverse[terminal_node_id])
+        while stack:
+            current = stack.pop()
+            if current in ancestors:
+                continue
+            ancestors.add(current)
+            stack.extend(reverse[current])
+        missing = tuple(sorted(required - ancestors - {terminal_node_id}))
+        if missing:
+            gaps[terminal_node_id] = missing
+    return gaps
 
 
 def _argument_diagnostics(

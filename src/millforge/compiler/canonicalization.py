@@ -141,7 +141,6 @@ def _node_payload(node: Any) -> JsonObject:
                 "model_tool_name": descriptor.model_tool_name,
                 "description": descriptor.description,
                 "input_schema": _fresh_json_value(descriptor.input_schema),
-                "output_schema": _fresh_json_value(descriptor.output_schema),
                 "side_effect_class": descriptor.side_effect_class.value,
                 "idempotency": descriptor.idempotency.value,
                 "required_capabilities": sorted(descriptor.required_capabilities),

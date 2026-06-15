@@ -40,7 +40,7 @@ EXPECTED_GOLDEN_JSON_DOCUMENT_SHA256 = (
     "9d44565e575973a35e992147d745731c2ef60e8e7f4849536b93a391bd235253"
 )
 EXPECTED_GOLDEN_SOURCE_SHA256 = (
-    "8e2bc3139692270706ba14d02cefda6537d22a88edc25161d7a2df04714f3c72"
+    "300d4655196b4d421a85969d4d381c07df70de9f92e12ee695a2f06ff04487b1"
 )
 
 
@@ -68,9 +68,9 @@ REPRESENTATIVE_FIXTURES: tuple[RepresentativeFixture, ...] = (
         json_document_sha256=EXPECTED_GOLDEN_JSON_DOCUMENT_SHA256,
         source_sha256=EXPECTED_GOLDEN_SOURCE_SHA256,
         compiled_sha256=(
-            "4456175a8853c4814f4a5d93d2f0c4b3453d1c40fedad5c47d92218c811a3944"
+            "1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52"
         ),
-        semantic_byte_size=5915,
+        semantic_byte_size=5258,
     ),
     RepresentativeFixture(
         name="simple_success",
@@ -85,12 +85,12 @@ REPRESENTATIVE_FIXTURES: tuple[RepresentativeFixture, ...] = (
             "02571dfdbc9b1cc2266dd9bd82901f8f7528afd645e176dc32d10fd654d5b388"
         ),
         source_sha256=(
-            "cfe1c0566a00fab8294c1ba44d247b20a3e3dc30ac14021b85bf264eb02f0832"
+            "cff26dee6692c2059385c24934042c51eb8719c638f578a6b869fca21cc627f2"
         ),
         compiled_sha256=(
-            "fc90e12d7246d91178d8ce22fa79f92416897e272fdaf4ba550df49bf97df6c2"
+            "29e604298ecf09500b092ff95a3ad96686a386c52bb2e3c4819a54d83454d78b"
         ),
-        semantic_byte_size=2737,
+        semantic_byte_size=2479,
     ),
     RepresentativeFixture(
         name="blocked_artifact",
@@ -105,12 +105,12 @@ REPRESENTATIVE_FIXTURES: tuple[RepresentativeFixture, ...] = (
             "d56932c3bd40588eb6e66aadb06954dab4825d34def449c0efbe56c2eac82086"
         ),
         source_sha256=(
-            "1a39381f7fe3cbef4d1cc62b0619dbef70ef8b337dc3878da42ef6b8eb7157f7"
+            "b1fcca877db492fa8fa5ad834e9507546bc033d42c21278d93b9ce8195665318"
         ),
         compiled_sha256=(
-            "3825417d4ff5848d0bcf174b07a81d4ebab1bf139f8e917dc7b722ca261efc72"
+            "9a68e99b7ce3185bd6a88724f40c4875ce5f4bd3836b691824e3564f42f58f4c"
         ),
-        semantic_byte_size=3828,
+        semantic_byte_size=3427,
     ),
 )
 

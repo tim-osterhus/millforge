@@ -288,6 +288,25 @@ def test_compile_result_diagnostic_report_state_requires_safe_relative_path() ->
             diagnostics_path="/tmp/diagnostics.json",
         )
 
+    for unsafe_path in (
+        "compiled/../diagnostics.json",
+        "compiled/diagnostics.json:stream",
+        "compiled/CON.json",
+        "compiled/nested\\diagnostics.json",
+        "compiled/trailing.",
+        "compiled/trailing ",
+    ):
+        with pytest.raises(ValidationError):
+            HarnessCompileResult(
+                request_id="request.c48f9299",
+                status=CompileStatus.PREPARED,
+                plan_commit_certainty=PlanCommitCertainty.ABSENT,
+                source_document_sha256=SHA_A,
+                source_sha256=SHA_B,
+                harness_id="millforge.test.builder.compiler.v1",
+                diagnostics_path=unsafe_path,
+            )
+
 
 def test_compile_result_truncates_over_limit_diagnostics() -> None:
     result = HarnessCompileResult(
@@ -580,9 +599,13 @@ def test_absolute_and_traversal_paths_use_canonical_outside_root_codes(
         ("source_path", "nested/NUL.json", "MF-S001"),
         ("source_path", "harness.json:stream", "MF-S001"),
         ("source_path", "nested\\harness.json", "MF-S001"),
+        ("source_path", "trailing.json.", "MF-S001"),
+        ("source_path", "trailing.json ", "MF-S001"),
         ("output_dir", "AUX", "MF-S002"),
         ("output_dir", "compiled:LPT1", "MF-S002"),
         ("output_dir", "nested\\compiled", "MF-S002"),
+        ("output_dir", "compiled.", "MF-S002"),
+        ("output_dir", "compiled ", "MF-S002"),
     ],
 )
 def test_device_ads_and_backslash_paths_use_canonical_outside_root_codes(

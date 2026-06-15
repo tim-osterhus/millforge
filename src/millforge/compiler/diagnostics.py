@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from enum import Enum
 from collections.abc import Sequence
@@ -28,6 +29,9 @@ from millforge.compiler.validators import (
 )
 
 _SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*=[^\s]+"
+    ),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{16,}"),
     re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^&\s]{8,}"),
     re.compile(r"(?i)://[^/\s:@]+:[^/\s:@]+@"),
@@ -246,9 +250,7 @@ class DiagnosticField(BaseModel):
                 return policy.replacement
             redacted = redact_diagnostic_text(value, policy=policy)
             return _truncate_utf8(redacted, MAX_DIAGNOSTIC_FIELD_STRING_UTF8)
-        if isinstance(value, float) and not value.is_integer() and not (value == value):
-            raise ValueError("value must be finite")
-        if isinstance(value, float) and not (float("-inf") < value < float("inf")):
+        if isinstance(value, float) and not math.isfinite(value):
             raise ValueError("value must be finite")
         return value
 

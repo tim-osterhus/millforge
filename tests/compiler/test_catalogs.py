@@ -198,8 +198,10 @@ def test_tool_entry_admission_validates_identity_hashes_uniqueness_and_runtime_v
 
 def test_static_tool_catalog_snapshot_reuses_admitted_entries_and_is_immutable(
     static_tool_catalog_snapshot: Any,
+    static_model_profile_catalog_snapshot: Any,
 ) -> None:
     snapshot = static_tool_catalog_snapshot
+    model_snapshot = static_model_profile_catalog_snapshot
     metadata = capture_catalog_snapshot_metadata(snapshot)
     lookup = snapshot.resolve_exact("tools.echo", 1)
     repeated = snapshot.resolve_exact("tools.echo", 1)
@@ -211,6 +213,24 @@ def test_static_tool_catalog_snapshot_reuses_admitted_entries_and_is_immutable(
     assert lookup.entry.input_schema["properties"]["message"]["type"] == "string"
     assert lookup == repeated
     assert missing.classification is CatalogLookupClassification.MISSING
+
+    with pytest.raises(TypeError):
+        snapshot._entries[("tools.injected", 1)] = ToolCatalogEntry.admit(  # noqa: SLF001
+            make_raw_tool_descriptor(tool_id="tools.injected"),
+            expected_tool_id="tools.injected",
+            expected_tool_version=1,
+        )
+    with pytest.raises(TypeError):
+        model_snapshot._profiles["profile.injected"] = CompiledModelProfile(  # noqa: SLF001
+            profile_id="profile.injected"
+        )
+
+    assert snapshot.resolve_exact("tools.injected", 1).classification is (
+        CatalogLookupClassification.MISSING
+    )
+    assert model_snapshot.resolve_exact("profile.injected").classification is (
+        CatalogLookupClassification.MISSING
+    )
 
 
 def test_catalog_snapshot_protocols_expose_resolve_exact_boundary(
