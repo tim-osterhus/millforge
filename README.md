@@ -320,6 +320,22 @@ evaluation workflow behavior, or live provider/model/tool execution. Those
 remain deferred to Spec 01, Spec 04, Spec 05, Spec 06, Spec 07, and Spec 08
 respectively.
 
+## Millforge 04A Tool Registry Core
+
+04A adds the public `millforge.tools` registry core. It provides immutable
+`ToolDescriptor`, `ToolTimeoutPolicy`, and `ToolOutputPolicy` contracts,
+registry-computed deterministic descriptor hashes, explicit in-process
+`ToolRegistry` registration, immutable exact-version
+`FrozenToolRegistrySnapshot` lookup, and projection into the existing compiler
+catalog and `ToolBindingRef` path.
+
+The package exposes registry constants, descriptor hash records, typed registry
+errors, and descriptor hash payload inspection helpers for deterministic
+evidence. Descriptor and snapshot hashing remains generic and registry-owned;
+04A does not ship production `builtin.*` descriptors, a default production
+registry, production presets, tool execution or dispatch, connector admission,
+live provider dependencies, or Millrace runner integration.
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider

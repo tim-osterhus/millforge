@@ -25,6 +25,7 @@ from millforge.compiler.schema_validation import validate_json_schema_subset
 from millforge.compiler.validators import (
     TOOL_VERSION_MAX,
     validate_artifact_id,
+    validate_capability_id,
     validate_canonical_tool_id,
     validate_nonblank,
     validate_profile_id,
@@ -151,10 +152,7 @@ class RawToolDescriptor(BaseModel):
     @classmethod
     def _capabilities_valid(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for capability in value:
-            validate_nonblank(capability, "required_capabilities")
-            validate_utf8_size(
-                capability, "required_capabilities", MAX_CAPABILITY_ID_UTF8
-            )
+            validate_capability_id(capability)
         return validate_unique(value, "required_capabilities")
 
     @field_validator("produced_artifact_ids")

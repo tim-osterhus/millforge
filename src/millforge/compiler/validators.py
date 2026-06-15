@@ -10,6 +10,7 @@ HARNESS_ID_MAX_LENGTH = 160
 POLICY_ID_MAX_LENGTH = 160
 PROFILE_ID_MAX_LENGTH = 160
 CANONICAL_TOOL_ID_MAX_LENGTH = 160
+CAPABILITY_ID_MAX_LENGTH = CANONICAL_TOOL_ID_MAX_LENGTH
 NODE_ID_MAX_LENGTH = 64
 ARTIFACT_ID_MAX_LENGTH = 128
 TERMINAL_RESULT_MAX_LENGTH = 128
@@ -77,6 +78,12 @@ def validate_canonical_tool_id(value: str) -> str:
     )
 
 
+def validate_capability_id(value: str) -> str:
+    return _validate_pattern(
+        value, "capability_id", _DOTTED_ID_RE, CAPABILITY_ID_MAX_LENGTH
+    )
+
+
 def validate_stage_kind_id(value: str) -> str:
     return _validate_pattern(
         value, "stage_kind_id", _DOTTED_ID_RE, POLICY_ID_MAX_LENGTH
@@ -122,6 +129,12 @@ def validate_sha256(value: str, field_name: str) -> str:
 def validate_harness_version(value: int) -> int:
     if value < 1 or value > HARNESS_VERSION_MAX:
         raise ValueError("harness_version must be in range 1..2147483647")
+    return value
+
+
+def validate_tool_version(value: int) -> int:
+    if value < 1 or value > TOOL_VERSION_MAX:
+        raise ValueError("tool_version must be in range 1..2147483647")
     return value
 
 

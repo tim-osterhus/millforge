@@ -180,6 +180,10 @@ def test_tool_entry_admission_validates_identity_hashes_uniqueness_and_runtime_v
                 required_capabilities=("workspace.read", "workspace.read")
             )
         )
+    with pytest.raises(ValidationError):
+        RawToolDescriptor.model_validate(
+            make_raw_tool_descriptor(required_capabilities=("Bad Cap",))
+        )
 
     with pytest.raises(ValueError, match="tool_id"):
         ToolCatalogEntry.admit(

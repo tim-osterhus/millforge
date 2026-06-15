@@ -89,7 +89,6 @@ FORBIDDEN_WHEEL_DIR_PARTS = {
     "eval",
     "dashboard",
     "dashboards",
-    "tools",
 }
 
 
@@ -208,6 +207,8 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
 
     assert "forge/__init__.py" not in names
     assert not any(name.startswith("forge/") for name in names)
+    assert "millforge/tools/__init__.py" in names
+    assert "millforge/tools/registry.py" in names
     assert "millforge/_forge/LICENSE" in names
     assert "millforge/_forge/PROVENANCE.json" in names
     assert "millforge/_forge/UPDATE_POLICY.md" in names
