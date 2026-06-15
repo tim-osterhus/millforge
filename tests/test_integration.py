@@ -45,6 +45,7 @@ from millforge.compiled_plan import (
     ToolBindingRef,
     ToolExecutionStatus,
     canonical_json_serialize,
+    finalize_compiled_plan_sha256,
 )
 from millforge.contracts import (
     ArtifactRef,
@@ -241,8 +242,7 @@ def _build_terminal_node() -> CompiledHarnessNode:
 def _build_test_plan_with_hash() -> CompiledHarnessPlan:
     """Build a CompiledHarnessPlan with a valid computed SHA-256.
 
-    The algorithm strips only ``compiled_sha256`` from the validated
-    02B plan body before canonical serialization.
+    The shared compiled-plan helper finalizes the validated 02B plan body.
     """
     plan_without_hash = CompiledHarnessPlan(
         schema_version="1.0",
@@ -262,12 +262,7 @@ def _build_test_plan_with_hash() -> CompiledHarnessPlan:
         artifact_policy=_build_test_artifact_policy(),
         compiler_identity=_build_test_compiler_identity(),
     )
-
-    canonical_body = plan_without_hash.model_dump(mode="json")
-    canonical_body.pop("compiled_sha256")
-    canonical_str = canonical_json_serialize(canonical_body)
-    compiled_sha256 = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
-    return plan_without_hash.model_copy(update={"compiled_sha256": compiled_sha256})
+    return finalize_compiled_plan_sha256(plan_without_hash)
 
 
 def _artifact_output() -> str:

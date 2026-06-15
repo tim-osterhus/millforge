@@ -93,6 +93,15 @@ DIAGNOSTIC_REGISTRY: dict[str, tuple[CompilerPhase, DiagnosticSeverity]] = {
         f"MF-A{number:03d}": (CompilerPhase.ARTIFACT, DiagnosticSeverity.ERROR)
         for number in range(1, 8)
     },
+    **{
+        f"MF-L{number:03d}": (CompilerPhase.LOWERING, DiagnosticSeverity.ERROR)
+        for number in range(1, 5)
+    },
+    **{
+        f"MF-O{number:03d}": (CompilerPhase.OUTPUT, DiagnosticSeverity.ERROR)
+        for number in range(1, 6)
+    },
+    "MF-I001": (CompilerPhase.INTERNAL, DiagnosticSeverity.ERROR),
     "MF-D001": (CompilerPhase.INTERNAL, DiagnosticSeverity.WARNING),
 }
 
@@ -129,6 +138,16 @@ DIAGNOSTIC_TRIGGER_MEANINGS: dict[str, str] = {
     "MF-A005": "required-artifact-not-terminal-gated",
     "MF-A006": "duplicate-artifact-id",
     "MF-A007": "undeclared-terminal-required-artifact",
+    "MF-L001": "lowering-invariant-failed",
+    "MF-L002": "compiled-plan-validation-failed",
+    "MF-L003": "source-semantic-hash-failed",
+    "MF-L004": "compiled-hash-verification-failed",
+    "MF-O001": "output-path-invalid",
+    "MF-O002": "diagnostics-write-failed",
+    "MF-O003": "plan-write-failed",
+    "MF-O004": "existing-output-integrity-failed",
+    "MF-O005": "temporary-output-cleanup-failed",
+    "MF-I001": "compiler-internal-error",
 }
 
 _REQUEST_DIAGNOSTIC_ORDER = {
@@ -140,6 +159,10 @@ _REQUEST_DIAGNOSTIC_ORDER = {
     "MF-S013": 5,
     "MF-S014": 6,
     "MF-S015": 7,
+}
+_INTERNAL_DIAGNOSTIC_ORDER = {
+    "MF-I001": 0,
+    "MF-D001": 1,
 }
 
 
@@ -347,6 +370,19 @@ def diagnostic_sort_key(
             phase_order.index(diagnostic.phase),
             _REQUEST_DIAGNOSTIC_ORDER.get(
                 diagnostic.code, len(_REQUEST_DIAGNOSTIC_ORDER)
+            ),
+            location.line if location is not None else 0,
+            location.column if location is not None else 0,
+            source.field_path if source is not None else "",
+            diagnostic.code,
+            diagnostic.node_id or "",
+            diagnostic.message,
+        )
+    if diagnostic.phase == CompilerPhase.INTERNAL:
+        return (
+            phase_order.index(diagnostic.phase),
+            _INTERNAL_DIAGNOSTIC_ORDER.get(
+                diagnostic.code, len(_INTERNAL_DIAGNOSTIC_ORDER)
             ),
             location.line if location is not None else 0,
             location.column if location is not None else 0,

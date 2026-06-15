@@ -15,6 +15,7 @@ from millforge._forge.adapter import (
     ForgeBridgeError,
     ForgeContextFactory,
     ForgeEventTranslator,
+    ForgeGuardrailBackend,
     ForgeModelBridge,
     ForgeSessionInputBuilder,
     ForgeToolBridge,
@@ -44,6 +45,7 @@ from millforge.contracts import (
     AssistantMessage,
     Deadline,
     GuardedSessionRequest,
+    GuardedSessionStatus,
     InvalidToolArguments,
     ModelCompletionResponse,
     ModelToolCall,
@@ -66,6 +68,7 @@ from millforge.testing import (
 from tests.conftest import (
     FakeCancellationResolver,
     FakeClock,
+    FakePlanLoader,
     SHA_A,
     SHA_B,
     make_canonical_builder_compiled_plan,
@@ -620,6 +623,31 @@ def test_prerequisite_argument_mapping_preserves_distinct_match_fields() -> None
             "current_arg": "path",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_rejects_tampered_plan_before_model_or_tool_calls() -> None:
+    plan = _plan()
+    stale = plan.model_copy(update={"harness_id": "tampered-harness"})
+    request = make_test_guarded_session_request()
+    model_client = FakeModelClient()
+    tool_executor = FakeToolExecutor(supported_tools={"prepare", "submit"})
+    backend = ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=FakePlanLoader(plan=stale),
+        context_factory=ForgeContextFactory(),
+        clock=FakeClock(monotonic_value=1.0),
+        cancellation_resolver=FakeCancellationResolver(),
+    )
+
+    result = await backend.run_session(request)
+
+    assert result.status == GuardedSessionStatus.BACKEND_FAILED
+    assert result.diagnostic is not None
+    assert result.diagnostic.error_code == "binding_rejected"
+    model_client.assert_not_called()
+    tool_executor.assert_not_called()
 
 
 def test_duplicate_identity_rejects_even_if_model_copy_bypasses_plan_validation() -> (

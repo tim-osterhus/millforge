@@ -1,0 +1,45 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.representative.blocked.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - builder
+    - checker
+model_profile_id: profile.golden
+prompt:
+  policy_id: millforge.test.representative.blocked.policy.v1
+  system_instructions: |
+    Gather context before writing a failure report.
+    Block with evidence when the report is ready.
+  include_request_context: false
+budgets:
+  max_iterations: 5
+  max_validation_retries: 2
+  max_tool_errors: 1
+  max_prerequisite_violations: 2
+  max_premature_terminal_attempts: 1
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 6144
+  keep_recent_iterations: 2
+  phase_thresholds: [0.55, 0.8, 0.95]
+graph:
+  nodes:
+    collect_context:
+      tool_ref: tools.collect_context@1
+      produces: ["draft"]
+    write_failure_report:
+      tool_ref: tools.write_failure_report@1
+      prerequisites:
+        - node_id: collect_context
+      produces: ["failure_report"]
+    blocked:
+      tool_ref: tools.finish_blocked@1
+      terminal_result: BLOCKED
+      prerequisites:
+        - node_id: write_failure_report
+artifacts:
+  declared_artifact_ids: ["failure_report", "draft"]
+  required_by_terminal:
+    BLOCKED: ["failure_report"]

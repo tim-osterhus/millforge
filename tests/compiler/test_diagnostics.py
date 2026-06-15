@@ -83,6 +83,16 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
         "MF-A005",
         "MF-A006",
         "MF-A007",
+        "MF-L001",
+        "MF-L002",
+        "MF-L003",
+        "MF-L004",
+        "MF-O001",
+        "MF-O002",
+        "MF-O003",
+        "MF-O004",
+        "MF-O005",
+        "MF-I001",
         "MF-D001",
     }
     assert DIAGNOSTIC_REGISTRY["MF-S018"] == (
@@ -103,6 +113,18 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
     )
     assert DIAGNOSTIC_REGISTRY["MF-A007"] == (
         CompilerPhase.ARTIFACT,
+        DiagnosticSeverity.ERROR,
+    )
+    assert DIAGNOSTIC_REGISTRY["MF-L001"] == (
+        CompilerPhase.LOWERING,
+        DiagnosticSeverity.ERROR,
+    )
+    assert DIAGNOSTIC_REGISTRY["MF-O005"] == (
+        CompilerPhase.OUTPUT,
+        DiagnosticSeverity.ERROR,
+    )
+    assert DIAGNOSTIC_REGISTRY["MF-I001"] == (
+        CompilerPhase.INTERNAL,
         DiagnosticSeverity.ERROR,
     )
     assert DIAGNOSTIC_REGISTRY["MF-D001"] == (
@@ -148,6 +170,16 @@ def test_semantic_diagnostic_code_table_matches_03b_trigger_meanings() -> None:
             "undeclared-terminal-required-artifact",
             CompilerPhase.ARTIFACT,
         ),
+        "MF-L001": ("lowering-invariant-failed", CompilerPhase.LOWERING),
+        "MF-L002": ("compiled-plan-validation-failed", CompilerPhase.LOWERING),
+        "MF-L003": ("source-semantic-hash-failed", CompilerPhase.LOWERING),
+        "MF-L004": ("compiled-hash-verification-failed", CompilerPhase.LOWERING),
+        "MF-O001": ("output-path-invalid", CompilerPhase.OUTPUT),
+        "MF-O002": ("diagnostics-write-failed", CompilerPhase.OUTPUT),
+        "MF-O003": ("plan-write-failed", CompilerPhase.OUTPUT),
+        "MF-O004": ("existing-output-integrity-failed", CompilerPhase.OUTPUT),
+        "MF-O005": ("temporary-output-cleanup-failed", CompilerPhase.OUTPUT),
+        "MF-I001": ("compiler-internal-error", CompilerPhase.INTERNAL),
     }
 
     assert DIAGNOSTIC_TRIGGER_MEANINGS == {
@@ -155,6 +187,39 @@ def test_semantic_diagnostic_code_table_matches_03b_trigger_meanings() -> None:
     }
     for code, (_meaning, phase) in expected.items():
         assert DIAGNOSTIC_REGISTRY[code] == (phase, DiagnosticSeverity.ERROR)
+
+
+def test_03c_lowering_internal_and_output_trigger_meanings_match_root_source() -> None:
+    assert {
+        code: DIAGNOSTIC_TRIGGER_MEANINGS[code]
+        for code in ("MF-L001", "MF-L002", "MF-L003", "MF-L004", "MF-I001")
+    } == {
+        "MF-L001": "lowering-invariant-failed",
+        "MF-L002": "compiled-plan-validation-failed",
+        "MF-L003": "source-semantic-hash-failed",
+        "MF-L004": "compiled-hash-verification-failed",
+        "MF-I001": "compiler-internal-error",
+    }
+    assert {
+        code: DIAGNOSTIC_REGISTRY[code]
+        for code in ("MF-L001", "MF-L002", "MF-L003", "MF-L004", "MF-I001")
+    } == {
+        "MF-L001": (CompilerPhase.LOWERING, DiagnosticSeverity.ERROR),
+        "MF-L002": (CompilerPhase.LOWERING, DiagnosticSeverity.ERROR),
+        "MF-L003": (CompilerPhase.LOWERING, DiagnosticSeverity.ERROR),
+        "MF-L004": (CompilerPhase.LOWERING, DiagnosticSeverity.ERROR),
+        "MF-I001": (CompilerPhase.INTERNAL, DiagnosticSeverity.ERROR),
+    }
+    assert {
+        code: DIAGNOSTIC_TRIGGER_MEANINGS[code]
+        for code in ("MF-O001", "MF-O002", "MF-O003", "MF-O004", "MF-O005")
+    } == {
+        "MF-O001": "output-path-invalid",
+        "MF-O002": "diagnostics-write-failed",
+        "MF-O003": "plan-write-failed",
+        "MF-O004": "existing-output-integrity-failed",
+        "MF-O005": "temporary-output-cleanup-failed",
+    }
 
 
 def test_compiler_diagnostic_rejects_dynamic_phase_or_severity() -> None:
@@ -192,6 +257,40 @@ def test_diagnostics_are_sorted_by_contract_key() -> None:
     )
 
     assert sort_diagnostics((later, earlier)) == (earlier, later)
+
+
+def test_03c_diagnostics_sort_by_fixed_phase_and_internal_precedence() -> None:
+    internal = CompilerDiagnostic(
+        code="MF-I001",
+        phase=CompilerPhase.INTERNAL,
+        severity=DiagnosticSeverity.ERROR,
+        message="Compiler failed internally.",
+    )
+    truncation = CompilerDiagnostic(
+        code="MF-D001",
+        phase=CompilerPhase.INTERNAL,
+        severity=DiagnosticSeverity.WARNING,
+        message="Diagnostics were truncated.",
+    )
+    output = CompilerDiagnostic(
+        code="MF-O001",
+        phase=CompilerPhase.OUTPUT,
+        severity=DiagnosticSeverity.ERROR,
+        message="Diagnostics write failed.",
+    )
+    lowering = CompilerDiagnostic(
+        code="MF-L001",
+        phase=CompilerPhase.LOWERING,
+        severity=DiagnosticSeverity.ERROR,
+        message="Lowering failed.",
+    )
+
+    assert sort_diagnostics((truncation, output, internal, lowering)) == (
+        lowering,
+        output,
+        internal,
+        truncation,
+    )
 
 
 def test_diagnostic_fields_are_bounded_and_strict() -> None:

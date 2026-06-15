@@ -1,0 +1,62 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.golden.compiler.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - builder
+    - checker
+    - updater
+model_profile_id: profile.golden
+prompt:
+  policy_id: millforge.test.golden.policy.v1
+  system_instructions: |
+    Preserve this first instruction.
+    Preserve this second instruction.
+  include_request_context: true
+budgets:
+  max_iterations: 6
+  max_validation_retries: 2
+  max_tool_errors: 2
+  max_prerequisite_violations: 2
+  max_premature_terminal_attempts: 2
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 8192
+  keep_recent_iterations: 2
+  phase_thresholds: [0.5, 0.75, 0.95]
+graph:
+  nodes:
+    collect_context:
+      tool_ref: tools.collect_context@1
+      required: true
+      produces: ["draft"]
+    write_report:
+      tool_ref: tools.write_report@1
+      prerequisites:
+        - node_id: collect_context
+          argument_matches:
+            path: path
+      produces: ["report"]
+    write_failure_report:
+      tool_ref: tools.write_failure_report@1
+      prerequisites:
+        - node_id: collect_context
+      produces: ["failure_report"]
+    complete:
+      tool_ref: tools.finish_success@1
+      terminal_result: BUILDER_COMPLETE
+      prerequisites:
+        - node_id: collect_context
+        - node_id: write_report
+    blocked:
+      tool_ref: tools.finish_blocked@1
+      terminal_result: BLOCKED
+      prerequisites:
+        - node_id: collect_context
+        - node_id: write_failure_report
+artifacts:
+  declared_artifact_ids: ["report", "failure_report", "draft"]
+  required_by_terminal:
+    BUILDER_COMPLETE: ["report", "draft"]
+    BLOCKED: ["failure_report"]

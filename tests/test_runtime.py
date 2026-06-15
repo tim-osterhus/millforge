@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import ast
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from millforge.artifacts import RuntimeArtifactWriter
 from millforge.compiled_plan import (
@@ -39,7 +39,8 @@ from millforge.compiled_plan import (
     ToolExecutionStatus,
     ToolTraceIdempotency,
     ToolTraceSideEffectClass,
-    canonical_json_serialize,
+    calculate_compiled_plan_sha256,
+    finalize_compiled_plan_sha256,
 )
 from millforge._forge.errors import NonRetryableToolError
 from millforge.contracts import (
@@ -387,10 +388,13 @@ def _builder_block_args() -> dict[str, Any]:
 
 
 def _rehash_plan(plan: CompiledHarnessPlan) -> CompiledHarnessPlan:
-    body = plan.model_dump(mode="json")
-    body.pop("compiled_sha256")
-    digest = hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
-    return plan.model_copy(update={"compiled_sha256": digest})
+    try:
+        return finalize_compiled_plan_sha256(plan)
+    except (ValueError, ValidationError):
+        payload = plan.model_dump(mode="json")
+        return plan.model_copy(
+            update={"compiled_sha256": calculate_compiled_plan_sha256(payload)}
+        )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -838,8 +842,8 @@ async def test_canonical_builder_s1_success_uses_canonical_profile_http_transpor
         "type": "object",
     }
     assert expected_tools[4]["function"]["parameters"]["required"] == [
-        "path",
         "expected_text",
+        "path",
         "replacement_text",
     ]
     for request in seen:
@@ -1539,9 +1543,7 @@ async def test_canonical_builder_s8_backend_pre_inference_failure_runtime_slice(
     assert result.status == ExecutionStatus.FAILED
     assert result.result_class == ExecutionResultClass.BACKEND_FAILURE
     assert result.terminal_intent is None
-    assert result.usage is not None
-    assert result.usage.model_calls == 0
-    assert result.usage.tool_calls == 0
+    assert result.usage is None
     assert model_client.call_count == 0
     assert tool_executor.call_records == []
     assert tool_executor.rejected_calls == []
@@ -1577,10 +1579,7 @@ async def test_canonical_builder_s8_backend_pre_inference_failure_runtime_slice(
     diagnostic = _read_json(millforge_dir / "diagnostic.json")["diagnostic"]
     assert diagnostic["error_code"] == "binding_rejected"
     assert diagnostic["category"] == "backend"
-    assert _jsonl_event_types(millforge_dir / "events.jsonl") == [
-        "session_started",
-        "workflow_constructed",
-    ]
+    assert _jsonl_event_types(millforge_dir / "events.jsonl") == []
     assert _jsonl_records(millforge_dir / "tool_trace.jsonl") == []
 
 

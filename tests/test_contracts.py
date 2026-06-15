@@ -34,7 +34,10 @@ from millforge.compiled_plan import (
     ToolTraceSideEffectClass,
     ToolExecutionStatus,
     ToolTraceRecord,
+    calculate_compiled_plan_sha256,
+    canonical_compiled_plan_bytes,
     canonical_json_serialize,
+    finalize_compiled_plan_sha256,
     parse_and_strip_compiled_plan,
     verify_compiled_plan_sha256,
 )
@@ -201,10 +204,8 @@ def _plan(compiled_sha256: str = SHA_B) -> CompiledHarnessPlan:
 
 
 def _plan_with_valid_hash() -> tuple[CompiledHarnessPlan, str]:
-    body = _plan(compiled_sha256=SHA_B).model_dump(mode="json")
-    body.pop("compiled_sha256")
-    digest = hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
-    return _plan(compiled_sha256=digest), digest
+    plan = finalize_compiled_plan_sha256(_plan(compiled_sha256=SHA_B))
+    return plan, plan.compiled_sha256
 
 
 def _compiled_ref() -> CompiledHarnessRef:
@@ -241,6 +242,42 @@ def test_compiled_harness_plan_round_trip_and_hash_verification() -> None:
     assert computed == digest
     assert warnings == []
     assert result == plan
+
+
+def test_compiled_plan_hash_helper_is_the_single_contract_algorithm() -> None:
+    placeholder = _plan(compiled_sha256=SHA_B)
+    payload = placeholder.model_dump(mode="json")
+    digest = calculate_compiled_plan_sha256(payload)
+    finalized = finalize_compiled_plan_sha256(placeholder)
+
+    manual_body = dict(payload)
+    manual_body.pop("compiled_sha256")
+    manual_digest = hashlib.sha256(
+        canonical_json_serialize(manual_body).encode("utf-8")
+    ).hexdigest()
+
+    assert digest == manual_digest
+    assert finalized.compiled_sha256 == digest
+    assert finalized.model_dump(mode="json")["compiled_sha256"] == digest
+    assert canonical_compiled_plan_bytes(finalized) == canonical_json_serialize(
+        finalized.model_dump(mode="json")
+    ).encode("utf-8")
+
+
+def test_compiled_plan_hash_helper_requires_complete_payload() -> None:
+    payload = _plan().model_dump(mode="json")
+    payload.pop("compiled_sha256")
+
+    with pytest.raises(ValueError, match="must include compiled_sha256"):
+        calculate_compiled_plan_sha256(payload)
+
+
+def test_canonical_compiled_plan_bytes_rejects_stale_body_hash_pair() -> None:
+    plan, _digest = _plan_with_valid_hash()
+    stale = plan.model_copy(update={"harness_id": "harness-mutated"})
+
+    with pytest.raises(ValueError, match="Computed hash"):
+        canonical_compiled_plan_bytes(stale)
 
 
 def test_canonical_builder_compiled_fixture_golden_shape_and_hashes() -> None:

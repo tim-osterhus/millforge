@@ -1,0 +1,112 @@
+{
+  "artifacts": {
+    "required_by_terminal": {
+      "BLOCKED": [
+        "failure_report"
+      ],
+      "BUILDER_COMPLETE": [
+        "draft",
+        "report"
+      ]
+    },
+    "declared_artifact_ids": [
+      "draft",
+      "failure_report",
+      "report"
+    ]
+  },
+  "graph": {
+    "nodes": {
+      "complete": {
+        "prerequisites": [
+          {
+            "node_id": "write_report"
+          },
+          {
+            "node_id": "collect_context"
+          }
+        ],
+        "terminal_result": "BUILDER_COMPLETE",
+        "tool_ref": "tools.finish_success@1"
+      },
+      "blocked": {
+        "prerequisites": [
+          {
+            "node_id": "write_failure_report"
+          },
+          {
+            "node_id": "collect_context"
+          }
+        ],
+        "terminal_result": "BLOCKED",
+        "tool_ref": "tools.finish_blocked@1"
+      },
+      "write_failure_report": {
+        "produces": [
+          "failure_report"
+        ],
+        "prerequisites": [
+          {
+            "node_id": "collect_context"
+          }
+        ],
+        "tool_ref": "tools.write_failure_report@1"
+      },
+      "write_report": {
+        "produces": [
+          "report"
+        ],
+        "prerequisites": [
+          {
+            "argument_matches": {
+              "path": "path"
+            },
+            "node_id": "collect_context"
+          }
+        ],
+        "tool_ref": "tools.write_report@1"
+      },
+      "collect_context": {
+        "produces": [
+          "draft"
+        ],
+        "required": true,
+        "tool_ref": "tools.collect_context@1"
+      }
+    }
+  },
+  "context": {
+    "phase_thresholds": [
+      0.5,
+      0.75,
+      0.95
+    ],
+    "keep_recent_iterations": 2,
+    "budget_tokens": 8192,
+    "strategy_id": "forge.tiered.v1"
+  },
+  "budgets": {
+    "max_premature_terminal_attempts": 2,
+    "max_prerequisite_violations": 2,
+    "max_tool_errors": 2,
+    "max_validation_retries": 2,
+    "max_iterations": 6
+  },
+  "prompt": {
+    "include_request_context": true,
+    "system_instructions": "Preserve this first instruction.\nPreserve this second instruction.\n",
+    "policy_id": "millforge.test.golden.policy.v1"
+  },
+  "model_profile_id": "profile.golden",
+  "stage_scope": {
+    "stage_kind_ids": [
+      "checker",
+      "updater",
+      "builder"
+    ]
+  },
+  "harness_version": 1,
+  "harness_id": "millforge.test.golden.compiler.v1",
+  "kind": "millforge_harness",
+  "schema_version": "1.0"
+}

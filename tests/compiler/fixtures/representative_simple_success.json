@@ -1,0 +1,64 @@
+{
+  "artifacts": {
+    "required_by_terminal": {
+      "BUILDER_COMPLETE": [
+        "draft"
+      ]
+    },
+    "declared_artifact_ids": [
+      "draft"
+    ]
+  },
+  "graph": {
+    "nodes": {
+      "complete": {
+        "terminal_result": "BUILDER_COMPLETE",
+        "prerequisites": [
+          {
+            "node_id": "collect_context"
+          }
+        ],
+        "tool_ref": "tools.finish_success@1"
+      },
+      "collect_context": {
+        "produces": [
+          "draft"
+        ],
+        "required": true,
+        "tool_ref": "tools.collect_context@1"
+      }
+    }
+  },
+  "context": {
+    "phase_thresholds": [
+      0.4,
+      0.7,
+      0.9
+    ],
+    "keep_recent_iterations": 1,
+    "budget_tokens": 4096,
+    "strategy_id": "forge.tiered.v1"
+  },
+  "budgets": {
+    "max_premature_terminal_attempts": 1,
+    "max_prerequisite_violations": 1,
+    "max_tool_errors": 1,
+    "max_validation_retries": 1,
+    "max_iterations": 3
+  },
+  "prompt": {
+    "include_request_context": true,
+    "system_instructions": "Collect the minimum context.\nFinish only after the draft exists.\n",
+    "policy_id": "millforge.test.representative.simple.policy.v1"
+  },
+  "model_profile_id": "profile.golden",
+  "stage_scope": {
+    "stage_kind_ids": [
+      "builder"
+    ]
+  },
+  "harness_version": 1,
+  "harness_id": "millforge.test.representative.simple.v1",
+  "kind": "millforge_harness",
+  "schema_version": "1.0"
+}

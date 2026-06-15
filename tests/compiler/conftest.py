@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -18,6 +18,9 @@ from millforge.compiler import (
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
+GOLDEN_HARNESS_ID = "millforge.test.golden.compiler.v1"
+GOLDEN_POLICY_ID = "millforge.test.golden.policy.v1"
+GOLDEN_PROFILE_ID = "profile.golden"
 
 
 def make_raw_tool_descriptor(
@@ -59,6 +62,141 @@ def make_raw_tool_descriptor(
         "required_capabilities": required_capabilities,
         "produced_artifact_ids": produced_artifact_ids,
     }
+
+
+def make_golden_compile_request(
+    *,
+    source_path: str,
+    source_format: Literal["yaml", "json"],
+    source_root: str = "/tmp/golden-source",
+    output_root: str = "/tmp/golden-output",
+) -> Any:
+    from millforge import CapabilityEnvelope, CapabilityGrant
+    from millforge.compiler import HarnessCompileRequest
+
+    return HarnessCompileRequest(
+        request_id="request.golden.compiler.v1",
+        source_path=source_path,
+        source_root=source_root,
+        source_format=source_format,
+        output_dir="compiled",
+        output_root=output_root,
+        expected_harness_id=GOLDEN_HARNESS_ID,
+        stage_kind_id="builder",
+        legal_terminal_results=("BLOCKED", "BUILDER_COMPLETE"),
+        capability_envelope=CapabilityEnvelope(
+            grants=(
+                CapabilityGrant(capability_id="artifact.write"),
+                CapabilityGrant(capability_id="evidence.emit"),
+                CapabilityGrant(capability_id="diagnostics.write"),
+                CapabilityGrant(capability_id="workspace.read"),
+            )
+        ),
+    )
+
+
+def make_golden_tool_catalog_snapshot() -> "StaticToolCatalogSnapshot":
+    return StaticToolCatalogSnapshot(
+        entries={
+            ("tools.collect_context", 1): make_raw_tool_descriptor(
+                tool_id="tools.collect_context",
+                descriptor_sha256="1" * 64,
+                implementation_id="impl.tools.collect_context.v1",
+                model_tool_name="collect_context",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("workspace.read",),
+                produced_artifact_ids=("draft",),
+            ),
+            ("tools.write_report", 1): make_raw_tool_descriptor(
+                tool_id="tools.write_report",
+                descriptor_sha256="2" * 64,
+                implementation_id="impl.tools.write_report.v1",
+                model_tool_name="write_report",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "report": {"type": "string"},
+                    },
+                    "required": ["path", "report"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"report": {"type": "string"}},
+                    "required": ["report"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("artifact.write", "workspace.read"),
+                produced_artifact_ids=("report",),
+            ),
+            ("tools.write_failure_report", 1): make_raw_tool_descriptor(
+                tool_id="tools.write_failure_report",
+                descriptor_sha256="3" * 64,
+                implementation_id="impl.tools.write_failure_report.v1",
+                model_tool_name="write_failure_report",
+                input_schema={
+                    "type": "object",
+                    "properties": {"error": {"type": "string"}},
+                    "required": ["error"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"failure_report": {"type": "string"}},
+                    "required": ["failure_report"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("artifact.write", "diagnostics.write"),
+                produced_artifact_ids=("failure_report",),
+            ),
+            ("tools.finish_blocked", 1): make_raw_tool_descriptor(
+                tool_id="tools.finish_blocked",
+                descriptor_sha256="4" * 64,
+                implementation_id="impl.tools.finish_blocked.v1",
+                model_tool_name="finish_blocked",
+                input_schema={
+                    "type": "object",
+                    "properties": {"result": {"const": "BLOCKED"}},
+                    "required": ["result"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("evidence.emit",),
+                produced_artifact_ids=(),
+            ),
+            ("tools.finish_success", 1): make_raw_tool_descriptor(
+                tool_id="tools.finish_success",
+                descriptor_sha256="5" * 64,
+                implementation_id="impl.tools.finish_success.v1",
+                model_tool_name="finish_success",
+                input_schema={
+                    "type": "object",
+                    "properties": {"result": {"const": "BUILDER_COMPLETE"}},
+                    "required": ["result"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("evidence.emit",),
+                produced_artifact_ids=(),
+            ),
+        }
+    )
+
+
+def make_golden_model_profile_catalog_snapshot() -> "StaticModelProfileCatalogSnapshot":
+    return StaticModelProfileCatalogSnapshot(
+        profiles={GOLDEN_PROFILE_ID: CompiledModelProfile(profile_id=GOLDEN_PROFILE_ID)}
+    )
 
 
 class StaticToolCatalogSnapshot:

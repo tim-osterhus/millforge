@@ -161,8 +161,11 @@ then produces a private immutable `ResolvedHarness` for later lowering.
 The resolved IR is not a public API and is not a compiled plan. 03B performs no
 source or output path I/O, source-file rereads, catalog refresh, plugin
 discovery, network calls, subprocess calls, runtime execution, output writes,
-compiled-plan hashing, or lowering. Those responsibilities remain deferred to
-03C and later production registry/runtime work.
+compiled-plan hashing, or lowering. Those responsibilities are orchestrated by
+the 03C default compiler service in `src/millforge/compiler/service.py`, which
+delegates lowering to `src/millforge/compiler/lowering.py` and compiler output
+publication in `src/millforge/compiler/output.py`; runtime execution and
+registry/runtime work remain deferred.
 
 Remediated 03B closure evidence was refreshed on `2026-06-14T18:35:03Z` for
 `task-03b-r1-05-exact-closure-evidence-and-offline-gates`. The closure target is
@@ -194,6 +197,94 @@ Representative 03B fixtures live under `tests/compiler/`:
   unresolved-node suppression.
 - `test_frontend_boundaries.py` audits compiler modules for deferred imports
   and forbidden I/O/runtime invocation calls.
+
+## Millforge 03C Compiler Service, Lowering, and Output Boundary
+
+03C's default validated compiler service in `src/millforge/compiler/service.py`
+orchestrates admitted compile requests through semantic validation, lowering,
+compiled-hash verification, and atomic output publication. The service exposes
+the public typed `HarnessCompiler` boundary, reuses the parsed source carried
+by request admission, preserves front-end-before-catalog ordering, and returns
+immutable compile results with deterministic diagnostics.
+
+`tests/compiler/test_service.py` covers successful commits,
+front-end-before-catalog precedence, semantic failure normalization, and
+output-directory admission failure handling. `tests/compiler/test_lowering.py`
+covers accepted field shape, nested required fields, deterministic ordering,
+compiled-hash verification, and forbidden-data exclusion.
+`tests/compiler/test_output.py` covers request identity hashing, path
+confinement, admitted-directory revalidation, no-clobber reuse/conflict,
+durability failure handling, and diagnostics persistence.
+The compiler test area also includes checked-in YAML/JSON golden harness
+fixtures under `tests/compiler/fixtures/`, exact semantic and compiled-plan
+byte/hash assertions, output failure injection, and same-destination
+concurrent publication coverage. The representative golden fixtures cover
+three fixture pairs, including a rich case with two legal terminal results
+(`BLOCKED` and `BUILDER_COMPLETE`), a terminal-required artifact, all accepted
+budget fields, context phase thresholds, and multi-capability aggregation.
+Across all three cases, the representative fixture set pins exact diagnostics
+report shape and semantic-change hash movement without importing production
+Spec 07 preset ownership.
+Output diagnostics use the 03C root-source meanings: `MF-O001` for invalid
+output paths, `MF-O002` for diagnostics write failures, `MF-O003` for plan
+write failures, `MF-O004` for existing content-addressed output integrity
+failures, and `MF-O005` for temporary output cleanup failures.
+Lowering and internal diagnostics use the R2 root-source meanings:
+`MF-L001` for lowering invariant failures, `MF-L002` for accepted compiled-plan
+validation failures, `MF-L003` for source semantic hash failures, `MF-L004` for
+compiled hash verification failures, and `MF-I001` for bounded compiler
+internal errors.
+
+03C compiler output is the accepted `CompiledHarnessPlan` contract, not a
+compiler-specific plan shape. `source_document_sha256` remains compile-result
+evidence over the admitted normalized source document bytes, while
+`source_sha256` is stored in the emitted plan as the SHA-256 of the canonical
+validated semantic payload. The compiled hash is calculated by removing only
+the top-level `compiled_sha256` field from a complete JSON-mode plan payload,
+serializing with the shared canonical JSON encoder, hashing the UTF-8 bytes,
+reconstructing the final plan, and passing the shared
+`verify_compiled_plan_sha256()` verifier before output commit.
+The compiler service uses the shared
+`src/millforge/compiled_plan.py::calculate_compiled_plan_sha256()` helper for
+that pre-verifier check, preserving Arbiter criterion 7's single owned
+compiled-hash algorithm boundary.
+
+Emitted plan bytes are canonical compact UTF-8 JSON with one trailing newline
+and are published under the admitted output directory as relative
+`<url-escaped-harness-id>@<harness-version>.<compiled-sha256>.compiled.json`
+paths, for example
+`compiled/millforge.test.golden.compiler.v1@1.4456175a8853c4814f4a5d93d2f0c4b3453d1c40fedad5c47d92218c811a3944.compiled.json`.
+Diagnostics remain request-addressed and use request-only,
+source-document-hash plus request-hash, or compiled-digest plus request-hash
+path forms such as
+`compiled/<harness-id>@<harness-version>.<compiled-sha256>.request-<request-identity-sha256>.diagnostics.json`.
+Diagnostics reports move from prepared to committed evidence only after plan
+publication is confirmed, and serialized diagnostics redact secret-looking
+messages and scalar fields before persistence. The
+`FileCompiledHarnessLoader` loads those emitted bytes through the same
+parse/hash/identity verifier used by runtime preflight. The focused
+compatibility test in `tests/compiler/test_service.py` removes the original
+harness source tree, loads only the emitted compiled bytes, and proves
+`DefaultHarnessRuntime` reaches the deterministic fake backend after preflight.
+
+Representative 03C coverage remains offline and deterministic. It covers the
+compiler-output boundary, hash stability, output-state guarantees, runtime
+loader/preflight compatibility, Forge adapter field compatibility, and package
+content inspection without live provider calls or production Spec 07 preset
+ownership. Production Spec 07 preset curation and registry ownership remain
+deferred to their owning workstream.
+
+03C R2 closure evidence maps the latest Arbiter gaps to completed work:
+canonical lowering/internal diagnostic meanings, three representative YAML/JSON
+fixture pairs with exact semantic and compiled hashes plus diagnostics report
+shape assertions, and a complete deterministic failure-injection matrix across
+source semantic hashing, accepted-plan validation, compiled-hash verification,
+diagnostics persistence, plan output, publication, directory fsync, and
+temporary cleanup boundaries. The evidence continues to preserve the typed
+`HarnessCompiler` protocol, accepted `CompiledHarnessPlan` lowering, output
+addressing, same-plan concurrency, different-request diagnostics non-collision,
+and runtime compatibility through emitted compiled bytes loaded without the
+original source tree.
 
 ### Opt-In Live Model Backend Smoke
 

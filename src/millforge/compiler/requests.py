@@ -15,6 +15,7 @@ from typing import Any
 from typing import Literal, Protocol
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -80,6 +81,15 @@ class PlanCommitCertainty(str, Enum):
     """Closed plan publication certainty values."""
 
     ABSENT = "absent"
+    COMMITTED = "committed"
+    UNKNOWN = "unknown"
+
+
+class DiagnosticReportState(str, Enum):
+    """Closed diagnostic report persistence states."""
+
+    ABSENT = "absent"
+    PREPARED = "prepared"
     COMMITTED = "committed"
     UNKNOWN = "unknown"
 
@@ -164,9 +174,14 @@ class HarnessCompileResult(BaseModel):
     request_id: StrictStr
     status: CompileStatus
     plan_commit_certainty: PlanCommitCertainty
+    diagnostic_report_state: DiagnosticReportState = DiagnosticReportState.ABSENT
     failure_phase: CompilerPhase | None = None
     source_document_sha256: StrictStr | None = None
-    source_semantic_sha256: StrictStr | None = None
+    source_sha256: StrictStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("source_sha256", "source_semantic_sha256"),
+    )
+    request_identity_sha256: StrictStr | None = None
     harness_id: StrictStr | None = None
     compiled_plan_path: StrictStr | None = None
     compiled_sha256: StrictStr | None = None
@@ -179,7 +194,10 @@ class HarnessCompileResult(BaseModel):
         return validate_request_id(value)
 
     @field_validator(
-        "source_document_sha256", "source_semantic_sha256", "compiled_sha256"
+        "source_document_sha256",
+        "source_sha256",
+        "request_identity_sha256",
+        "compiled_sha256",
     )
     @classmethod
     def _hash_valid(cls, value: str | None, info: object) -> str | None:
@@ -211,13 +229,19 @@ class HarnessCompileResult(BaseModel):
 
     @model_validator(mode="after")
     def _result_invariants(self) -> HarnessCompileResult:
-        if (
-            self.source_semantic_sha256 is not None
-            and self.source_document_sha256 is None
-        ):
+        if self.source_sha256 is not None and self.source_document_sha256 is None:
             raise ValueError("semantic hashes require a source document hash")
-        if self.harness_id is not None and self.source_semantic_sha256 is None:
+        if self.harness_id is not None and self.source_sha256 is None:
             raise ValueError("harness identity requires a semantic hash")
+        if self.diagnostic_report_state == DiagnosticReportState.ABSENT:
+            if self.diagnostics_path is not None:
+                raise ValueError("absent diagnostics cannot carry a diagnostics path")
+        elif self.diagnostic_report_state in {
+            DiagnosticReportState.PREPARED,
+            DiagnosticReportState.COMMITTED,
+        }:
+            if self.diagnostics_path is None:
+                raise ValueError("persisted diagnostics require a diagnostics path")
         if self.status == CompileStatus.FAILED:
             if self.failure_phase is None:
                 raise ValueError("failed results require a failure phase")
@@ -226,15 +250,12 @@ class HarnessCompileResult(BaseModel):
             if self.failure_phase == CompilerPhase.REQUEST:
                 if (
                     self.source_document_sha256 is not None
-                    or self.source_semantic_sha256 is not None
+                    or self.source_sha256 is not None
                     or self.harness_id is not None
                 ):
                     raise ValueError("request failures cannot carry source evidence")
             if self.failure_phase == CompilerPhase.PARSE:
-                if (
-                    self.source_semantic_sha256 is not None
-                    or self.harness_id is not None
-                ):
+                if self.source_sha256 is not None or self.harness_id is not None:
                     raise ValueError("parse failures cannot carry semantic evidence")
             if self.plan_commit_certainty == PlanCommitCertainty.ABSENT:
                 if (
@@ -258,7 +279,7 @@ class HarnessCompileResult(BaseModel):
                 raise ValueError("prepared results cannot carry a failure phase")
             if (
                 self.source_document_sha256 is None
-                or self.source_semantic_sha256 is None
+                or self.source_sha256 is None
                 or self.harness_id is None
             ):
                 raise ValueError(
@@ -284,7 +305,7 @@ class HarnessCompileResult(BaseModel):
             required = (
                 self.compiled_plan_path,
                 self.compiled_sha256,
-                self.source_semantic_sha256,
+                self.source_sha256,
                 self.source_document_sha256,
                 self.harness_id,
             )
@@ -301,12 +322,18 @@ class HarnessRequestAdmissionResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request: HarnessCompileRequest | None = None
+    parsed_source: ParsedHarnessSource | None = None
     result: HarnessCompileResult | None = None
 
     @model_validator(mode="after")
     def _exactly_one_outcome(self) -> HarnessRequestAdmissionResult:
         if (self.request is None) == (self.result is None):
             raise ValueError("exactly one of request or result must be provided")
+        if self.request is None and self.parsed_source is not None:
+            raise ValueError("failed admission cannot carry parsed source")
+        if self.request is not None:
+            if self.parsed_source is None or self.parsed_source.source is None:
+                raise ValueError("successful admission requires parsed source")
         return self
 
 
@@ -388,7 +415,7 @@ class DefaultHarnessCompileRequestAdmission:
                 parsed=parsed,
                 diagnostics=source_diagnostics,
             )
-        return HarnessRequestAdmissionResult(request=request)
+        return HarnessRequestAdmissionResult(request=request, parsed_source=parsed)
 
 
 def _request_id_from_raw(raw_request: Mapping[str, object]) -> str:
@@ -680,10 +707,10 @@ def _failed_source_admission(
     diagnostics: tuple[CompilerDiagnostic, ...],
 ) -> HarnessRequestAdmissionResult:
     source = parsed.source
-    source_semantic_sha256 = None
+    source_sha256 = None
     harness_id = None
     if source is not None:
-        source_semantic_sha256 = _source_semantic_sha256(source)
+        source_sha256 = _source_semantic_sha256(source)
         harness_id = source.harness_id
     return HarnessRequestAdmissionResult(
         result=HarnessCompileResult(
@@ -692,7 +719,7 @@ def _failed_source_admission(
             plan_commit_certainty=PlanCommitCertainty.ABSENT,
             failure_phase=CompilerPhase.SCHEMA,
             source_document_sha256=parsed.source_document_sha256,
-            source_semantic_sha256=source_semantic_sha256,
+            source_sha256=source_sha256,
             harness_id=harness_id,
             diagnostics=diagnostics,
         )

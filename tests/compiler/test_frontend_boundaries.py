@@ -7,6 +7,11 @@ from pathlib import Path
 
 
 COMPILER_ROOT = Path("src/millforge/compiler")
+LOWERING_MODULE = "src/millforge/compiler/lowering.py"
+OUTPUT_MODULE = "src/millforge/compiler/output.py"
+SERVICE_MODULE = "src/millforge/compiler/service.py"
+COMPILER_IO_BOUNDARY_MODULES = {OUTPUT_MODULE}
+COMPILED_PLAN_CONSUMER_MODULES = {LOWERING_MODULE, OUTPUT_MODULE, SERVICE_MODULE}
 FORBIDDEN_IMPORT_PREFIXES = (
     "millforge._forge",
     "millforge.runtime",
@@ -52,6 +57,8 @@ def _imported_module_names(tree: ast.Module) -> set[str]:
 def test_compiler_front_end_does_not_import_deferred_runtime_boundaries() -> None:
     imports: dict[str, set[str]] = {}
     for path in COMPILER_ROOT.glob("*.py"):
+        if path.as_posix() in COMPILED_PLAN_CONSUMER_MODULES:
+            continue
         imports[path.as_posix()] = _imported_module_names(_module_tree(path))
 
     flattened = {module for module_names in imports.values() for module in module_names}
@@ -65,6 +72,8 @@ def test_compiler_front_end_does_not_import_deferred_runtime_boundaries() -> Non
 
 def test_compiler_modules_do_not_perform_io_or_runtime_invocation() -> None:
     for path in COMPILER_ROOT.glob("*.py"):
+        if path.as_posix() in COMPILER_IO_BOUNDARY_MODULES:
+            continue
         tree = _module_tree(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):

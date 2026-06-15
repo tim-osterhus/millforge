@@ -7,6 +7,7 @@ import json
 import math
 import re
 from enum import Enum
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -718,6 +719,22 @@ def canonical_json_serialize(obj: Any, *, ensure_ascii: bool = True) -> str:
     )
 
 
+def canonical_compiled_plan_bytes(plan: CompiledHarnessPlan) -> bytes:
+    """Serialize a finalized compiled plan as canonical UTF-8 JSON bytes."""
+    verified, _computed, warnings, restored = verify_compiled_plan_sha256(
+        canonical_json_serialize(plan.model_dump(mode="json")),
+        expected_compiled_hash=plan.compiled_sha256,
+        expected_harness_id=plan.harness_id,
+        expected_harness_version=plan.harness_version,
+    )
+    if not verified or restored is None:
+        joined = (
+            "; ".join(warnings) if warnings else "compiled hash verification failed"
+        )
+        raise ValueError(joined)
+    return canonical_json_serialize(restored.model_dump(mode="json")).encode("utf-8")
+
+
 def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     seen: set[str] = set()
     result: dict[str, Any] = {}
@@ -740,6 +757,36 @@ def parse_and_strip_compiled_plan(
     return plan, stripped
 
 
+def calculate_compiled_plan_sha256(plan_payload: dict[str, Any]) -> str:
+    """Hash a complete JSON-mode compiled-plan payload without its digest field."""
+    if "compiled_sha256" not in plan_payload:
+        raise ValueError("compiled plan payload must include compiled_sha256")
+    body = dict(plan_payload)
+    body.pop("compiled_sha256")
+    return hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
+
+
+def finalize_compiled_plan_sha256(plan: CompiledHarnessPlan) -> CompiledHarnessPlan:
+    """Return a fully validated plan with the canonical compiled SHA-256 set."""
+    placeholder_payload = plan.model_dump(mode="json")
+    digest = calculate_compiled_plan_sha256(placeholder_payload)
+    finalized = CompiledHarnessPlan.model_validate(
+        {**placeholder_payload, "compiled_sha256": digest}
+    )
+    verified, computed, warnings, _restored = verify_compiled_plan_sha256(
+        canonical_json_serialize(finalized.model_dump(mode="json")),
+        expected_compiled_hash=digest,
+        expected_harness_id=finalized.harness_id,
+        expected_harness_version=finalized.harness_version,
+    )
+    if not verified or computed != digest:
+        joined = (
+            "; ".join(warnings) if warnings else "compiled hash verification failed"
+        )
+        raise ValueError(joined)
+    return finalized
+
+
 def verify_compiled_plan_sha256(
     raw: str,
     *,
@@ -760,15 +807,11 @@ def verify_compiled_plan_sha256(
     except Exception as exc:
         return False, "", [f"Plan validation error: {exc}"], None
 
-    body = dict(parsed)
-    body.pop("compiled_sha256", None)
-
     try:
-        canonical = canonical_json_serialize(body)
+        computed_hash = calculate_compiled_plan_sha256(parsed)
     except (TypeError, ValueError) as exc:
         return False, "", [f"Canonical serialisation error: {exc}"], None
 
-    computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     verified = True
 
     if computed_hash != plan.compiled_sha256:
@@ -803,3 +846,24 @@ def verify_compiled_plan_sha256(
         verified = False
 
     return verified, computed_hash, warnings, plan
+
+
+class FileCompiledHarnessLoader:
+    """Filesystem loader for runtime compiled-plan references."""
+
+    async def load(self, ref: Any) -> CompiledHarnessPlan:
+        """Load and verify a compiled harness plan from ``ref.path``."""
+        path = Path(ref.path)
+        raw = path.read_text(encoding="utf-8")
+        expected_hash = getattr(ref.expected_hash, "digest", None)
+        identity = ref.identity
+        verified, _computed, warnings, plan = verify_compiled_plan_sha256(
+            raw,
+            expected_compiled_hash=expected_hash,
+            expected_harness_id=identity.harness_id,
+            expected_harness_version=identity.harness_version,
+        )
+        if not verified or plan is None:
+            joined = "; ".join(warnings) if warnings else "compiled plan invalid"
+            raise ValueError(joined)
+        return plan

@@ -16,6 +16,7 @@ from millforge.compiler import (
     CompilerDiagnostic,
     CompilerPhase,
     DefaultHarnessCompileRequestAdmission,
+    DiagnosticReportState,
     DiagnosticField,
     DiagnosticSeverity,
     HarnessCompileRequest,
@@ -195,7 +196,7 @@ def test_compile_result_rejects_prepared_committed_without_plan_publication_evid
         status=CompileStatus.PREPARED,
         plan_commit_certainty=PlanCommitCertainty.COMMITTED,
         source_document_sha256=SHA_A,
-        source_semantic_sha256=SHA_B,
+        source_sha256=SHA_B,
         harness_id="millforge.test.builder.compiler.v1",
         compiled_plan_path="compiled/plan.json",
         compiled_sha256=SHA_C,
@@ -209,21 +210,83 @@ def test_compile_result_serializes_and_round_trips_public_json() -> None:
         request_id="request.c48f9299",
         status=CompileStatus.COMMITTED,
         plan_commit_certainty=PlanCommitCertainty.COMMITTED,
+        diagnostic_report_state=DiagnosticReportState.COMMITTED,
         source_document_sha256=SHA_A,
-        source_semantic_sha256=SHA_B,
+        source_sha256=SHA_B,
+        request_identity_sha256=SHA_A,
         harness_id="millforge.test.builder.compiler.v1",
         compiled_plan_path="compiled/plan.json",
         compiled_sha256=SHA_C,
+        diagnostics_path="compiled/diagnostics.json",
     )
 
     serialized = result.model_dump_json()
     restored = HarnessCompileResult.model_validate_json(serialized)
 
     assert restored.model_dump(mode="json") == result.model_dump(mode="json")
+    assert "source_semantic_sha256" not in serialized
+    assert restored.source_sha256 == SHA_B
+    assert restored.request_identity_sha256 == SHA_A
     assert restored.status == CompileStatus.COMMITTED
     assert restored.plan_commit_certainty == PlanCommitCertainty.COMMITTED
+    assert restored.diagnostic_report_state == DiagnosticReportState.COMMITTED
     assert restored.compiled_plan_path == "compiled/plan.json"
     assert restored.compiled_sha256 == SHA_C
+
+
+def test_compile_result_accepts_legacy_semantic_hash_input_but_dumps_source_sha() -> (
+    None
+):
+    restored = HarnessCompileResult.model_validate(
+        {
+            "request_id": "request.c48f9299",
+            "status": "prepared",
+            "plan_commit_certainty": "absent",
+            "source_document_sha256": SHA_A,
+            "source_semantic_sha256": SHA_B,
+            "harness_id": "millforge.test.builder.compiler.v1",
+        }
+    )
+
+    assert restored.source_sha256 == SHA_B
+    assert "source_sha256" in restored.model_dump(mode="json")
+    assert "source_semantic_sha256" not in restored.model_dump(mode="json")
+
+
+def test_compile_result_diagnostic_report_state_requires_safe_relative_path() -> None:
+    result = HarnessCompileResult(
+        request_id="request.c48f9299",
+        status=CompileStatus.PREPARED,
+        plan_commit_certainty=PlanCommitCertainty.ABSENT,
+        diagnostic_report_state=DiagnosticReportState.PREPARED,
+        source_document_sha256=SHA_A,
+        source_sha256=SHA_B,
+        harness_id="millforge.test.builder.compiler.v1",
+        diagnostics_path="compiled/diagnostics.json",
+    )
+    assert result.diagnostic_report_state == DiagnosticReportState.PREPARED
+
+    with pytest.raises(ValidationError):
+        HarnessCompileResult(
+            request_id="request.c48f9299",
+            status=CompileStatus.PREPARED,
+            plan_commit_certainty=PlanCommitCertainty.ABSENT,
+            diagnostic_report_state=DiagnosticReportState.PREPARED,
+            source_document_sha256=SHA_A,
+            source_sha256=SHA_B,
+            harness_id="millforge.test.builder.compiler.v1",
+        )
+
+    with pytest.raises(ValidationError):
+        HarnessCompileResult(
+            request_id="request.c48f9299",
+            status=CompileStatus.PREPARED,
+            plan_commit_certainty=PlanCommitCertainty.ABSENT,
+            source_document_sha256=SHA_A,
+            source_sha256=SHA_B,
+            harness_id="millforge.test.builder.compiler.v1",
+            diagnostics_path="/tmp/diagnostics.json",
+        )
 
 
 def test_compile_result_truncates_over_limit_diagnostics() -> None:
@@ -303,7 +366,7 @@ def test_compile_result_invariants_for_failed_and_committed_outcomes() -> None:
         status=CompileStatus.COMMITTED,
         plan_commit_certainty=PlanCommitCertainty.COMMITTED,
         source_document_sha256=SHA_A,
-        source_semantic_sha256=SHA_B,
+        source_sha256=SHA_B,
         harness_id="millforge.test.builder.compiler.v1",
         compiled_plan_path="compiled/plan.json",
         compiled_sha256=SHA_C,
@@ -345,7 +408,7 @@ def test_compile_result_phase_certainty_matrix_without_lowering_or_publication()
         status=CompileStatus.PREPARED,
         plan_commit_certainty=PlanCommitCertainty.ABSENT,
         source_document_sha256=SHA_A,
-        source_semantic_sha256=SHA_B,
+        source_sha256=SHA_B,
         harness_id="millforge.test.builder.compiler.v1",
     )
     assert prepared.compiled_sha256 is None
@@ -366,7 +429,7 @@ def test_compile_result_phase_certainty_matrix_without_lowering_or_publication()
             plan_commit_certainty=PlanCommitCertainty.ABSENT,
             failure_phase=CompilerPhase.PARSE,
             source_document_sha256=SHA_A,
-            source_semantic_sha256=SHA_B,
+            source_sha256=SHA_B,
         )
 
     with pytest.raises(ValidationError):
@@ -460,7 +523,7 @@ def test_request_source_format_schema_failure_does_not_open_source(
     assert admitted.result is not None
     assert admitted.result.failure_phase == CompilerPhase.REQUEST
     assert admitted.result.source_document_sha256 is None
-    assert admitted.result.source_semantic_sha256 is None
+    assert admitted.result.source_sha256 is None
     assert admitted.result.harness_id is None
     diagnostic = admitted.result.diagnostics[0]
     assert diagnostic.code == "MF-S018"
@@ -744,7 +807,7 @@ def test_parse_failures_return_failed_compile_results_with_source_hash(
     assert admitted.result is not None
     assert admitted.result.failure_phase == CompilerPhase.PARSE
     assert admitted.result.source_document_sha256 is not None
-    assert admitted.result.source_semantic_sha256 is None
+    assert admitted.result.source_sha256 is None
     assert admitted.result.harness_id is None
     assert admitted.result.diagnostics[0].code == "MF-S011"
 
@@ -761,7 +824,7 @@ def test_post_parse_admission_rejects_expected_harness_mismatch(
     assert admitted.result is not None
     assert admitted.result.failure_phase == CompilerPhase.SCHEMA
     assert admitted.result.source_document_sha256 is not None
-    assert admitted.result.source_semantic_sha256 is not None
+    assert admitted.result.source_sha256 is not None
     assert admitted.result.harness_id == "millforge.test.builder.compiler.v1"
     diagnostic = admitted.result.diagnostics[0]
     assert diagnostic.code == "MF-S027"
@@ -782,7 +845,7 @@ def test_post_parse_admission_rejects_stage_scope_mismatch(
     assert admitted.result is not None
     assert admitted.result.failure_phase == CompilerPhase.SCHEMA
     assert admitted.result.source_document_sha256 is not None
-    assert admitted.result.source_semantic_sha256 is not None
+    assert admitted.result.source_sha256 is not None
     assert admitted.result.harness_id == "millforge.test.builder.compiler.v1"
     diagnostic = admitted.result.diagnostics[0]
     assert diagnostic.code == "MF-S028"

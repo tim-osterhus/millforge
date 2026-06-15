@@ -33,7 +33,7 @@ from millforge.compiled_plan import (
     ToolTraceSideEffectClass,
     ToolExecutionStatus,
     ToolTraceRecord,
-    canonical_json_serialize,
+    finalize_compiled_plan_sha256,
 )
 from millforge.contracts import (
     ArtifactRef,
@@ -525,10 +525,7 @@ def make_canonical_builder_compiled_plan(
     if compiled_sha256 is not None:
         return plan
 
-    body = plan.model_dump(mode="json")
-    body.pop("compiled_sha256")
-    digest = hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
-    return plan.model_copy(update={"compiled_sha256": digest})
+    return finalize_compiled_plan_sha256(plan)
 
 
 def make_canonical_builder_execution_request(
@@ -756,10 +753,7 @@ def make_test_compiled_plan(
     if compiled_sha256 is not None:
         return plan
 
-    body = plan.model_dump(mode="json")
-    body.pop("compiled_sha256")
-    digest = hashlib.sha256(canonical_json_serialize(body).encode("utf-8")).hexdigest()
-    return plan.model_copy(update={"compiled_sha256": digest})
+    return finalize_compiled_plan_sha256(plan)
 
 
 def make_test_session_event(

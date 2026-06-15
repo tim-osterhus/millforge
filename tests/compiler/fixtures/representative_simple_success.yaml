@@ -1,0 +1,40 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.representative.simple.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - builder
+model_profile_id: profile.golden
+prompt:
+  policy_id: millforge.test.representative.simple.policy.v1
+  system_instructions: |
+    Collect the minimum context.
+    Finish only after the draft exists.
+  include_request_context: true
+budgets:
+  max_iterations: 3
+  max_validation_retries: 1
+  max_tool_errors: 1
+  max_prerequisite_violations: 1
+  max_premature_terminal_attempts: 1
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 4096
+  keep_recent_iterations: 1
+  phase_thresholds: [0.4, 0.7, 0.9]
+graph:
+  nodes:
+    collect_context:
+      tool_ref: tools.collect_context@1
+      required: true
+      produces: ["draft"]
+    complete:
+      tool_ref: tools.finish_success@1
+      terminal_result: BUILDER_COMPLETE
+      prerequisites:
+        - node_id: collect_context
+artifacts:
+  declared_artifact_ids: ["draft"]
+  required_by_terminal:
+    BUILDER_COMPLETE: ["draft"]

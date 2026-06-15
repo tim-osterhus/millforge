@@ -59,6 +59,7 @@ from millforge.compiled_plan import (
     ToolTraceRecord,
     ToolTraceSideEffectClass,
     canonical_json_serialize,
+    verify_compiled_plan_sha256,
 )
 from millforge.contracts import (
     ArtifactRef,
@@ -536,16 +537,21 @@ class ForgeGuardrailBackend:
     ) -> CompiledHarnessPlan:
         execution = request.execution_request
         plan = await self._plan_loader.load(execution.compiled_harness)
-        body = plan.model_dump(mode="json")
-        body.pop("compiled_sha256", None)
-        computed_hash = hashlib.sha256(
-            canonical_json_serialize(body).encode("utf-8")
-        ).hexdigest()
-        if computed_hash != plan.compiled_sha256:
-            raise ForgeBindingRejectedError("Compiled plan canonical hash mismatch")
-        if computed_hash != execution.compiled_harness.expected_hash.digest:
-            raise ForgeBindingRejectedError("Compiled plan expected hash mismatch")
-        return plan
+        verified, computed_hash, warnings, restored = verify_compiled_plan_sha256(
+            canonical_json_serialize(plan.model_dump(mode="json")),
+            expected_compiled_hash=execution.compiled_harness.expected_hash.digest,
+            expected_harness_id=execution.compiled_harness.identity.harness_id,
+            expected_harness_version=(
+                execution.compiled_harness.identity.harness_version
+            ),
+        )
+        if not verified or restored is None:
+            if computed_hash != plan.compiled_sha256:
+                raise ForgeBindingRejectedError("Compiled plan canonical hash mismatch")
+            if computed_hash != execution.compiled_harness.expected_hash.digest:
+                raise ForgeBindingRejectedError("Compiled plan expected hash mismatch")
+            raise ForgeBindingRejectedError("; ".join(warnings))
+        return restored
 
     def _recheck_plan_against_request(
         self,
