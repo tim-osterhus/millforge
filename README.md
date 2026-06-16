@@ -350,6 +350,47 @@ frozen exact-version snapshot helper, but it still does not add tool execution,
 dispatch maps, connector admission, custom tools, production presets, queue
 policy, implementation registration objects, or Millrace runner integration.
 
+## Millforge 04C Tool Execution Boundary
+
+04C adds the compiled-plan-scoped runtime execution boundary under
+`src/millforge/tools/`. It exposes `create_builtin_tool_executor(...)` from
+`millforge.tools` and admits calls only through exact `ToolBindingRef`
+matches from the frozen compiled plan plus the accepted 04B built-in snapshot.
+
+Runtime implementations stay explicit and source-owned. Accepted built-in
+`implementation_id` values are registered to callables in source rather than
+descriptor import strings, dotted paths, plugin loading, connector lookup, or
+other dynamic dispatch.
+
+Binding denial is fail-closed and typed, with deterministic `not_found`,
+`conflict`, and `binding_mismatch` categories for uncompiled names, ambiguous
+model-visible names, runtime-implementation gaps, and projection mismatches.
+
+`DefaultHarnessRuntime` threads a runtime-owned `ToolExecutionContext` through
+the guarded session and into `ToolExecutor.execute()`, so tool dispatch uses
+trusted request, stage, run, workspace, artifact, capability, deadline, and
+cancellation data supplied by the runtime rather than model-authored
+substitutes.
+
+### Execution Validation, Results, And Traces
+
+Model tool calls are converted into closed `ValidatedToolCall` objects before
+implementation entry, so extra fields are rejected by schema rather than
+flowing into the runtime.
+
+The runtime rechecks prerequisites, required capabilities, deadlines, and
+cancellation before dispatch. Built-in calls also pass through an
+executor-owned, non-effectful pre-entry policy gate before implementation
+entry, covering workspace logical-path containment, artifact declarations and
+availability, shell profile/selector/timeout admission, and terminal artifact
+requirements. The runtime validates implementation output against descriptor
+output schemas after completion and redacts/bounds model-visible results
+before return.
+
+Every attempted or denied call emits a `ToolTraceRecord`. Pre-entry denials
+persist `side_effect_certainty=not_attempted`, and resolved, ambiguous, and
+uncompiled binding states are preserved through `binding_resolution_status`.
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider

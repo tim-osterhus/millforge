@@ -85,6 +85,7 @@ The implemented runtime direction already includes:
 - an OpenAI-compatible Chat Completions transport subset
 - compiled-plan hash verification before model or tool work
 - guarded runtime execution through a private backend adapter
+- trusted built-in tool execution boundary with exact compiled-plan binding, runtime-owned execution context handoff, executor-owned pre-entry policy gates, and bounded trace/result handling
 - terminal intent validation and structured terminal result artifacts
 - runtime events, tool traces, metrics, manifests, and diagnostics
 - cancellation, timeout, side-effect certainty, and redaction hardening

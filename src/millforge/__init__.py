@@ -142,6 +142,7 @@ from millforge.tools import (
     ToolRegistryError,
     ToolRegistryErrorCode,
     ToolTimeoutPolicy,
+    create_builtin_tool_executor,
     descriptor_hash_payload,
 )
 
@@ -281,5 +282,6 @@ __all__: list[str] = [
     "ToolRegistryError",
     "ToolRegistryErrorCode",
     "ToolTimeoutPolicy",
+    "create_builtin_tool_executor",
     "descriptor_hash_payload",
 ]

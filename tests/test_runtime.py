@@ -719,6 +719,18 @@ async def test_canonical_builder_s1_clean_success_runtime_slice(
     )
     assert len(tool_executor.workspace.mutations) == 1
     assert Path(BUILDER_WORKSPACE_PATH).exists() is False
+    assert tool_executor.contexts
+    first_context = tool_executor.contexts[0]
+    assert all(context == first_context for context in tool_executor.contexts)
+    assert first_context.request_id == "request-builder-001"
+    assert first_context.run_id == "run-builder-001"
+    assert first_context.stage.node_id == "builder"
+    assert first_context.work_item_id == "work-builder-001"
+    assert first_context.run_directory.path == run_dir
+    assert first_context.workspace_root == Path.cwd()
+    assert first_context.artifact_root == run_dir / "millforge"
+    assert first_context.compiled_artifact_policy is not None
+    assert first_context.cancellation_requested is False
 
     millforge_dir = run_dir / "millforge"
     _assert_millforge_artifacts(

@@ -1382,6 +1382,15 @@ class ForgeToolBridge:
 
     def _execution_context(self) -> ToolExecutionContext:
         request = self._session_request.execution_request
+        token = self._cancellation_resolver.resolve(request.cancellation)
+        update = {
+            "deadline": self._session_request.deadline,
+            "cancellation_requested": token.is_cancelled(),
+            "current_monotonic": self._clock.monotonic(),
+        }
+        trusted = self._session_request.tool_execution_context
+        if trusted is not None:
+            return trusted.model_copy(update=update)
         return ToolExecutionContext(
             request_id=request.request_id,
             run_id=request.run_id,
@@ -1390,7 +1399,12 @@ class ForgeToolBridge:
             capability_envelope=request.capability_envelope,
             timeout=request.timeout,
             cancellation=request.cancellation,
-            deadline=self._session_request.deadline,
+            workspace_root=Path.cwd(),
+            artifact_root=request.run_directory.path / "millforge",
+            compiled_artifact_policy=self._plan.artifact_policy,
+            input_artifacts=request.input_artifacts,
+            work_item_id=request.work_item_id,
+            **update,
         )
 
     def _prerequisite_decisions(

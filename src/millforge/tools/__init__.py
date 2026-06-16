@@ -8,6 +8,17 @@ from millforge.tools.builtins import (
     create_builtin_tool_snapshot,
     iter_builtin_tool_descriptors,
 )
+from millforge.tools.builtin_runtime import (
+    create_builtin_runtime_registry,
+    create_builtin_tool_executor,
+)
+from millforge.tools.execution import (
+    CompiledToolBindingExecutor,
+    RuntimeToolRegistry,
+    ToolBindingDenialCode,
+    create_tool_executor,
+)
+from millforge.tools.results import ToolExecutionErrorCode
 from millforge.tools.registry import (
     DESCRIPTOR_HASH_KIND,
     DESCRIPTOR_SCHEMA_VERSION,
@@ -42,14 +53,21 @@ __all__ = [
     "SNAPSHOT_KIND",
     "FrozenDescriptorHashRecord",
     "FrozenToolRegistrySnapshot",
+    "CompiledToolBindingExecutor",
+    "RuntimeToolRegistry",
+    "ToolBindingDenialCode",
+    "ToolExecutionErrorCode",
     "ToolDescriptor",
     "ToolOutputPolicy",
     "ToolRegistry",
     "ToolRegistryError",
     "ToolRegistryErrorCode",
     "ToolTimeoutPolicy",
+    "create_builtin_runtime_registry",
+    "create_builtin_tool_executor",
     "create_builtin_tool_registry",
     "create_builtin_tool_snapshot",
+    "create_tool_executor",
     "descriptor_hash_payload",
     "iter_builtin_tool_descriptors",
 ]

@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from millforge.compiled_plan import (
+    CompiledArtifactPolicy,
     DiagnosticField,
     IdempotencyClass,
     SessionEvent,
@@ -33,10 +34,14 @@ _SANITIZED_METADATA_MAX_ITEMS = 32
 _SANITIZED_METADATA_KEY_MAX_LENGTH = 64
 _SANITIZED_METADATA_STRING_MAX_LENGTH = 2048
 _SANITIZED_METADATA_BYTES_MAX_LENGTH = 32768
-_REDACTION_MAX_DEPTH = 8
-_REDACTION_MAX_COLLECTION_ITEMS = 64
-_REDACTION_MAX_STRING_LENGTH = 2048
-_REDACTION_MAX_TOTAL_BYTES = 32768
+_REDACTION_DEFAULT_DEPTH = 8
+_REDACTION_DEFAULT_COLLECTION_ITEMS = 64
+_REDACTION_DEFAULT_STRING_LENGTH = 2048
+_REDACTION_DEFAULT_TOTAL_BYTES = 32768
+_REDACTION_MAX_DEPTH = 32
+_REDACTION_MAX_COLLECTION_ITEMS = 1024
+_REDACTION_MAX_STRING_LENGTH = 64 * 1024 * 1024
+_REDACTION_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _SECRET_PATTERNS = (
     re.compile(
         r"(?i)\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*=([^\s]+)"
@@ -515,6 +520,31 @@ class ToolExecutionContext(BaseModel):
     timeout: TimeoutRef = Field(description="Timeout reference")
     cancellation: CancellationRef = Field(description="Cancellation reference")
     deadline: Deadline = Field(description="Deadline specification")
+    workspace_root: Path | None = Field(
+        default=None, description="Trusted workspace root supplied by runtime"
+    )
+    artifact_root: Path | None = Field(
+        default=None, description="Trusted artifact root supplied by runtime"
+    )
+    compiled_artifact_policy: CompiledArtifactPolicy | None = Field(
+        default=None,
+        description="Compiled artifact declarations supplied by the runtime",
+    )
+    input_artifacts: Tuple[ArtifactRef, ...] = Field(
+        default_factory=tuple,
+        description="Runtime-supplied request input artifact references",
+    )
+    work_item_id: str | None = Field(
+        default=None, description="Runtime-supplied active work item identifier"
+    )
+    cancellation_requested: bool = Field(
+        default=False, description="Trusted pre-entry cancellation state"
+    )
+    current_monotonic: float = Field(
+        default=0.0,
+        ge=0,
+        description="Trusted monotonic timestamp used for pre-entry deadline checks",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -712,21 +742,23 @@ class RedactionPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_depth: int = Field(default=_REDACTION_MAX_DEPTH, ge=1, le=32)
+    max_depth: int = Field(
+        default=_REDACTION_DEFAULT_DEPTH, ge=1, le=_REDACTION_MAX_DEPTH
+    )
     max_collection_items: int = Field(
-        default=_REDACTION_MAX_COLLECTION_ITEMS,
+        default=_REDACTION_DEFAULT_COLLECTION_ITEMS,
         ge=1,
-        le=1024,
+        le=_REDACTION_MAX_COLLECTION_ITEMS,
     )
     max_string_length: int = Field(
-        default=_REDACTION_MAX_STRING_LENGTH,
+        default=_REDACTION_DEFAULT_STRING_LENGTH,
         ge=1,
-        le=16384,
+        le=_REDACTION_MAX_STRING_LENGTH,
     )
     max_total_bytes: int = Field(
-        default=_REDACTION_MAX_TOTAL_BYTES,
+        default=_REDACTION_DEFAULT_TOTAL_BYTES,
         ge=1,
-        le=262144,
+        le=_REDACTION_MAX_TOTAL_BYTES,
     )
     replacement: str = "**redacted**"
     sensitive_field_markers: Tuple[str, ...] = (
@@ -1455,6 +1487,10 @@ class GuardedSessionRequest(BaseModel):
         description="The harness execution request"
     )
     deadline: Deadline = Field(description="Deadline for the guarded session")
+    tool_execution_context: ToolExecutionContext | None = Field(
+        default=None,
+        description="Runtime-owned context passed through to tool execution",
+    )
 
 
 class GuardedSessionResult(BaseModel):

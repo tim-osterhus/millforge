@@ -606,6 +606,9 @@ class ToolTraceRecord(BaseModel):
     tool_call_id: str
     model_tool_name: str
     binding: ToolBindingRef
+    binding_resolution_status: Literal["resolved", "ambiguous", "uncompiled"] = (
+        "resolved"
+    )
     input_sha256: str
     prerequisite_decisions: tuple[ToolTraceDecisionRecord, ...] = Field(
         default_factory=tuple
@@ -666,6 +669,13 @@ class ToolTraceRecord(BaseModel):
 
     @model_validator(mode="after")
     def _trace_consistency(self) -> ToolTraceRecord:
+        if (
+            self.binding_resolution_status != "resolved"
+            and self.execution_status == ToolExecutionStatus.SUCCESS
+        ):
+            raise ValueError(
+                "binding-resolution failures cannot be marked as successful"
+            )
         denied = any(
             record.decision == ToolTraceDecision.DENIED
             for record in (*self.prerequisite_decisions, *self.capability_decisions)

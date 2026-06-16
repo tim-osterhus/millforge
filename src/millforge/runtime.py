@@ -35,6 +35,7 @@ from millforge.contracts import (
     TerminalCertainty,
     TerminalIntent,
     TimingMetadata,
+    ToolExecutionContext,
     UsageMetadata,
 )
 from millforge.exceptions import (
@@ -364,12 +365,14 @@ class DefaultHarnessRuntime:
         artifact_writer: RuntimeArtifactWriter,
         clock: RuntimeClock,
         cancellation_resolver: CancellationResolver,
+        workspace_root: Path | None = None,
     ) -> None:
         self._backend = backend
         self._plan_loader = plan_loader
         self._artifact_writer = artifact_writer
         self._clock = clock
         self._cancellation_resolver = cancellation_resolver
+        self._workspace_root = workspace_root
         self._state: RuntimeState = RuntimeState.RECEIVED
         self._started_at: datetime | None = None
 
@@ -1002,6 +1005,33 @@ class DefaultHarnessRuntime:
                 "terminal_intent.terminal_result does not match compiled plan"
             )
 
+    def _build_tool_execution_context(
+        self,
+        *,
+        plan: CompiledHarnessPlan,
+        request: HarnessExecutionRequest,
+        deadline: Deadline,
+        cancellation_requested: bool,
+    ) -> ToolExecutionContext:
+        """Build the runtime-owned context that backend tool calls must reuse."""
+        return ToolExecutionContext(
+            request_id=request.request_id,
+            run_id=request.run_id,
+            stage=request.stage,
+            run_directory=request.run_directory,
+            capability_envelope=request.capability_envelope,
+            timeout=request.timeout,
+            cancellation=request.cancellation,
+            deadline=deadline,
+            workspace_root=self._workspace_root or Path.cwd(),
+            artifact_root=request.run_directory.path / "millforge",
+            compiled_artifact_policy=plan.artifact_policy,
+            input_artifacts=request.input_artifacts,
+            work_item_id=request.work_item_id,
+            cancellation_requested=cancellation_requested,
+            current_monotonic=self._clock.monotonic(),
+        )
+
     # ------------------------------------------------------------------
     # Artifact writing helpers
     # ------------------------------------------------------------------
@@ -1455,6 +1485,16 @@ class DefaultHarnessRuntime:
                         request.timeout.deadline,
                         source="request",
                     ),
+                )
+                session_request = session_request.model_copy(
+                    update={
+                        "tool_execution_context": self._build_tool_execution_context(
+                            plan=plan,
+                            request=request,
+                            deadline=session_request.deadline,
+                            cancellation_requested=cancellation_token.is_cancelled(),
+                        )
+                    }
                 )
                 await self._checkpoint_invocation(
                     cancellation_token,

@@ -52,6 +52,7 @@ from millforge.contracts import (
     ParsedToolArguments,
     SideEffectRecord,
     TimingMetadata,
+    ToolExecutionContext,
     ToolExecutionResult,
     ToolResultMessage,
     TokenUsage,
@@ -1105,6 +1106,52 @@ async def test_tool_bridge_accepts_canonical_builder_fake_terminal_path(
         "validation_results.json",
     }
     assert bridge.tool_trace[-1].execution_status == ToolExecutionStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_forwards_runtime_owned_tool_execution_context(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    request = make_test_guarded_session_request()
+    trusted_workspace = tmp_path / "trusted-workspace"
+    trusted_artifact_root = tmp_path / "trusted-run" / "millforge"
+    trusted_context = ToolExecutionContext(
+        request_id=request.execution_request.request_id,
+        run_id=request.execution_request.run_id,
+        stage=request.execution_request.stage,
+        run_directory=request.execution_request.run_directory,
+        capability_envelope=request.execution_request.capability_envelope,
+        timeout=request.execution_request.timeout,
+        cancellation=request.execution_request.cancellation,
+        deadline=request.deadline,
+        workspace_root=trusted_workspace,
+        artifact_root=trusted_artifact_root,
+        compiled_artifact_policy=plan.artifact_policy,
+        input_artifacts=request.execution_request.input_artifacts,
+        work_item_id=request.execution_request.work_item_id,
+        current_monotonic=0.0,
+    )
+    request = request.model_copy(update={"tool_execution_context": trusted_context})
+    executor = FakeToolExecutor(
+        supported_tools={"prepare"},
+        results={"prepare": [_tool_result("call-prepare", "prepared")]},
+    )
+    bridge = ForgeToolBridge(
+        plan=plan,
+        session_request=request,
+        executor=executor,
+        cancellation_resolver=FakeCancellationResolver(),
+        clock=FakeClock(monotonic_value=12.5),
+        call_id_resolver=lambda _name, _args: "call-prepare",
+    )
+
+    assert await bridge.invoke("prepare", {"path": "input.txt"}) == "prepared"
+
+    assert executor.contexts[0].workspace_root == trusted_workspace
+    assert executor.contexts[0].artifact_root == trusted_artifact_root
+    assert executor.contexts[0].compiled_artifact_policy == plan.artifact_policy
+    assert executor.contexts[0].current_monotonic == 12.5
 
 
 @pytest.mark.asyncio
