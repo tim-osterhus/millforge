@@ -1,0 +1,222 @@
+[
+  {
+    "requirement_id": "04A-R01",
+    "requirement_summary": "Descriptor contracts are immutable, closed-world, deeply snapshotted, and registry hashes cover descriptor-visible identity, schema, capability, artifact, side-effect, idempotency, timeout, and output policy fields.",
+    "source_specs": ["04A"],
+    "implemented_by_files": ["src/millforge/tools/registry.py"],
+    "covered_by_tests": ["tests/test_tool_registry.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry.py"],
+    "status": "implemented",
+    "notes": "Validated by descriptor rejection, deep snapshot, hash stability, hash drift, and golden vector tests; no connector, preset, or execution admission is implied."
+  },
+  {
+    "requirement_id": "04A-R02",
+    "requirement_summary": "Registry registration freezes to an exact-version lookup snapshot with deterministic snapshot_id and snapshot_sha256 and fail-closed missing, invalid, alias, and latest lookup outcomes.",
+    "source_specs": ["04A"],
+    "implemented_by_files": ["src/millforge/tools/registry.py"],
+    "covered_by_tests": ["tests/test_tool_registry.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry.py"],
+    "status": "implemented",
+    "notes": "Snapshot rows point at ToolRegistry and FrozenToolRegistrySnapshot behavior, including duplicate rejection, post-freeze rejection, exact lookup, invalid lookup, redacted evidence, and immutable hash records."
+  },
+  {
+    "requirement_id": "04A-R03",
+    "requirement_summary": "Registry descriptors project through RawToolDescriptor, ToolCatalogEntry, ToolBindingRef, semantic compilation, and lowering without creating a parallel compiler binding model.",
+    "source_specs": ["04A"],
+    "implemented_by_files": ["src/millforge/tools/registry.py", "src/millforge/compiler/catalogs.py", "src/millforge/compiler/semantic.py", "src/millforge/compiler/lowering.py", "src/millforge/compiled_plan.py"],
+    "covered_by_tests": ["tests/test_tool_registry.py", "tests/compiler/test_semantic.py", "tests/compiler/test_lowering.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry.py tests/compiler"],
+    "status": "implemented",
+    "notes": "The registry projection test checks compiler plans preserve registry-computed descriptor hashes."
+  },
+  {
+    "requirement_id": "04B-R01",
+    "requirement_summary": "The production built-in descriptor catalog exposes exactly the accepted built-in descriptors, deterministic helpers, descriptor hashes, and snapshot projection without tool execution side effects.",
+    "source_specs": ["04B"],
+    "implemented_by_files": ["src/millforge/tools/builtins.py", "src/millforge/tools/registry.py"],
+    "covered_by_tests": ["tests/test_builtin_tool_catalog.py", "tests/compiler/test_builtin_compiler_fixtures.py"],
+    "evidence_commands": ["python -m pytest tests/test_builtin_tool_catalog.py tests/compiler"],
+    "status": "implemented",
+    "notes": "Coverage includes built-in identity, uniqueness, schema validation, deterministic snapshot construction, compiler fixtures, and descriptor-only import behavior."
+  },
+  {
+    "requirement_id": "04B-R02",
+    "requirement_summary": "Built-in descriptor schema and hash payloads are deterministic, use closed JSON object schemas, and avoid arbitrary shell command, cwd, env map, host-path, daemon-control, or connector fields.",
+    "source_specs": ["04B"],
+    "implemented_by_files": ["src/millforge/tools/builtins.py", "src/millforge/tools/registry.py", "src/millforge/compiler/schema_validation.py"],
+    "covered_by_tests": ["tests/test_builtin_tool_catalog.py"],
+    "evidence_commands": ["python -m pytest tests/test_builtin_tool_catalog.py"],
+    "status": "implemented",
+    "notes": "Schema and golden-hash tests pin deterministic descriptor data and prove shell, workspace, and terminal schemas stay constrained."
+  },
+  {
+    "requirement_id": "04B-R03",
+    "requirement_summary": "Capability declarations, produced artifact IDs, side-effect classes, and idempotency classes for built-ins are exact and aggregate through compiler capability and artifact validation.",
+    "source_specs": ["04B"],
+    "implemented_by_files": ["src/millforge/tools/builtins.py", "src/millforge/compiler/capabilities.py", "src/millforge/compiler/artifact_validation.py"],
+    "covered_by_tests": ["tests/test_builtin_tool_catalog.py", "tests/compiler/test_builtin_compiler_fixtures.py", "tests/compiler/test_capabilities.py", "tests/compiler/test_artifact_validation.py"],
+    "evidence_commands": ["python -m pytest tests/test_builtin_tool_catalog.py tests/compiler"],
+    "status": "implemented",
+    "notes": "Rows map to concrete descriptor constants and compiler validation tests rather than a broad catalog citation."
+  },
+  {
+    "requirement_id": "04C-R01",
+    "requirement_summary": "Tool execution resolves only exact compiled binding identity: tool_id, tool_version, descriptor_sha256, implementation_id, model tool name, descriptor projection, capabilities, artifacts, side-effect class, and idempotency.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/execution.py", "src/millforge/tools/builtin_runtime.py", "src/millforge/compiled_plan.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Execution-boundary tests cover exact binding success, uncompiled calls, ambiguous names, projection mismatches, stale hashes, and missing runtime implementations before implementation entry."
+  },
+  {
+    "requirement_id": "04C-R02",
+    "requirement_summary": "Model arguments are validated against descriptor input schemas before implementation entry, and implementation outputs are validated, redacted, bounded, and hashed after execution.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/execution.py", "src/millforge/tools/results.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Coverage includes invalid argument denial, extra-field rejection, output validation failure, secret redaction, host path redaction, truncation, and sanitized output hashing."
+  },
+  {
+    "requirement_id": "04C-R03",
+    "requirement_summary": "Workspace tools enforce logical relative path containment and reject traversal, absolute paths, Windows drive, UNC, device, ADS, reserved-name, symlink escape, and current-directory violations.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/path_policy.py", "src/millforge/tools/builtin_runtime.py", "src/millforge/tools/execution.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Path-policy tests use local temporary roots and do not depend on live providers, network, credentials, or Millrace daemon state."
+  },
+  {
+    "requirement_id": "04C-R04",
+    "requirement_summary": "Artifact tools are confined to declared artifact policy under the runtime artifact root and return structured artifact references and hashes instead of arbitrary host paths or unbounded content.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/builtin_runtime.py", "src/millforge/tools/execution.py", "src/millforge/tools/results.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Artifact containment coverage is tied to built-in runtime implementation tests and execution preflight gates."
+  },
+  {
+    "requirement_id": "04C-R05",
+    "requirement_summary": "Shell/process tools admit only source-owned named profiles and selectors, reject arbitrary command-shaped inputs, and route through bounded process profile policy.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/builtin_runtime.py", "src/millforge/tools/execution.py", "src/millforge/tools/results.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py", "tests/test_builtin_tool_catalog.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py tests/test_builtin_tool_catalog.py"],
+    "status": "implemented",
+    "notes": "Schema tests reject arbitrary shell fields and runtime tests cover approved profile execution policy without network or package-install behavior."
+  },
+  {
+    "requirement_id": "04C-R06",
+    "requirement_summary": "Terminal tools emit validated Millforge TerminalIntent outputs only and do not mutate Millrace queue, status, daemon, tmux, git, or external release state.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/builtin_runtime.py", "src/millforge/tools/execution.py", "src/millforge/contracts.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Terminal boundary tests assert intent shape and authority separation; this row deliberately does not claim Millrace runner integration."
+  },
+  {
+    "requirement_id": "04C-R07",
+    "requirement_summary": "Trace completeness requires every attempted or denied tool call to emit a redacted ToolTraceRecord with sequence, request/run/stage identity, binding resolution status, input hash, decisions, status, side-effect data, timing, and bounded summary.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/execution.py", "src/millforge/tools/results.py", "src/millforge/compiled_plan.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Trace tests validate success and denial records, binding-resolution statuses, redaction, and sanitized summaries."
+  },
+  {
+    "requirement_id": "04C-R08",
+    "requirement_summary": "Ambiguous side-effect failures and non-idempotent terminal behaviors are classified conservatively and are not marked retryable after unknown completion.",
+    "source_specs": ["04C"],
+    "implemented_by_files": ["src/millforge/tools/execution.py", "src/millforge/tools/results.py", "src/millforge/compiled_plan.py"],
+    "covered_by_tests": ["tests/test_tool_execution_boundary.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_execution_boundary.py"],
+    "status": "implemented",
+    "notes": "Implementation-error handling records completion_unknown, ambiguous_side_effect detail, and retry_allowed=false."
+  },
+  {
+    "requirement_id": "04D-R01",
+    "requirement_summary": "Spec 04 closure includes a machine-checkable conformance matrix that maps 04A-04D requirements to concrete files, tests, offline evidence commands, status, and conservative notes.",
+    "source_specs": ["04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json", "tests/test_tool_registry_closure.py"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py"],
+    "status": "implemented",
+    "notes": "This row is self-checking and prevents citation-only pass rows by requiring concrete implementation files, test modules, and offline commands."
+  },
+  {
+    "requirement_id": "04D-R02",
+    "requirement_summary": "Package and public API boundaries expose accepted 04A-04C contracts and create_builtin_tool_executor while rejecting production presets, connector broker/admission, Millrace runner, daemon, queue/status control, local/private defaults, and private runtime state in archives.",
+    "source_specs": ["04D"],
+    "implemented_by_files": ["src/millforge/__init__.py", "src/millforge/tools/__init__.py", "pyproject.toml"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py", "tests/test_builtin_tool_catalog.py", "tests/test_tool_registry.py", "tests/test_forge_boundary_packaging.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py tests/test_builtin_tool_catalog.py tests/test_tool_registry.py", "python -m build", "python -m zipfile -l dist/*.whl", "tar -tzf dist/*.tar.gz", "git ls-files -- millrace-agents ideas ref-forge", "git check-ignore -v millrace-agents ideas ref-forge"],
+    "status": "implemented",
+    "notes": "The matrix claims public API and package audit coverage only; it does not mark any future preset, connector admission, Millrace runner, eval, or live provider behavior as implemented."
+  },
+  {
+    "requirement_id": "04D-R03",
+    "requirement_summary": "Connector-shaped descriptors are readiness-tested through generic registry and compiler catalog behavior without admitting connectors, MCP discovery, brokers, identity manifests, approval flow, custom compilation, or live connector execution.",
+    "source_specs": ["04D", "05"],
+    "implemented_by_files": ["src/millforge/tools/registry.py", "src/millforge/tools/execution.py", "src/millforge/compiler/semantic.py", "src/millforge/compiler/lowering.py"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py", "tests/test_tool_registry.py", "tests/test_tool_execution_boundary.py", "tests/compiler/test_semantic.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py tests/test_tool_registry.py tests/test_tool_execution_boundary.py tests/compiler"],
+    "status": "deferred",
+    "notes": "Generic connector-shaped descriptor projection can be tested as readiness evidence, but Spec 05 owns connector admission, discovery, brokers, identity manifests, MCP, approvals, custom compilation, and live execution."
+  },
+  {
+    "requirement_id": "04D-R04",
+    "requirement_summary": "Closure evidence remains offline, deterministic, bounded, and independent of OpenAI, DeepSeek, MCP, local credentials, live provider state, live connector state, network, and Millrace daemon state.",
+    "source_specs": ["04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json", "tests/test_tool_registry_closure.py"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py", "python -m pytest tests/test_tool_registry_closure.py tests/test_tool_execution_boundary.py tests/test_builtin_tool_catalog.py tests/test_tool_registry.py tests/compiler"],
+    "status": "implemented",
+    "notes": "The validator rejects command strings that invoke network, providers, credentials, MCP, connectors, Millrace daemon control, or external package installation."
+  },
+  {
+    "requirement_id": "FUTURE-SPEC-01-RUNNER-INTEGRATION",
+    "requirement_summary": "Millrace runner binding, queue/status authority, daemon controls, and workflow runtime mutation remain outside Spec 04 closure.",
+    "source_specs": ["01", "04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py"],
+    "status": "deferred",
+    "notes": "Deferred to Spec 01; this row exists so implemented rows cannot overclaim Millrace runner integration."
+  },
+  {
+    "requirement_id": "FUTURE-SPEC-05-CONNECTOR-ADMISSION",
+    "requirement_summary": "Connector discovery, connector identity manifests, connector brokers, MCP, approvals, admitted connector execution, and custom tool compilation remain outside Spec 04 closure.",
+    "source_specs": ["05", "04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py"],
+    "status": "deferred",
+    "notes": "Deferred to Spec 05; Spec 04 may prove generic descriptor readiness but does not admit connectors."
+  },
+  {
+    "requirement_id": "FUTURE-SPEC-07-PRODUCTION-PRESETS",
+    "requirement_summary": "Production Planner, Builder, Checker, Arbiter, or eval harness presets remain outside Spec 04 closure.",
+    "source_specs": ["07", "04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py"],
+    "status": "deferred",
+    "notes": "Deferred to Spec 07; existing built-in compiler fixtures are readiness evidence, not production preset implementation."
+  },
+  {
+    "requirement_id": "FUTURE-SPEC-06-AND-08-WORKFLOWS",
+    "requirement_summary": "Small-model workflow behavior and comparative evaluation campaigns remain outside Spec 04 closure.",
+    "source_specs": ["06", "08", "04D"],
+    "implemented_by_files": ["tests/fixtures/spec04_conformance_matrix.json"],
+    "covered_by_tests": ["tests/test_tool_registry_closure.py"],
+    "evidence_commands": ["python -m pytest tests/test_tool_registry_closure.py"],
+    "status": "deferred",
+    "notes": "Deferred to Specs 06 and 08; closure tests stay offline and do not claim live model or eval-suite execution."
+  }
+]

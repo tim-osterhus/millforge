@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -39,11 +40,18 @@ from millforge import (
     ValidatedToolCall,
 )
 from millforge.compiled_plan import finalize_compiled_plan_sha256
+from millforge.compiler import (
+    CompileStatus,
+    HarnessCompileRequest,
+    compile as compile_harness,
+)
 from millforge.tools import (
     RuntimeToolRegistry,
+    FrozenToolRegistrySnapshot,
     ToolBindingDenialCode,
     ToolDescriptor,
     ToolExecutionErrorCode,
+    ToolRegistry,
     create_builtin_tool_executor,
     create_builtin_tool_snapshot,
     create_tool_executor,
@@ -51,10 +59,216 @@ from millforge.tools import (
 )
 from millforge.tools.path_policy import PathPolicyError, validate_logical_path
 from millforge.tools.results import canonical_sha256
+from tests.compiler.conftest import StaticModelProfileCatalogSnapshot
 
 
 def test_create_builtin_tool_executor_is_public() -> None:
     assert public_tools.create_builtin_tool_executor is create_builtin_tool_executor
+
+
+@pytest.mark.asyncio
+async def test_production_builtin_snapshot_compiled_executor_readiness_smoke(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    source_root.mkdir()
+    (output_root / "compiled").mkdir(parents=True)
+    source_path = source_root / "harness.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "kind": "millforge_harness",
+                "harness_id": "millforge.test.builtin.readiness.v1",
+                "harness_version": 1,
+                "stage_scope": {"stage_kind_ids": ["builder"]},
+                "model_profile_id": "profile.standard",
+                "prompt": {
+                    "policy_id": "millforge.test.builtin.readiness.policy.v1",
+                    "system_instructions": "Exercise the built-in executor.",
+                    "include_request_context": True,
+                },
+                "budgets": {
+                    "max_iterations": 6,
+                    "max_validation_retries": 1,
+                    "max_tool_errors": 2,
+                    "max_prerequisite_violations": 1,
+                    "max_premature_terminal_attempts": 1,
+                },
+                "context": {
+                    "strategy_id": "forge.tiered.v1",
+                    "budget_tokens": 4096,
+                    "keep_recent_iterations": 1,
+                    "phase_thresholds": [0.5, 0.75, 0.9],
+                },
+                "graph": {
+                    "nodes": {
+                        "inspect": {"tool_ref": "builtin.request.inspect@1"},
+                        "read_file": {"tool_ref": "builtin.workspace.read_file@1"},
+                        "submit": {
+                            "tool_ref": "builtin.terminal.submit@1",
+                            "terminal_result": "BUILDER_COMPLETE",
+                        },
+                        "reject": {
+                            "tool_ref": "builtin.terminal.reject@1",
+                            "terminal_result": "BUILDER_REJECTED",
+                        },
+                        "escalate": {
+                            "tool_ref": "builtin.terminal.escalate@1",
+                            "terminal_result": "BUILDER_ESCALATED",
+                        },
+                    }
+                },
+                "artifacts": {
+                    "declared_artifact_ids": [],
+                    "required_by_terminal": {},
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    request = HarnessCompileRequest(
+        request_id="request.builtin.readiness.v1",
+        source_path="harness.json",
+        source_root=str(source_root),
+        source_format="json",
+        output_dir="compiled",
+        output_root=str(output_root),
+        expected_harness_id="millforge.test.builtin.readiness.v1",
+        stage_kind_id="builder",
+        legal_terminal_results=(
+            "BUILDER_COMPLETE",
+            "BUILDER_ESCALATED",
+            "BUILDER_REJECTED",
+        ),
+        capability_envelope=CapabilityEnvelope(
+            grants=(
+                CapabilityGrant(capability_id="request.read"),
+                CapabilityGrant(capability_id="terminal.intent"),
+                CapabilityGrant(capability_id="workspace.read"),
+            )
+        ),
+    )
+    snapshot = cast(FrozenToolRegistrySnapshot, create_builtin_tool_snapshot())
+    compile_result = compile_harness(
+        request,
+        tool_catalog=snapshot,
+        model_profile_catalog=StaticModelProfileCatalogSnapshot(
+            profiles={
+                "profile.standard": CompiledModelProfile(profile_id="profile.standard")
+            }
+        ),
+    )
+    assert compile_result.status == CompileStatus.COMMITTED
+    assert compile_result.compiled_plan_path is not None
+
+    plan = CompiledHarnessPlan.model_validate_json(
+        (output_root / compile_result.compiled_plan_path).read_text(encoding="utf-8")
+    )
+    snapshot_hashes = {
+        record.tool_id: record.descriptor_sha256
+        for record in snapshot.descriptor_hash_records
+    }
+    assert {
+        node.binding.tool_id: node.binding.descriptor_sha256 for node in plan.nodes
+    } == {
+        node.binding.tool_id: snapshot_hashes[node.binding.tool_id]
+        for node in plan.nodes
+    }
+    executor = create_builtin_tool_executor(plan)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text(
+        "SECRET_TOKEN=abc123 /mnt/f/_Millrace/private.txt\n",
+        encoding="utf-8",
+    )
+    context = _context(
+        "request.read",
+        "terminal.intent",
+        "workspace.read",
+        workspace_root=workspace,
+    )
+
+    read_file = await executor.execute_model_tool(
+        model_tool_name="read_workspace_file",
+        call_id="call-read-file",
+        arguments={"path": "README.md"},
+        context=context,
+    )
+    uncompiled = await executor.execute_model_tool(
+        model_tool_name="write_workspace_file",
+        call_id="call-uncompiled",
+        arguments={"path": "README.md", "content": "nope"},
+        context=context,
+    )
+    unauthorized = await executor.execute_model_tool(
+        model_tool_name="read_workspace_file",
+        call_id="call-unauthorized",
+        arguments={"path": "README.md"},
+        context=_context("request.read", workspace_root=workspace),
+    )
+    submitted = await executor.execute_model_tool(
+        model_tool_name="submit_terminal_intent",
+        call_id="call-submit",
+        arguments={"terminal_result": "BUILDER_COMPLETE", "summary": "done"},
+        context=context,
+    )
+    rejected = await executor.execute_model_tool(
+        model_tool_name="reject_terminal_intent",
+        call_id="call-reject",
+        arguments={"terminal_result": "BUILDER_REJECTED", "summary": "reject"},
+        context=context,
+    )
+    escalated = await executor.execute_model_tool(
+        model_tool_name="escalate_terminal_intent",
+        call_id="call-escalate",
+        arguments={
+            "terminal_result": "BUILDER_ESCALATED",
+            "summary": "blocked",
+            "blocker": "needs operator",
+        },
+        context=context,
+    )
+
+    assert read_file.status is ToolExecutionStatus.SUCCESS
+    assert "SECRET_TOKEN=abc123" not in read_file.structured_data["content"]
+    assert "/mnt/f/_Millrace/private.txt" not in read_file.structured_data["content"]
+    assert read_file.output_sha256 == canonical_sha256(read_file.structured_data)
+    assert uncompiled.status is ToolExecutionStatus.NOT_EXECUTED
+    assert uncompiled.error_code == ToolBindingDenialCode.NOT_FOUND.value
+    assert unauthorized.status is ToolExecutionStatus.NOT_EXECUTED
+    assert unauthorized.error_code == ToolExecutionErrorCode.CAPABILITY_DENIED.value
+    assert [submitted.status, rejected.status, escalated.status] == [
+        ToolExecutionStatus.SUCCESS,
+        ToolExecutionStatus.SUCCESS,
+        ToolExecutionStatus.SUCCESS,
+    ]
+    assert [
+        submitted.structured_data["terminal_result"],
+        rejected.structured_data["terminal_result"],
+        escalated.structured_data["terminal_result"],
+    ] == ["BUILDER_COMPLETE", "BUILDER_REJECTED", "BUILDER_ESCALATED"]
+
+    traces = executor.trace_records
+    assert [trace.tool_call_id for trace in traces] == [
+        "call-read-file",
+        "call-uncompiled",
+        "call-unauthorized",
+        "call-submit",
+        "call-reject",
+        "call-escalate",
+    ]
+    assert [trace.sequence for trace in traces] == [1, 2, 3, 4, 5, 6]
+    assert traces[0].execution_status is ToolExecutionStatus.SUCCESS
+    assert traces[0].output_sha256 == read_file.output_sha256
+    assert traces[1].binding_resolution_status == "uncompiled"
+    assert traces[1].side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert traces[1].output_sha256 is None
+    assert traces[2].capability_decisions[0].decision.value == "denied"
+    assert traces[2].side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert traces[2].output_sha256 is None
 
 
 @pytest.mark.asyncio
@@ -170,10 +384,66 @@ async def test_missing_runtime_implementation_surfaces_hard_failure_and_trace() 
 
 
 @pytest.mark.parametrize(
+    "binding_update,expected_field",
+    [
+        ({"tool_id": "builtin.request.missing"}, "tool_id/tool_version"),
+        ({"tool_version": 2}, "tool_id/tool_version"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_stale_compiled_binding_identity_rejects_before_dispatch(
+    binding_update: dict[str, Any],
+    expected_field: str,
+) -> None:
+    inspect_descriptor = _descriptor("builtin.request.inspect")
+    terminal_descriptor = _descriptor("builtin.terminal.submit")
+    plan = _plan(inspect_descriptor, terminal_descriptor)
+    stale_node = plan.nodes[0].model_copy(
+        update={
+            "binding": plan.nodes[0].binding.model_copy(update=binding_update),
+        }
+    )
+    stale_plan = plan.model_copy(update={"nodes": (stale_node, plan.nodes[1])})
+    calls: list[ValidatedToolCall] = []
+    executor = _executor_with_call_log(stale_plan, calls)
+
+    result = await executor.execute_model_tool(
+        model_tool_name=inspect_descriptor.model_tool_name,
+        call_id=f"call-stale-{expected_field}",
+        arguments={},
+        context=_context("request.read"),
+    )
+
+    assert result.status is ToolExecutionStatus.NOT_EXECUTED
+    assert result.error_code == ToolBindingDenialCode.NOT_FOUND.value
+    assert result.structured_data["evidence"]["binding_field"] == expected_field
+    assert result.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert result.output_sha256 is None
+    assert calls == []
+    trace = executor.trace_records[0]
+    assert trace.execution_status is ToolExecutionStatus.NOT_EXECUTED
+    assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert trace.output_sha256 is None
+
+
+@pytest.mark.parametrize(
     "field,update,expected_field",
     [
         ("binding", {"descriptor_sha256": "a" * 64}, "descriptor_sha256"),
         ("binding", {"implementation_id": "impl.other.v1"}, "implementation_id"),
+        ("node", {"model_tool_name": "inspect_request_changed"}, "model_tool_name"),
+        (
+            "node",
+            {
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                }
+            },
+            "input_schema",
+        ),
         (
             "node",
             {"required_capabilities": ("request.read", "workspace.read")},
@@ -213,7 +483,7 @@ async def test_projection_and_binding_mismatches_reject_before_dispatch(
     executor = _executor_with_call_log(mutated, calls)
 
     result = await executor.execute_model_tool(
-        model_tool_name=inspect_descriptor.model_tool_name,
+        model_tool_name=node.model_tool_name,
         call_id=f"call-{expected_field}",
         arguments={},
         context=_context(),
@@ -222,7 +492,181 @@ async def test_projection_and_binding_mismatches_reject_before_dispatch(
     assert result.status is ToolExecutionStatus.HARD_FAILURE
     assert result.error_code == ToolBindingDenialCode.BINDING_MISMATCH.value
     assert result.structured_data["evidence"]["binding_field"] == expected_field
+    assert result.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert result.output_sha256 is None
     assert calls == []
+    trace = executor.trace_records[0]
+    assert trace.execution_status is ToolExecutionStatus.HARD_FAILURE
+    assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert trace.output_sha256 is None
+
+
+@pytest.mark.asyncio
+async def test_output_schema_descriptor_drift_rejects_stale_compiled_binding_before_dispatch() -> (
+    None
+):
+    baseline = _connector_descriptor()
+    drifted = _connector_descriptor(
+        output_schema={
+            "type": "object",
+            "properties": {"changed": {"type": "boolean"}},
+            "required": ["changed"],
+            "additionalProperties": False,
+        }
+    )
+    terminal = _descriptor("builtin.terminal.submit")
+    plan = _plan(baseline, terminal)
+    registry = ToolRegistry()
+    registry.register(drifted)
+    registry.register(terminal)
+    calls: list[ValidatedToolCall] = []
+
+    async def implementation(
+        call: ValidatedToolCall, _context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        calls.append(call)
+        return _success(call, baseline)
+
+    runtime_registry = RuntimeToolRegistry()
+    runtime_registry.register(drifted.implementation_id, implementation)
+    runtime_registry.register(terminal.implementation_id, implementation)
+    executor = create_tool_executor(
+        plan=plan,
+        descriptor_snapshot=registry.freeze(),
+        runtime_registry=runtime_registry,
+    )
+
+    result = await executor.execute_model_tool(
+        model_tool_name=baseline.model_tool_name,
+        call_id="call-output-schema-drift",
+        arguments={"message": "hello"},
+        context=_context(),
+    )
+
+    assert result.status is ToolExecutionStatus.HARD_FAILURE
+    assert result.error_code == ToolBindingDenialCode.BINDING_MISMATCH.value
+    assert result.structured_data["evidence"]["binding_field"] == "descriptor_sha256"
+    assert result.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert result.output_sha256 is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_connector_shaped_descriptor_compiles_generically_but_execution_requires_runtime_registration(
+    tmp_path: Path,
+) -> None:
+    connector = _connector_descriptor()
+    terminal = _descriptor("builtin.terminal.submit")
+    registry = ToolRegistry()
+    registry.register(connector)
+    registry.register(terminal)
+    snapshot = registry.freeze()
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "output"
+    source_root.mkdir()
+    (output_root / "compiled").mkdir(parents=True)
+    (source_root / "harness.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "kind": "millforge_harness",
+                "harness_id": "millforge.test.connector.boundary.v1",
+                "harness_version": 1,
+                "stage_scope": {"stage_kind_ids": ["builder"]},
+                "model_profile_id": "profile.standard",
+                "prompt": {
+                    "policy_id": "millforge.test.connector.boundary.policy.v1",
+                    "system_instructions": "Exercise generic connector-shaped binding.",
+                    "include_request_context": True,
+                },
+                "budgets": {
+                    "max_iterations": 4,
+                    "max_validation_retries": 1,
+                    "max_tool_errors": 1,
+                    "max_prerequisite_violations": 1,
+                    "max_premature_terminal_attempts": 1,
+                },
+                "context": {
+                    "strategy_id": "forge.tiered.v1",
+                    "budget_tokens": 4096,
+                    "keep_recent_iterations": 1,
+                    "phase_thresholds": [0.5, 0.75, 0.9],
+                },
+                "graph": {
+                    "nodes": {
+                        "echo": {"tool_ref": "connector.test.echo@1"},
+                        "done": {
+                            "tool_ref": "builtin.terminal.submit@1",
+                            "terminal_result": "BUILDER_COMPLETE",
+                            "prerequisites": [{"node_id": "echo"}],
+                        },
+                    }
+                },
+                "artifacts": {
+                    "declared_artifact_ids": [],
+                    "required_by_terminal": {},
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    compile_result = compile_harness(
+        HarnessCompileRequest(
+            request_id="request.connector.boundary.v1",
+            source_path="harness.json",
+            source_root=str(source_root),
+            source_format="json",
+            output_dir="compiled",
+            output_root=str(output_root),
+            expected_harness_id="millforge.test.connector.boundary.v1",
+            stage_kind_id="builder",
+            legal_terminal_results=("BUILDER_COMPLETE",),
+            capability_envelope=CapabilityEnvelope(
+                grants=(CapabilityGrant(capability_id="terminal.intent"),)
+            ),
+        ),
+        tool_catalog=snapshot,
+        model_profile_catalog=StaticModelProfileCatalogSnapshot(
+            profiles={
+                "profile.standard": CompiledModelProfile(profile_id="profile.standard")
+            }
+        ),
+    )
+    assert compile_result.status == CompileStatus.COMMITTED
+    assert compile_result.compiled_plan_path is not None
+    plan = CompiledHarnessPlan.model_validate_json(
+        (output_root / compile_result.compiled_plan_path).read_text(encoding="utf-8")
+    )
+    echo_node = next(node for node in plan.nodes if node.node_id == "echo")
+    assert echo_node.binding.tool_id == "connector.test.echo"
+    assert echo_node.model_tool_name == "connector_test_echo"
+    assert echo_node.binding.descriptor_sha256 == connector.descriptor_sha256
+
+    executor = create_tool_executor(
+        plan=plan,
+        descriptor_snapshot=snapshot,
+        runtime_registry=RuntimeToolRegistry(),
+    )
+    result = await executor.execute_model_tool(
+        model_tool_name="connector_test_echo",
+        call_id="call-connector-missing-impl",
+        arguments={"message": "hello"},
+        context=_context("terminal.intent"),
+    )
+
+    assert result.status is ToolExecutionStatus.HARD_FAILURE
+    assert result.error_code == ToolBindingDenialCode.NOT_FOUND.value
+    assert result.structured_data["evidence"]["implementation_id"] == (
+        "impl.connector.test.echo.v1"
+    )
+    assert result.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert result.output_sha256 is None
+    assert len(executor.trace_records) == 1
+    trace = executor.trace_records[0]
+    assert trace.execution_status is ToolExecutionStatus.HARD_FAILURE
+    assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert trace.output_sha256 is None
 
 
 @pytest.mark.asyncio
@@ -1434,6 +1878,49 @@ def _descriptor(tool_id: str) -> ToolDescriptor:
         if descriptor.tool_id == tool_id:
             return descriptor
     raise AssertionError(tool_id)
+
+
+def _connector_descriptor(**updates: Any) -> ToolDescriptor:
+    values: dict[str, Any] = {
+        "tool_id": "connector.test.echo",
+        "tool_version": 1,
+        "implementation_id": "impl.connector.test.echo.v1",
+        "model_tool_name": "connector_test_echo",
+        "description": "Synthetic connector-shaped echo descriptor.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "enum": ["success", "soft_failure", "hard_failure"],
+                    "type": "string",
+                },
+                "summary": {"type": "string"},
+            },
+            "required": ["status", "summary"],
+            "additionalProperties": False,
+        },
+        "required_capabilities": (),
+        "produced_artifact_ids": (),
+        "side_effect_class": SideEffectClass.READ_ONLY,
+        "idempotency": IdempotencyClass.IDEMPOTENT,
+        "timeout_policy": {
+            "timeout_seconds": 30,
+            "cancellation_grace_seconds": 5,
+        },
+        "output_policy": {
+            "max_output_bytes": 4096,
+            "max_summary_utf8": 512,
+            "redact_secrets": True,
+        },
+    }
+    values.update(updates)
+    return ToolDescriptor(**values)
 
 
 def _descriptor_by_implementation(implementation_id: str) -> ToolDescriptor:

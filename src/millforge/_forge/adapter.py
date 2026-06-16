@@ -104,6 +104,7 @@ from millforge.protocols import (
     RuntimeClock,
     ToolExecutor,
 )
+from millforge.tools.results import canonical_sha256
 
 
 class ModelClientLike(Protocol):
@@ -1230,9 +1231,23 @@ class ForgeToolBridge:
             arguments=args,
         )
         try:
-            result = await self._executor.execute(
-                validated_call, self._execution_context()
-            )
+            context = self._execution_context()
+            prerequisite_results = {
+                node_id: result
+                for node_id, (result, _args) in self._owned_successes.items()
+            }
+            execute_model_tool = getattr(self._executor, "execute_model_tool", None)
+            if callable(execute_model_tool):
+                result = await execute_model_tool(
+                    model_tool_name=tool_name,
+                    call_id=call_id,
+                    arguments=args,
+                    context=context,
+                    prerequisite_results=prerequisite_results,
+                    session_id=self._session_request.session_id,
+                )
+            else:
+                result = await self._executor.execute(validated_call, context)
         except Exception as exc:
             self._append_trace(
                 node=node,
@@ -1809,7 +1824,7 @@ def _sha256_json(value: Any) -> str:
 
 
 def _validate_output_hash(result: ToolExecutionResult) -> str | None:
-    computed = _sha256_json(_safe_output_payload(result))
+    computed = canonical_sha256(result.structured_data)
     if result.output_sha256 is not None and result.output_sha256 != computed:
         raise NonRetryableToolError(
             "Tool result output_sha256 did not match safe output"

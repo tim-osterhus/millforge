@@ -86,14 +86,17 @@ The implemented runtime direction already includes:
 - compiled-plan hash verification before model or tool work
 - guarded runtime execution through a private backend adapter
 - trusted built-in tool execution boundary with exact compiled-plan binding, runtime-owned execution context handoff, executor-owned pre-entry policy gates, and bounded trace/result handling
+- trusted built-in tool registry descriptors, deterministic descriptor hashes,
+  built-in catalog snapshots, and offline closure evidence for the accepted
+  Spec 04 registry/catalog/execution boundary
 - terminal intent validation and structured terminal result artifacts
 - runtime events, tool traces, metrics, manifests, and diagnostics
 - cancellation, timeout, side-effect certainty, and redaction hardening
 - offline deterministic tests for the default verification path
 
 This foundation is deliberately smaller than the full roadmap. It proves the
-runtime contract before expanding into a general harness compiler, production
-tool registry, Millrace runner plugin, and evaluation suite.
+runtime contract before expanding into a general harness compiler, broader
+production tool operations, Millrace runner plugin, and evaluation suite.
 
 ## Roadmap
 

@@ -47,6 +47,11 @@ from millforge.compiled_plan import (
     canonical_json_serialize,
     finalize_compiled_plan_sha256,
 )
+from millforge.compiler import (
+    CompileStatus,
+    HarnessCompileRequest,
+    compile as compile_harness,
+)
 from millforge.contracts import (
     ArtifactRef,
     AssistantMessage,
@@ -79,6 +84,8 @@ from millforge._forge.adapter import ForgeContextFactory, ForgeGuardrailBackend
 from millforge.protocols import GuardrailBackend
 from millforge.runtime import DefaultHarnessRuntime
 from millforge.testing import FakeGuardrailBackend, FakeModelClient, FakeToolExecutor
+from millforge.tools import create_builtin_tool_executor, create_builtin_tool_snapshot
+from millforge.tools.results import canonical_sha256
 
 from tests.conftest import (
     FakeCancellationResolver,
@@ -88,6 +95,7 @@ from tests.conftest import (
     make_test_terminal_intent,
     make_test_tool_trace_record,
 )
+from tests.compiler.conftest import StaticModelProfileCatalogSnapshot
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -287,6 +295,7 @@ def _model_response(
     call_id: str,
     tool_name: str,
     usage: TokenUsage,
+    arguments: dict[str, Any] | None = None,
 ) -> ModelCompletionResponse:
     return ModelCompletionResponse(
         provider_request_id=f"provider-{call_id}",
@@ -297,7 +306,11 @@ def _model_response(
                 ModelToolCall(
                     call_id=call_id,
                     name=tool_name,
-                    arguments=ParsedToolArguments(value={"path": "input.json"}),
+                    arguments=ParsedToolArguments(
+                        value=arguments
+                        if arguments is not None
+                        else {"path": "input.json"}
+                    ),
                 ),
             ),
         ),
@@ -520,6 +533,99 @@ def _build_forge_backend(plan_loader: FakePlanLoader) -> ForgeGuardrailBackend:
         context_factory=ForgeContextFactory(),
         clock=FakeClock(),
         cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+    )
+
+
+def _compile_integrated_builtin_readiness_plan(
+    tmp_path: Path,
+) -> CompiledHarnessPlan:
+    source_root = tmp_path / "builtin-source"
+    output_root = tmp_path / "builtin-output"
+    source_root.mkdir()
+    (output_root / "compiled").mkdir(parents=True)
+    source_path = source_root / "harness.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "kind": "millforge_harness",
+                "harness_id": "test.registry_readiness.integrated",
+                "harness_version": 1,
+                "stage_scope": {"stage_kind_ids": ["builder"]},
+                "model_profile_id": TEST_PROFILE_ID,
+                "prompt": {
+                    "policy_id": "test.registry_readiness.integrated.policy",
+                    "system_instructions": (
+                        "Exercise trusted runtime-owned tool context only."
+                    ),
+                    "include_request_context": True,
+                },
+                "budgets": {
+                    "max_iterations": 8,
+                    "max_validation_retries": 2,
+                    "max_tool_errors": 2,
+                    "max_prerequisite_violations": 1,
+                    "max_premature_terminal_attempts": 1,
+                },
+                "context": {
+                    "strategy_id": "forge.tiered.v1",
+                    "budget_tokens": 4096,
+                    "keep_recent_iterations": 1,
+                    "phase_thresholds": [0.5, 0.75, 0.9],
+                },
+                "graph": {
+                    "nodes": {
+                        "inspect": {"tool_ref": "builtin.request.inspect@1"},
+                        "read_file": {"tool_ref": "builtin.workspace.read_file@1"},
+                        "write_patch_summary": {
+                            "tool_ref": "builtin.artifact.write_patch_summary@1",
+                            "produces": ["patch_summary"],
+                        },
+                        "submit": {
+                            "tool_ref": "builtin.terminal.submit@1",
+                            "terminal_result": "BUILDER_COMPLETE",
+                            "prerequisites": [{"node_id": "write_patch_summary"}],
+                        },
+                    }
+                },
+                "artifacts": {
+                    "declared_artifact_ids": ["patch_summary"],
+                    "required_by_terminal": {"BUILDER_COMPLETE": ["patch_summary"]},
+                },
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    compile_result = compile_harness(
+        HarnessCompileRequest(
+            request_id="request.registry_readiness.integrated.compile",
+            source_path="harness.json",
+            source_root=str(source_root),
+            source_format="json",
+            output_dir="compiled",
+            output_root=str(output_root),
+            expected_harness_id="test.registry_readiness.integrated",
+            stage_kind_id="builder",
+            legal_terminal_results=("BUILDER_COMPLETE",),
+            capability_envelope=CapabilityEnvelope(
+                grants=(
+                    CapabilityGrant(capability_id="request.read"),
+                    CapabilityGrant(capability_id="workspace.read"),
+                    CapabilityGrant(capability_id="artifact.write"),
+                    CapabilityGrant(capability_id="terminal.intent"),
+                )
+            ),
+        ),
+        tool_catalog=create_builtin_tool_snapshot(),
+        model_profile_catalog=StaticModelProfileCatalogSnapshot(
+            profiles={TEST_PROFILE_ID: CompiledModelProfile(profile_id=TEST_PROFILE_ID)}
+        ),
+    )
+    assert compile_result.status is CompileStatus.COMMITTED
+    assert compile_result.compiled_plan_path is not None
+    return CompiledHarnessPlan.model_validate_json(
+        (output_root / compile_result.compiled_plan_path).read_text(encoding="utf-8")
     )
 
 
@@ -825,6 +931,312 @@ async def test_full_pipeline_integration(
     assert len(session_request.session_id) > 0
     assert session_request.execution_request.request_id == TEST_REQUEST_ID
     assert session_request.execution_request.run_id == TEST_RUN_ID
+
+
+@pytest.mark.asyncio
+async def test_integrated_runtime_builtin_context_readiness_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real runtime and Forge adapter preserve runtime-owned tool context."""
+    monkeypatch.setattr(
+        "millforge.runtime.uuid.uuid4", lambda: uuid.UUID(TEST_SESSION_ID)
+    )
+    plan = _compile_integrated_builtin_readiness_plan(tmp_path)
+    plan_loader = FakePlanLoader(plan=plan)
+    workspace_root = tmp_path / "trusted-workspace"
+    workspace_root.mkdir()
+    (workspace_root / "trusted.txt").write_text("trusted workspace data\n")
+    forged_workspace = tmp_path / "model-forged-workspace"
+    forged_workspace.mkdir()
+    (forged_workspace / "trusted.txt").write_text("forged workspace data\n")
+
+    def _readiness_request(
+        run_dir: Path, *, request_id: str, run_id: str
+    ) -> HarnessExecutionRequest:
+        (run_dir / "millforge").mkdir(parents=True)
+        (run_dir / "millforge" / "input.json").write_text(
+            '{"source":"runtime"}\n',
+            encoding="utf-8",
+        )
+        (run_dir / "millforge" / "patch_summary.md").write_text(
+            "seed patch summary\n",
+            encoding="utf-8",
+        )
+        return _build_test_request(plan, run_directory=run_dir).model_copy(
+            update={
+                "request_id": request_id,
+                "run_id": run_id,
+                "work_item_id": "task.registry_readiness.integrated",
+                "run_directory": RunDirRef(run_id=run_id, path=run_dir),
+                "capability_envelope": CapabilityEnvelope(
+                    grants=(
+                        CapabilityGrant(capability_id="request.read"),
+                        CapabilityGrant(capability_id="workspace.read"),
+                        CapabilityGrant(capability_id="artifact.write"),
+                        CapabilityGrant(capability_id="terminal.intent"),
+                    )
+                ),
+                "input_artifacts": (
+                    ArtifactRef(
+                        artifact_id="art-input-001",
+                        path=Path("millforge/input.json"),
+                        content_type="application/json",
+                    ),
+                    ArtifactRef(
+                        artifact_id="patch_summary",
+                        path=Path("millforge/patch_summary.md"),
+                        content_type="text/markdown",
+                    ),
+                ),
+            }
+        )
+
+    malicious_run_dir = tmp_path / "run-integrated-builtin-forged"
+    malicious_request = _readiness_request(
+        malicious_run_dir,
+        request_id="request.registry_readiness.integrated.forged",
+        run_id="run-registry-readiness-integrated-forged",
+    )
+    malicious_model = FakeModelClient(
+        responses=[
+            _model_response(
+                content="try forged context",
+                call_id="call-forged-inspect",
+                tool_name="inspect_request",
+                usage=TokenUsage(
+                    input_tokens=10,
+                    output_tokens=4,
+                    total_tokens=14,
+                    provider_reported=True,
+                ),
+                arguments={
+                    "request_id": "model-authored-request",
+                    "run_id": "model-authored-run",
+                    "stage": {"stage_kind_id": "checker"},
+                    "workspace_root": str(forged_workspace),
+                    "artifact_root": str(tmp_path / "forged-artifacts"),
+                    "input_artifacts": [
+                        {
+                            "artifact_id": "patch_summary",
+                            "path": "../outside.md",
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+    malicious_executor = create_builtin_tool_executor(plan)
+    malicious_backend = ForgeGuardrailBackend(
+        model_client=malicious_model,
+        tool_executor=malicious_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=FakeClock(),
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+    )
+    malicious_result = await DefaultHarnessRuntime(
+        backend=malicious_backend,
+        plan_loader=plan_loader,
+        artifact_writer=RuntimeArtifactWriter(run_directory=malicious_run_dir),
+        clock=FakeClock(monotonic_value=42.0),
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+        workspace_root=workspace_root,
+    ).execute(malicious_request)
+
+    assert malicious_result.status == ExecutionStatus.FAILED
+    malicious_trace = malicious_executor.trace_records[0]
+    assert malicious_trace.tool_call_id == "call-forged-inspect"
+    assert malicious_trace.execution_status is ToolExecutionStatus.NOT_EXECUTED
+    assert malicious_trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert malicious_trace.summary == (
+        "tool arguments failed descriptor input schema validation"
+    )
+    assert malicious_trace.output_sha256 is None
+    assert malicious_trace.input_sha256 == canonical_sha256(
+        {
+            "artifact_root": str(tmp_path / "forged-artifacts"),
+            "input_artifacts": [
+                {"artifact_id": "patch_summary", "path": "../outside.md"}
+            ],
+            "request_id": "model-authored-request",
+            "run_id": "model-authored-run",
+            "stage": {"stage_kind_id": "checker"},
+            "workspace_root": str(forged_workspace),
+        }
+    )
+    assert (malicious_run_dir / "millforge" / "patch_summary.md").read_text(
+        encoding="utf-8"
+    ) == "seed patch summary\n"
+    assert not (tmp_path / "forged-artifacts").exists()
+
+    run_dir = tmp_path / "run-integrated-builtin"
+    request = _readiness_request(
+        run_dir,
+        request_id="request.registry_readiness.integrated",
+        run_id="run-registry-readiness-integrated",
+    )
+    model_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="inspect trusted context",
+                call_id="call-inspect",
+                tool_name="inspect_request",
+                usage=TokenUsage(
+                    input_tokens=11,
+                    output_tokens=5,
+                    total_tokens=16,
+                    provider_reported=True,
+                ),
+                arguments={},
+            ),
+            _model_response(
+                content="read trusted workspace",
+                call_id="call-read",
+                tool_name="read_workspace_file",
+                usage=TokenUsage(
+                    input_tokens=12,
+                    output_tokens=6,
+                    total_tokens=18,
+                    provider_reported=True,
+                ),
+                arguments={"path": "trusted.txt"},
+            ),
+            _model_response(
+                content="write trusted artifact",
+                call_id="call-write-summary",
+                tool_name="write_patch_summary_artifact",
+                usage=TokenUsage(
+                    input_tokens=13,
+                    output_tokens=7,
+                    total_tokens=20,
+                    provider_reported=True,
+                ),
+                arguments={"summary": "runtime-owned artifact root used"},
+            ),
+            _model_response(
+                content="submit terminal",
+                call_id="call-submit",
+                tool_name="submit_terminal_intent",
+                usage=TokenUsage(
+                    input_tokens=14,
+                    output_tokens=8,
+                    total_tokens=22,
+                    provider_reported=True,
+                ),
+                arguments={
+                    "terminal_result": "BUILDER_COMPLETE",
+                    "summary": "trusted runtime context verified",
+                    "artifact_refs": ["patch_summary"],
+                },
+            ),
+            ModelCompletionResponse(
+                provider_request_id="provider-final",
+                model_id=TEST_PROFILE_ID,
+                message=AssistantMessage(content="done", tool_calls=()),
+                finish_reason="stop",
+                usage=TokenUsage(
+                    input_tokens=15,
+                    output_tokens=3,
+                    total_tokens=18,
+                    provider_reported=True,
+                ),
+            ),
+        ]
+    )
+    tool_executor = create_builtin_tool_executor(plan)
+    backend = ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=plan_loader,
+        context_factory=ForgeContextFactory(),
+        clock=FakeClock(),
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+    )
+    runtime = DefaultHarnessRuntime(
+        backend=backend,
+        plan_loader=plan_loader,
+        artifact_writer=RuntimeArtifactWriter(run_directory=run_dir),
+        clock=FakeClock(monotonic_value=42.0),
+        cancellation_resolver=FakeCancellationResolver(is_cancelled=False),
+        workspace_root=workspace_root,
+    )
+
+    result = await runtime.execute(request)
+
+    assert result.status == ExecutionStatus.COMPLETED
+    assert result.result_class == ExecutionResultClass.DOMAIN_TERMINAL
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.request_id == request.request_id
+    assert result.terminal_intent.run_id == request.run_id
+    assert result.terminal_intent.stage == request.stage
+    assert result.terminal_intent.terminal_result == "BUILDER_COMPLETE"
+    assert result.terminal_intent.artifact_refs == (
+        ArtifactRef(
+            artifact_id="patch_summary",
+            path=Path("millforge/patch_summary.md"),
+            content_type="text/markdown",
+        ),
+    )
+
+    assert len(backend.requests) == 1
+    session_context = backend.requests[0].tool_execution_context
+    assert session_context is not None
+    assert session_context.request_id == request.request_id
+    assert session_context.run_id == request.run_id
+    assert session_context.stage == request.stage
+    assert session_context.run_directory == request.run_directory
+    assert session_context.workspace_root == workspace_root
+    assert session_context.artifact_root == run_dir / "millforge"
+    assert session_context.capability_envelope == request.capability_envelope
+    assert session_context.timeout == request.timeout
+    assert session_context.cancellation == request.cancellation
+    assert session_context.deadline == backend.requests[0].deadline
+    assert session_context.cancellation_requested is False
+    assert session_context.input_artifacts == request.input_artifacts
+    assert session_context.compiled_artifact_policy == plan.artifact_policy
+
+    persisted_tool_trace = [
+        json.loads(line)
+        for line in (run_dir / "millforge" / "tool_trace.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    assert [trace["execution_status"] for trace in persisted_tool_trace] == [
+        ToolExecutionStatus.SUCCESS.value
+    ] * 4
+
+    executor_trace_by_call = {
+        trace.tool_call_id: trace for trace in tool_executor.trace_records
+    }
+    assert set(executor_trace_by_call) == {
+        "call-inspect",
+        "call-read",
+        "call-write-summary",
+        "call-submit",
+    }
+    assert (run_dir / "millforge" / "patch_summary.md").read_text(
+        encoding="utf-8"
+    ) == "runtime-owned artifact root used"
+    assert executor_trace_by_call["call-read"].output_sha256 == canonical_sha256(
+        {
+            "artifact_refs": [],
+            "content": "trusted workspace data\n",
+            "status": "success",
+            "summary": "workspace file read",
+            "truncated": False,
+        }
+    )
+    assert executor_trace_by_call["call-read"].output_sha256 != canonical_sha256(
+        {
+            "artifact_refs": [],
+            "content": "forged workspace data\n",
+            "status": "success",
+            "summary": "workspace file read",
+            "truncated": False,
+        }
+    )
+    assert not (tmp_path / "forged-artifacts").exists()
 
 
 @pytest.mark.asyncio

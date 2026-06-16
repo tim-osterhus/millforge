@@ -367,7 +367,7 @@ Binding denial is fail-closed and typed, with deterministic `not_found`,
 model-visible names, runtime-implementation gaps, and projection mismatches.
 
 `DefaultHarnessRuntime` threads a runtime-owned `ToolExecutionContext` through
-the guarded session and into `ToolExecutor.execute()`, so tool dispatch uses
+the guarded session and into the tool-executor bridge, so tool dispatch uses
 trusted request, stage, run, workspace, artifact, capability, deadline, and
 cancellation data supplied by the runtime rather than model-authored
 substitutes.
@@ -390,6 +390,31 @@ before return.
 Every attempted or denied call emits a `ToolTraceRecord`. Pre-entry denials
 persist `side_effect_certainty=not_attempted`, and resolved, ambiguous, and
 uncompiled binding states are preserved through `binding_resolution_status`.
+
+## Millforge 04D Tool Registry Closure Evidence
+
+04D closes the accepted Spec 04 tool-registry packet with retained offline
+evidence rather than new production authority. The closure surface is the
+machine-checkable conformance matrix at
+`tests/fixtures/spec04_conformance_matrix.json`, validated by
+`tests/test_tool_registry_closure.py`, plus focused readiness tests for the
+04A registry contracts, 04B built-in descriptor catalog, and 04C built-in
+execution boundary.
+
+The package and documentation audits keep the public claim narrow:
+implemented Spec 04 behavior covers registry descriptors, built-in catalog
+data, exact compiled-plan tool binding, built-in execution policy gates,
+trace/result evidence, connector-shaped descriptor readiness through generic
+registry and compiler paths, and closure evidence commands. It does not claim
+connector admission, custom tool compilation, production stage presets,
+Millrace runner integration, eval-suite execution, live connector execution,
+or live provider/model/tool execution as implemented.
+
+Default Spec 04 closure verification is offline and deterministic. The retained
+gate set includes the focused registry closure suite, the full pytest suite,
+Ruff lint and format checks, MyPy, `pip check`, package build, wheel and sdist
+archive listings, the accepted 04C baseline diff, source-control status, and
+private-state checks for `millrace-agents/`, `ideas/`, and `ref-forge/`.
 
 ### Opt-In Live Model Backend Smoke
 
