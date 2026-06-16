@@ -1,0 +1,72 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.builtin.builder.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - builder
+model_profile_id: profile.standard
+prompt:
+  policy_id: millforge.test.builtin.builder.policy.v1
+  system_instructions: |
+    Consume the plan artifact, inspect the workspace, apply the patch, run tests,
+    and write builder evidence artifacts.
+  include_request_context: true
+budgets:
+  max_iterations: 7
+  max_validation_retries: 2
+  max_tool_errors: 1
+  max_prerequisite_violations: 1
+  max_premature_terminal_attempts: 1
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 8192
+  keep_recent_iterations: 2
+  phase_thresholds: [0.45, 0.7, 0.9]
+graph:
+  nodes:
+    read_plan:
+      tool_ref: builtin.artifact.read@1
+      required: true
+    inspect_request:
+      tool_ref: builtin.request.inspect@1
+      required: true
+      prerequisites:
+        - node_id: read_plan
+    read_target:
+      tool_ref: builtin.workspace.read_file@1
+      prerequisites:
+        - node_id: inspect_request
+    apply_patch:
+      tool_ref: builtin.workspace.apply_patch@1
+      prerequisites:
+        - node_id: read_target
+    write_patch_summary:
+      tool_ref: builtin.artifact.write_patch_summary@1
+      produces: ["patch_summary"]
+      prerequisites:
+        - node_id: apply_patch
+    run_tests:
+      tool_ref: builtin.shell.run_tests@1
+      prerequisites:
+        - node_id: apply_patch
+    run_static_check:
+      tool_ref: builtin.shell.run_static_check@1
+      prerequisites:
+        - node_id: apply_patch
+    write_test_results:
+      tool_ref: builtin.artifact.write_test_results@1
+      produces: ["test_results"]
+      prerequisites:
+        - node_id: run_tests
+        - node_id: run_static_check
+    complete:
+      tool_ref: builtin.terminal.submit@1
+      terminal_result: BUILDER_COMPLETE
+      prerequisites:
+        - node_id: write_patch_summary
+        - node_id: write_test_results
+artifacts:
+  declared_artifact_ids: ["patch_summary", "test_results"]
+  required_by_terminal:
+    BUILDER_COMPLETE: ["patch_summary", "test_results"]

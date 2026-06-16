@@ -1,0 +1,48 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.builtin.planner.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - planner
+model_profile_id: profile.standard
+prompt:
+  policy_id: millforge.test.builtin.planner.policy.v1
+  system_instructions: |
+    Inspect the request, read its requirements, and write a plan artifact.
+  include_request_context: true
+budgets:
+  max_iterations: 4
+  max_validation_retries: 1
+  max_tool_errors: 1
+  max_prerequisite_violations: 1
+  max_premature_terminal_attempts: 1
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 4096
+  keep_recent_iterations: 1
+  phase_thresholds: [0.5, 0.75, 0.9]
+graph:
+  nodes:
+    inspect_request:
+      tool_ref: builtin.request.inspect@1
+      required: true
+    read_requirements:
+      tool_ref: builtin.request.read_requirements@1
+      required: true
+      prerequisites:
+        - node_id: inspect_request
+    write_plan:
+      tool_ref: builtin.artifact.write_plan@1
+      produces: ["plan"]
+      prerequisites:
+        - node_id: read_requirements
+    complete:
+      tool_ref: builtin.terminal.submit@1
+      terminal_result: PLANNER_COMPLETE
+      prerequisites:
+        - node_id: write_plan
+artifacts:
+  declared_artifact_ids: ["plan"]
+  required_by_terminal:
+    PLANNER_COMPLETE: ["plan"]

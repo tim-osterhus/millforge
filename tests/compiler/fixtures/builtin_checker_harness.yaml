@@ -1,0 +1,43 @@
+schema_version: "1.0"
+kind: millforge_harness
+harness_id: millforge.test.builtin.checker.v1
+harness_version: 1
+stage_scope:
+  stage_kind_ids:
+    - checker
+model_profile_id: profile.standard
+prompt:
+  policy_id: millforge.test.builtin.checker.policy.v1
+  system_instructions: |
+    Read builder evidence and write a checker verdict artifact.
+  include_request_context: true
+budgets:
+  max_iterations: 4
+  max_validation_retries: 1
+  max_tool_errors: 1
+  max_prerequisite_violations: 1
+  max_premature_terminal_attempts: 1
+context:
+  strategy_id: forge.tiered.v1
+  budget_tokens: 4096
+  keep_recent_iterations: 1
+  phase_thresholds: [0.5, 0.75, 0.9]
+graph:
+  nodes:
+    read_builder_evidence:
+      tool_ref: builtin.artifact.read@1
+      required: true
+    write_checker_verdict:
+      tool_ref: builtin.artifact.write_verdict@1
+      produces: ["arbiter_verdict", "checker_verdict"]
+      prerequisites:
+        - node_id: read_builder_evidence
+    complete:
+      tool_ref: builtin.terminal.submit@1
+      terminal_result: CHECKER_COMPLETE
+      prerequisites:
+        - node_id: write_checker_verdict
+artifacts:
+  declared_artifact_ids: ["arbiter_verdict", "checker_verdict"]
+  required_by_terminal:
+    CHECKER_COMPLETE: ["checker_verdict"]

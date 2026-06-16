@@ -336,6 +336,20 @@ evidence. Descriptor and snapshot hashing remains generic and registry-owned;
 registry, production presets, tool execution or dispatch, connector admission,
 live provider dependencies, or Millrace runner integration.
 
+## Millforge 04B Built-In Tool Descriptor Data
+
+04B adds the descriptor-only production `builtin.*` catalog data under
+`src/millforge/tools/`. It defines the 18 version-1 built-in descriptors for
+request inspection, workspace listing/reading/searching/writing/patching,
+named test execution, static checks, artifact read/write, and terminal
+submit/reject/escalate actions, all using the accepted 04A registry contracts.
+
+The built-in catalog stays import-safe and side-effect-free. It exposes the
+immutable descriptor set, deterministic registry construction helper, and
+frozen exact-version snapshot helper, but it still does not add tool execution,
+dispatch maps, connector admission, custom tools, production presets, queue
+policy, implementation registration objects, or Millrace runner integration.
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider

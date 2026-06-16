@@ -1,5 +1,13 @@
 """Public tool registry contracts."""
 
+from millforge.tools.builtins import (
+    BUILTIN_CAPABILITY_IDS,
+    BUILTIN_TOOL_DESCRIPTORS,
+    BUILTIN_TOOL_VERSION,
+    create_builtin_tool_registry,
+    create_builtin_tool_snapshot,
+    iter_builtin_tool_descriptors,
+)
 from millforge.tools.registry import (
     DESCRIPTOR_HASH_KIND,
     DESCRIPTOR_SCHEMA_VERSION,
@@ -21,6 +29,9 @@ from millforge.tools.registry import (
 )
 
 __all__ = [
+    "BUILTIN_CAPABILITY_IDS",
+    "BUILTIN_TOOL_DESCRIPTORS",
+    "BUILTIN_TOOL_VERSION",
     "DESCRIPTOR_HASH_KIND",
     "DESCRIPTOR_SCHEMA_VERSION",
     "MAX_CANCELLATION_GRACE_SECONDS",
@@ -37,5 +48,8 @@ __all__ = [
     "ToolRegistryError",
     "ToolRegistryErrorCode",
     "ToolTimeoutPolicy",
+    "create_builtin_tool_registry",
+    "create_builtin_tool_snapshot",
     "descriptor_hash_payload",
+    "iter_builtin_tool_descriptors",
 ]
