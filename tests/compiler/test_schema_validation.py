@@ -79,6 +79,22 @@ def test_golden_rejected_schema_vectors_fail_closed() -> None:
             normalize_json_schema(vector["schema"])
 
 
+@pytest.mark.parametrize(
+    ("keyword", "schema"),
+    [
+        ("maxLength", {"type": "string", "maxLength": 8}),
+        ("maxItems", {"type": "array", "items": {"type": "string"}, "maxItems": 2}),
+        ("minimum", {"type": "number", "minimum": 1}),
+        ("maximum", {"type": "integer", "maximum": 10}),
+    ],
+)
+def test_bound_keywords_are_rejected_instead_of_unenforced(
+    keyword: str, schema: dict[str, Any]
+) -> None:
+    with pytest.raises(SchemaSubsetError, match=rf"/schema/{keyword}.*runtime"):
+        normalize_json_schema(schema)
+
+
 def test_validation_returns_deep_frozen_normalized_schema() -> None:
     schema: dict[str, Any] = {
         "type": "object",

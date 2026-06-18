@@ -14,6 +14,23 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 JsonObject = dict[str, Any]
+ConnectorApprovalDecision = Literal[
+    "approved",
+    "forbidden",
+    "pending",
+    "missing",
+    "wrong_stage",
+    "wrong_run",
+    "wrong_scope",
+    "expired_or_stale",
+]
+ConnectorApprovalPolicyValue = Literal[
+    "none",
+    "millrace_explicit",
+    "operator_out_of_band",
+    "forbidden",
+]
+ConnectorDriftDecision = Literal["passed", "failed", "not_reached"]
 
 
 class SideEffectClass(str, Enum):
@@ -609,6 +626,24 @@ class ToolTraceRecord(BaseModel):
     binding_resolution_status: Literal["resolved", "ambiguous", "uncompiled"] = (
         "resolved"
     )
+    connector_id: str | None = None
+    provider_tool_name: str | None = None
+    connector_tool_id: str | None = None
+    connector_tool_version: int | None = Field(default=None, ge=1)
+    connector_descriptor_sha256: str | None = None
+    connector_identity_sha256: str | None = None
+    discovery_snapshot_sha256: str | None = None
+    approval_policy: ConnectorApprovalPolicyValue | None = None
+    approval_decision: ConnectorApprovalDecision | None = None
+    approval_evidence: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict
+    )
+    broker_attempted: bool | None = None
+    request_sha256: str | None = None
+    response_sha256: str | None = None
+    retry_decision: Literal["retry_allowed", "retry_denied"] | None = None
+    drift_decision: ConnectorDriftDecision | None = None
+    redacted_evidence: dict[str, Any] = Field(default_factory=dict)
     input_sha256: str
     prerequisite_decisions: tuple[ToolTraceDecisionRecord, ...] = Field(
         default_factory=tuple
@@ -647,10 +682,34 @@ class ToolTraceRecord(BaseModel):
     def _input_sha256_valid(cls, value: str) -> str:
         return _validate_sha256(value, "input_sha256")
 
-    @field_validator("output_sha256")
+    @field_validator(
+        "connector_id",
+        "provider_tool_name",
+        "connector_tool_id",
+        "approval_policy",
+        "approval_decision",
+    )
     @classmethod
-    def _output_sha256_valid(cls, value: str | None) -> str | None:
-        return None if value is None else _validate_sha256(value, "output_sha256")
+    def _optional_connector_strings_nonblank(
+        cls, value: str | None, info: Any
+    ) -> str | None:
+        return None if value is None else _nonblank(value, info.field_name)
+
+    @field_validator(
+        "connector_descriptor_sha256",
+        "connector_identity_sha256",
+        "discovery_snapshot_sha256",
+    )
+    @classmethod
+    def _optional_connector_sha256_valid(
+        cls, value: str | None, info: Any
+    ) -> str | None:
+        return None if value is None else _validate_sha256(value, info.field_name)
+
+    @field_validator("request_sha256", "response_sha256", "output_sha256")
+    @classmethod
+    def _optional_sha256_valid(cls, value: str | None, info: Any) -> str | None:
+        return None if value is None else _validate_sha256(value, info.field_name)
 
     @field_validator("side_effect_detail_code", "side_effect_detail_summary")
     @classmethod
@@ -669,6 +728,31 @@ class ToolTraceRecord(BaseModel):
 
     @model_validator(mode="after")
     def _trace_consistency(self) -> ToolTraceRecord:
+        connector_fields = (
+            self.connector_id,
+            self.provider_tool_name,
+            self.connector_tool_id,
+            self.connector_tool_version,
+            self.connector_descriptor_sha256,
+            self.connector_identity_sha256,
+            self.discovery_snapshot_sha256,
+            self.approval_policy,
+            self.approval_decision,
+            self.broker_attempted,
+            self.request_sha256,
+            self.response_sha256,
+            self.retry_decision,
+            self.drift_decision,
+        )
+        if any(item is not None for item in connector_fields):
+            if not all(item is not None for item in connector_fields):
+                raise ValueError(
+                    "connector approval trace fields must be provided together"
+                )
+            if not self.approval_evidence:
+                raise ValueError("connector approval trace requires approval_evidence")
+            if not self.redacted_evidence:
+                raise ValueError("connector trace requires redacted_evidence")
         if (
             self.binding_resolution_status != "resolved"
             and self.execution_status == ToolExecutionStatus.SUCCESS

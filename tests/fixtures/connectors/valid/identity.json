@@ -1,0 +1,15 @@
+{
+  "configured_secret_refs": [
+    "fake_mcp_token"
+  ],
+  "connector_id": "connector.fake_mcp",
+  "discovered_at": "2026-06-16T18:35:00Z",
+  "implementation_digest": null,
+  "implementation_name": "fake-mcp",
+  "implementation_version": "1.0.0",
+  "protocol": "mcp",
+  "protocol_version": "2025-03-26",
+  "server_reported_name": "fake-mcp-server",
+  "server_reported_version": "1.0.0-server",
+  "transport_kind": "stdio"
+}

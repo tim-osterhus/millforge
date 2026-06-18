@@ -1721,7 +1721,9 @@ def test_timeout_origins_are_closed_while_timeout_result_class_stays_stable() ->
     assert diagnostic.model_dump(mode="json")["origin"] == "session_deadline"
 
 
-def test_side_effect_record_detail_rejects_unknown_retry() -> None:
+def test_side_effect_record_detail_allows_retry_context_to_be_decided_by_result() -> (
+    None
+):
     record = SideEffectRecord(
         certainty=SideEffectCertainty.ROLLED_BACK,
         detail_code="rolled_back",
@@ -1730,13 +1732,13 @@ def test_side_effect_record_detail_rejects_unknown_retry() -> None:
     )
     assert record.certainty is SideEffectCertainty.ROLLED_BACK
 
-    with pytest.raises(ValidationError, match="completion_unknown"):
-        SideEffectRecord(
-            certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
-            detail_code="unknown",
-            summary="Mutation may have completed",
-            retry_allowed=True,
-        )
+    unknown = SideEffectRecord(
+        certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+        detail_code="unknown",
+        summary="Mutation may have completed",
+        retry_allowed=True,
+    )
+    assert unknown.retry_allowed is True
 
 
 def test_artifact_manifest_entry_supports_failure_metadata() -> None:

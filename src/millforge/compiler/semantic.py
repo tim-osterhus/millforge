@@ -33,6 +33,8 @@ from millforge.compiler.catalogs import (
     ToolCatalogLookup,
     ToolCatalogSnapshot,
     capture_catalog_snapshot_metadata,
+    DISCOVERY_NOT_CATALOG_CODE,
+    is_connector_discovery_snapshot_like,
 )
 from millforge.compiler.diagnostics import (
     CompilerDiagnostic,
@@ -167,6 +169,16 @@ def compile_semantic(
     diagnostics.extend(preflight_diagnostics)
     if preflight_diagnostics:
         return SemanticCompileResult(diagnostics=bound_diagnostics(diagnostics))
+    if is_connector_discovery_snapshot_like(tool_snapshot):
+        return SemanticCompileResult(
+            diagnostics=(
+                _diagnostic(
+                    DISCOVERY_NOT_CATALOG_CODE,
+                    "Connector discovery snapshots are not semantic tool catalogs.",
+                    fields={"catalog_role": "tool_snapshot"},
+                ),
+            )
+        )
     try:
         tool_metadata = capture_catalog_snapshot_metadata(tool_snapshot)
         model_metadata = capture_catalog_snapshot_metadata(model_profile_snapshot)

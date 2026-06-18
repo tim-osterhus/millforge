@@ -1,0 +1,140 @@
+{
+  "connector_id": "connector.fake_mcp",
+  "denied_tools": [
+    {
+      "approval_policy": "forbidden",
+      "provider_tool_name": "delete_everything",
+      "reason": "Destructive provider tool is denied in offline admission fixtures.",
+      "review_evidence": {
+        "decision": "denied_destructive_tool",
+        "reviewed_at": "2026-06-16T18:35:00Z"
+      }
+    }
+  ],
+  "expected_connector_identity_sha256": "6a15843c843890bb08c40c9c52ff2d2dc3accb078e4dd9c7b323720882eb966f",
+  "expected_discovery_snapshot_sha256": "2b0e46b57a58858c6b9d75e4c0483ed795e7a14d3c66a491119683b7a2b0a9ac",
+  "expected_identity": {
+    "implementation_digest": null,
+    "implementation_name": "fake-mcp",
+    "implementation_version": "1.0.0",
+    "protocol": "mcp",
+    "protocol_version": "2025-03-26",
+    "transport_kind": "stdio"
+  },
+  "kind": "connector_admission_manifest",
+  "policy_metadata": {
+    "source": "offline-fixture"
+  },
+  "schema_version": "millforge.connector.admission_manifest",
+  "selected_tools": [
+    {
+      "approval_policy": "none",
+      "description": "List deterministic context records through an admitted connector descriptor.",
+      "description_policy": "operator_supplied",
+      "expected_admission_record_sha256": "cbb0d7da2fe0c537245d1f5733b4b93f2b75a6aec1a8f46b37e400e731f08ca2",
+      "expected_descriptor_sha256": "690d33df8ba4828be882c4f6ec9c4d6944215178a46ac1484fcb7649ebd68a8c",
+      "expected_raw_tool_sha256": "ebff1e33ca3838bd254ae0eb708d02a40eabeec1d298e973b551207183bf1b25",
+      "idempotency": "idempotent",
+      "implementation_id": "connector.fake_mcp.list_context.v1",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "input_schema_policy": "provider_exact",
+      "model_tool_name": "connector_list_context",
+      "output_policy": {
+        "max_output_bytes": 65536,
+        "max_summary_utf8": 4096,
+        "redact_secrets": true
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "output_schema_policy": "provider_exact",
+      "produced_artifact_ids": [],
+      "provider_tool_name": "list_context",
+      "required_capabilities": [
+        "cap.connector.list_context"
+      ],
+      "side_effect_class": "read_only",
+      "timeout_policy": {
+        "cancellation_grace_seconds": 10,
+        "timeout_seconds": 90
+      },
+      "tool_id": "connector.fake_mcp.list_context",
+      "tool_version": 1
+    },
+    {
+      "approval_policy": "none",
+      "description": "Echo a message through an admitted connector descriptor.",
+      "description_policy": "operator_supplied",
+      "expected_admission_record_sha256": "f0b429df954936772115ed044a3d6de1253bce5d77a191e8f762c441933c74d7",
+      "expected_descriptor_sha256": "b2937e2e24741d9bc3ad871e76acaec7d71e3a8fbf49ffeebbb7c8abf44b1428",
+      "expected_raw_tool_sha256": "cb5024370ac9842c99553dc311015c69243144f01c41115f6de1b32e2d929b06",
+      "idempotency": "idempotent",
+      "implementation_id": "connector.fake_mcp.echo.v1",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "input_schema_policy": "provider_exact",
+      "model_tool_name": "connector_echo",
+      "output_policy": {
+        "max_output_bytes": 32768,
+        "max_summary_utf8": 2048,
+        "redact_secrets": true
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "output_schema_policy": "provider_exact",
+      "produced_artifact_ids": [],
+      "provider_tool_name": "echo",
+      "required_capabilities": [
+        "cap.connector.echo"
+      ],
+      "side_effect_class": "read_only",
+      "timeout_policy": {
+        "cancellation_grace_seconds": 5,
+        "timeout_seconds": 45
+      },
+      "tool_id": "connector.fake_mcp.echo",
+      "tool_version": 1
+    }
+  ],
+  "version": "1.0"
+}

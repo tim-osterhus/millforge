@@ -11,6 +11,9 @@ SCHEMA_ANNOTATION_KEYWORDS = frozenset({"default", "description"})
 SCHEMA_STRUCTURAL_KEYWORDS = frozenset(
     {"additionalProperties", "const", "enum", "items", "properties", "required", "type"}
 )
+SCHEMA_UNSUPPORTED_BOUND_KEYWORDS = frozenset(
+    {"maxItems", "maxLength", "maximum", "minimum"}
+)
 SCHEMA_ALLOWED_KEYWORDS = SCHEMA_ANNOTATION_KEYWORDS | SCHEMA_STRUCTURAL_KEYWORDS
 SCHEMA_SCALAR_TYPES = frozenset({"boolean", "integer", "number", "string"})
 SCHEMA_ALLOWED_TYPES = SCHEMA_SCALAR_TYPES | frozenset({"array", "object"})
@@ -222,6 +225,11 @@ def _validate_object_keys(schema: Mapping[str, Any], *, path: str) -> None:
     for key in schema:
         if not isinstance(key, str):
             raise SchemaSubsetError(f"{path} keywords must be strings")
+        if key in SCHEMA_UNSUPPORTED_BOUND_KEYWORDS:
+            raise SchemaSubsetError(
+                f"{path}/{key} is not accepted because runtime does not enforce "
+                "schema bounds"
+            )
         if key not in SCHEMA_ALLOWED_KEYWORDS:
             raise SchemaSubsetError(f"{path}/{key} is not in the accepted 03B subset")
 

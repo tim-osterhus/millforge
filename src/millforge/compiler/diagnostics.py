@@ -88,6 +88,10 @@ DIAGNOSTIC_REGISTRY: dict[str, tuple[CompilerPhase, DiagnosticSeverity]] = {
         f"MF-R{number:03d}": (CompilerPhase.RESOLUTION, DiagnosticSeverity.ERROR)
         for number in range(1, 12)
     },
+    "MF-C001_DISCOVERY_NOT_CATALOG": (
+        CompilerPhase.RESOLUTION,
+        DiagnosticSeverity.ERROR,
+    ),
     **{
         f"MF-G{number:03d}": (CompilerPhase.GRAPH, DiagnosticSeverity.ERROR)
         for number in range(1, 14)
@@ -121,6 +125,7 @@ DIAGNOSTIC_TRIGGER_MEANINGS: dict[str, str] = {
     "MF-R009": "catalog-internal-failure",
     "MF-R010": "malformed-model-profile",
     "MF-R011": "invalid-tool-reference",
+    "MF-C001_DISCOVERY_NOT_CATALOG": "discovery-snapshot-not-catalog",
     "MF-G001": "unknown-prerequisite-node",
     "MF-G002": "self-prerequisite",
     "MF-G003": "duplicate-prerequisite",

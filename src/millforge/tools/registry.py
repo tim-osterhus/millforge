@@ -248,6 +248,8 @@ class ToolDescriptor(BaseModel):
             self.to_raw_descriptor(),
             expected_tool_id=self.tool_id,
             expected_tool_version=self.tool_version,
+            timeout_policy=self.timeout_policy,
+            output_policy=self.output_policy,
         )
 
 

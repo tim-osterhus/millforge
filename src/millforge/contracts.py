@@ -496,6 +496,60 @@ class CancellationRef(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+class ConnectorApprovalGrant(BaseModel):
+    """Runtime-only grant authorizing one exact connector approval scope."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connector_id: str = Field(description="Connector identity authorized by runtime")
+    provider_tool_name: str = Field(description="Provider tool name authorized")
+    tool_id: str = Field(description="Compiled connector tool identifier")
+    tool_version: int = Field(ge=1, description="Compiled connector tool version")
+    descriptor_sha256: str = Field(description="Compiled descriptor hash")
+    request_id: str = Field(description="Runtime request identifier")
+    run_id: str = Field(description="Runtime run identifier")
+    stage: StageIdentity = Field(description="Runtime stage identity")
+    approval_policy: Literal["millrace_explicit"] = Field(
+        description="Approval policy authorized by the runtime"
+    )
+    expires_at_monotonic: float = Field(
+        ge=0,
+        description="Trusted monotonic timestamp after which the grant is invalid",
+    )
+    approval_id: str | None = Field(
+        default=None, description="Operator or runtime approval identifier"
+    )
+    nonce: str | None = Field(
+        default=None, description="Opaque runtime nonce for one approval grant"
+    )
+
+    @field_validator(
+        "connector_id",
+        "provider_tool_name",
+        "tool_id",
+        "request_id",
+        "run_id",
+        "approval_id",
+        "nonce",
+    )
+    @classmethod
+    def _grant_text_nonblank(cls, value: str | None, info: Any) -> str | None:
+        if value is None:
+            return None
+        return _nonblank(value, info.field_name)
+
+    @field_validator("descriptor_sha256")
+    @classmethod
+    def _descriptor_hash_valid(cls, value: str) -> str:
+        return _validate_sha256(value, "descriptor_sha256")
+
+    @model_validator(mode="after")
+    def _has_approval_identity(self) -> ConnectorApprovalGrant:
+        if self.approval_id is None and self.nonce is None:
+            raise ValueError("connector approval grant requires approval_id or nonce")
+        return self
+
+
 # Tool execution context
 # ---------------------------------------------------------------------------
 
@@ -544,6 +598,10 @@ class ToolExecutionContext(BaseModel):
         default=0.0,
         ge=0,
         description="Trusted monotonic timestamp used for pre-entry deadline checks",
+    )
+    connector_approval_grants: Tuple[ConnectorApprovalGrant, ...] = Field(
+        default_factory=tuple,
+        description="Runtime-only connector approval grants scoped to exact bindings",
     )
 
 
@@ -1457,15 +1515,6 @@ class SideEffectRecord(BaseModel):
     @classmethod
     def _strings_nonblank(cls, value: str, info: Any) -> str:
         return _nonblank(value, info.field_name)
-
-    @model_validator(mode="after")
-    def _unknown_mutation_is_not_retryable(self) -> SideEffectRecord:
-        if (
-            self.certainty == SideEffectCertainty.COMPLETION_UNKNOWN
-            and self.retry_allowed
-        ):
-            raise ValueError("completion_unknown side effects must not be retryable")
-        return self
 
 
 # ---------------------------------------------------------------------------

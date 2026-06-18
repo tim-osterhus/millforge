@@ -32,6 +32,7 @@ from millforge.tools.results import (
     make_denial_result,
     make_tool_result,
     make_trace_record,
+    redact_tool_value,
     sanitize_tool_execution_result,
     validate_json_object_schema,
 )
@@ -83,6 +84,8 @@ class CompiledToolBindingExecutor:
         plan: CompiledHarnessPlan,
         descriptor_snapshot: ToolCatalogSnapshot,
         runtime_registry: RuntimeToolRegistry,
+        connector_admission_snapshot: Any | None = None,
+        connector_broker: Any | None = None,
     ) -> None:
         self._nodes_by_id = {node.node_id: node for node in plan.nodes}
         self._node_by_model_name: dict[str, CompiledHarnessNode] = {}
@@ -93,6 +96,11 @@ class CompiledToolBindingExecutor:
         for node in plan.nodes:
             if node.model_tool_name not in self._conflicting_model_names:
                 self._node_by_model_name[node.model_tool_name] = node
+        _validate_connector_admissions(
+            plan=plan,
+            connector_admission_snapshot=connector_admission_snapshot,
+            connector_broker=connector_broker,
+        )
         self._node_defects = {
             node.node_id: _node_binding_defect(
                 node=node,
@@ -102,6 +110,8 @@ class CompiledToolBindingExecutor:
             for node in plan.nodes
         }
         self._descriptor_snapshot = descriptor_snapshot
+        self._connector_admission_snapshot = connector_admission_snapshot
+        self._connector_broker = connector_broker
         self._runtime_registry = runtime_registry
         self._trace_records: list[Any] = []
         self._next_sequence = 1
@@ -189,6 +199,14 @@ class CompiledToolBindingExecutor:
         if isinstance(resolved, ToolExecutionResult):
             node = self._node_by_model_name.get(model_tool_name)
             if node is not None:
+                connector_audit = (
+                    self._connector_pre_entry_audit(
+                        node=node,
+                        context=context,
+                    )
+                    if _is_connector_tool_id(node.binding.tool_id)
+                    else None
+                )
                 self._record_trace(
                     node=node,
                     call_id=call_id,
@@ -198,6 +216,7 @@ class CompiledToolBindingExecutor:
                     context=context,
                     prerequisite_decisions={},
                     capability_decisions={},
+                    connector_audit=connector_audit,
                     model_turn=model_turn,
                     session_id=session_id,
                 )
@@ -216,6 +235,7 @@ class CompiledToolBindingExecutor:
                     context=context,
                     prerequisite_decisions={},
                     capability_decisions={},
+                    connector_audit=None,
                     model_turn=model_turn,
                     session_id=session_id,
                     binding_resolution_status=binding_resolution_status,
@@ -268,6 +288,7 @@ class CompiledToolBindingExecutor:
                 context=context,
                 prerequisite_decisions={},
                 capability_decisions={},
+                connector_audit=None,
                 model_turn=model_turn,
                 session_id=session_id,
             )
@@ -293,6 +314,61 @@ class CompiledToolBindingExecutor:
                 context=context,
                 prerequisite_decisions={},
                 capability_decisions={},
+                connector_audit=None,
+                model_turn=model_turn,
+                session_id=session_id,
+            )
+            return result
+        preflight = self._preflight_result(
+            node=node,
+            call=call,
+            context=context,
+            prerequisite_results=prerequisite_results or {},
+            input_sha256=input_sha256,
+        )
+        if preflight is not None:
+            result, prerequisite_decisions, capability_decisions = preflight
+            connector_audit = self._connector_pre_entry_audit(
+                node=node,
+                context=context,
+            )
+            self._record_trace(
+                node=node,
+                call_id=call.call_id,
+                model_tool_name=model_tool_name or node.model_tool_name,
+                input_sha256=input_sha256,
+                result=result,
+                context=context,
+                prerequisite_decisions=prerequisite_decisions,
+                capability_decisions=capability_decisions,
+                connector_audit=connector_audit,
+                model_turn=model_turn,
+                session_id=session_id,
+            )
+            return result
+        prerequisite_decisions = {
+            prereq.node_id: "allowed" for prereq in node.prerequisites
+        }
+        capability_decisions = {
+            capability: "allowed" for capability in node.required_capabilities
+        }
+        if _is_connector_tool_id(node.binding.tool_id):
+            result, connector_audit = await self._execute_connector(
+                node=node,
+                call=call,
+                context=context,
+                input_sha256=input_sha256,
+            )
+            self._record_trace(
+                node=node,
+                call_id=call.call_id,
+                model_tool_name=model_tool_name or node.model_tool_name,
+                input_sha256=input_sha256,
+                result=result,
+                context=context,
+                prerequisite_decisions=prerequisite_decisions,
+                capability_decisions=capability_decisions,
+                connector_audit=connector_audit,
                 model_turn=model_turn,
                 session_id=session_id,
             )
@@ -310,34 +386,6 @@ class CompiledToolBindingExecutor:
                 },
                 node=node,
             )
-        preflight = self._preflight_result(
-            node=node,
-            call=call,
-            context=context,
-            prerequisite_results=prerequisite_results or {},
-            input_sha256=input_sha256,
-        )
-        if preflight is not None:
-            result, prerequisite_decisions, capability_decisions = preflight
-            self._record_trace(
-                node=node,
-                call_id=call.call_id,
-                model_tool_name=model_tool_name or node.model_tool_name,
-                input_sha256=input_sha256,
-                result=result,
-                context=context,
-                prerequisite_decisions=prerequisite_decisions,
-                capability_decisions=capability_decisions,
-                model_turn=model_turn,
-                session_id=session_id,
-            )
-            return result
-        prerequisite_decisions = {
-            prereq.node_id: "allowed" for prereq in node.prerequisites
-        }
-        capability_decisions = {
-            capability: "allowed" for capability in node.required_capabilities
-        }
         try:
             pending = implementation(call, context)
             result = await pending if inspect.isawaitable(pending) else pending
@@ -380,10 +428,197 @@ class CompiledToolBindingExecutor:
             context=context,
             prerequisite_decisions=prerequisite_decisions,
             capability_decisions=capability_decisions,
+            connector_audit=None,
             model_turn=model_turn,
             session_id=session_id,
         )
         return result
+
+    async def _execute_connector(
+        self,
+        *,
+        node: CompiledHarnessNode,
+        call: ValidatedToolCall,
+        context: ToolExecutionContext,
+        input_sha256: str,
+    ) -> tuple[ToolExecutionResult, dict[str, Any] | None]:
+        from millforge.connectors.broker import (
+            ConnectorBrokerOutcome,
+            ConnectorInvocationRequest,
+            connector_idempotency_key,
+        )
+
+        assert self._connector_admission_snapshot is not None
+        admission = self._connector_admission_snapshot.require(
+            node.binding.tool_id,
+            node.binding.tool_version,
+            node.binding.descriptor_sha256,
+        )
+        connector_audit = _connector_approval_audit_fields(
+            admission=admission,
+            node=node,
+            context=context,
+            broker_attempted=False,
+        )
+        approval_decision = connector_audit["approval_decision"]
+        if approval_decision == "forbidden":
+            return make_denial_result(
+                call_id=call.call_id,
+                code=ToolExecutionErrorCode.POLICY_DENIED,
+                summary="connector approval policy forbids runtime invocation",
+                evidence=connector_audit,
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                input_sha256=input_sha256,
+            ), connector_audit
+        if approval_decision == "pending":
+            return make_denial_result(
+                call_id=call.call_id,
+                code=ToolExecutionErrorCode.POLICY_DENIED,
+                summary="connector approval is pending operator out-of-band review",
+                evidence=connector_audit,
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                input_sha256=input_sha256,
+            ), connector_audit
+        if approval_decision != "approved":
+            return make_denial_result(
+                call_id=call.call_id,
+                code=ToolExecutionErrorCode.POLICY_DENIED,
+                summary="connector approval policy is not satisfied",
+                evidence=connector_audit,
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                input_sha256=input_sha256,
+            ), connector_audit
+        broker = self._connector_broker
+        if broker is None or not broker.has_provider_tool(
+            admission.connector_id,
+            admission.provider_tool_name,
+        ):
+            return make_denial_result(
+                call_id=call.call_id,
+                code=ToolExecutionErrorCode.NOT_FOUND,
+                summary="connector provider tool is not available from broker",
+                evidence={
+                    "connector_id": admission.connector_id,
+                    "provider_tool_name": admission.provider_tool_name,
+                },
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                input_sha256=input_sha256,
+            ), connector_audit
+        drift = _connector_pre_entry_drift(
+            admission=admission,
+            node=node,
+            broker=broker,
+        )
+        if drift is not None:
+            field, expected, actual = drift
+            return make_denial_result(
+                call_id=call.call_id,
+                code=ToolExecutionErrorCode.BINDING_MISMATCH,
+                summary="connector provider evidence drifted before broker entry",
+                evidence={
+                    "connector_id": admission.connector_id,
+                    "provider_tool_name": admission.provider_tool_name,
+                    "binding_field": field,
+                    "expected": expected,
+                    "actual": actual,
+                },
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                input_sha256=input_sha256,
+            ), {**connector_audit, "drift_decision": "failed"}
+        connector_audit = {
+            **connector_audit,
+            "broker_attempted": True,
+            "drift_decision": "passed",
+        }
+        request = ConnectorInvocationRequest.from_runtime(
+            connector_id=admission.connector_id,
+            provider_tool_name=admission.provider_tool_name,
+            tool_id=node.binding.tool_id,
+            tool_version=node.binding.tool_version,
+            descriptor_sha256=node.binding.descriptor_sha256,
+            connector_identity_sha256=admission.connector_identity_sha256,
+            discovery_snapshot_sha256=admission.discovery_snapshot_sha256,
+            raw_tool_sha256=admission.raw_tool_sha256,
+            arguments=call.arguments,
+            request_id=context.request_id,
+            run_id=context.run_id,
+            stage_plane=context.stage.plane,
+            stage_kind_id=context.stage.stage_kind_id,
+            stage_node_id=context.stage.node_id,
+            timeout_seconds=context.timeout.timeout_seconds,
+            deadline_remaining_seconds=context.deadline.remaining(
+                lambda: context.current_monotonic
+            ),
+            cancellation_requested=context.cancellation_requested,
+            cancellation_id=context.cancellation.cancellation_id,
+            idempotency_key=connector_idempotency_key(
+                idempotency=node.idempotency,
+                call_id=call.call_id,
+            ),
+        )
+        try:
+            pending = broker.invoke(request)
+            outcome = await pending if inspect.isawaitable(pending) else pending
+        except Exception as exc:
+            return make_tool_result(
+                call_id=call.call_id,
+                status=ToolExecutionStatus.HARD_FAILURE,
+                code=ToolExecutionErrorCode.IMPLEMENTATION_ERROR,
+                summary="connector broker raised an exception",
+                structured_data={
+                    "category": ToolExecutionErrorCode.IMPLEMENTATION_ERROR.value,
+                    "error_type": type(exc).__name__,
+                },
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                side_effect_record=SideEffectRecord(
+                    certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                    detail_code=ToolExecutionErrorCode.AMBIGUOUS_SIDE_EFFECT.value,
+                    summary="broker failure left connector completion unknown",
+                    retry_allowed=False,
+                ),
+                input_sha256=input_sha256,
+                retryable=False,
+            ), connector_audit
+        if not isinstance(outcome, ConnectorBrokerOutcome):
+            return make_tool_result(
+                call_id=call.call_id,
+                status=ToolExecutionStatus.HARD_FAILURE,
+                code=ToolExecutionErrorCode.IMPLEMENTATION_ERROR,
+                summary="connector broker returned an invalid outcome",
+                structured_data={
+                    "category": ToolExecutionErrorCode.IMPLEMENTATION_ERROR.value,
+                    "error_type": type(outcome).__name__,
+                },
+                side_effect_class=node.side_effect_class,
+                idempotency=node.idempotency,
+                side_effect_certainty=SideEffectCertainty.COMPLETION_UNKNOWN,
+                input_sha256=input_sha256,
+                retryable=False,
+            ), connector_audit
+        result = _connector_result_from_broker_outcome(
+            call_id=call.call_id,
+            node=node,
+            outcome=outcome,
+            input_sha256=input_sha256,
+            idempotency_key_policy=admission.idempotency_key_policy,
+            idempotency_key=request.idempotency_key,
+        )
+        return (
+            self._validate_implementation_result(
+                node=node,
+                call=call,
+                result=result,
+                input_sha256=input_sha256,
+            ),
+            connector_audit,
+        )
 
     def _preflight_result(
         self,
@@ -513,6 +748,27 @@ class CompiledToolBindingExecutor:
             )
         return None
 
+    def _connector_pre_entry_audit(
+        self,
+        *,
+        node: CompiledHarnessNode,
+        context: ToolExecutionContext,
+    ) -> dict[str, Any] | None:
+        if not _is_connector_tool_id(node.binding.tool_id):
+            return None
+        assert self._connector_admission_snapshot is not None
+        admission = self._connector_admission_snapshot.require(
+            node.binding.tool_id,
+            node.binding.tool_version,
+            node.binding.descriptor_sha256,
+        )
+        return _connector_approval_audit_fields(
+            admission=admission,
+            node=node,
+            context=context,
+            broker_attempted=False,
+        )
+
     def _validate_implementation_result(
         self,
         *,
@@ -567,12 +823,19 @@ class CompiledToolBindingExecutor:
         context: ToolExecutionContext,
         prerequisite_decisions: Mapping[str, str],
         capability_decisions: Mapping[str, str],
+        connector_audit: Mapping[str, Any] | None,
         model_turn: int,
         session_id: str | None,
         binding_resolution_status: Literal[
             "resolved", "ambiguous", "uncompiled"
         ] = "resolved",
     ) -> None:
+        if connector_audit is not None:
+            connector_audit = _connector_trace_audit_fields(
+                audit=connector_audit,
+                input_sha256=input_sha256,
+                result=result,
+            )
         trace_node_id = (
             node.node_id
             if node is not None
@@ -607,6 +870,7 @@ class CompiledToolBindingExecutor:
                 for key, value in capability_decisions.items()
             },
             result=result,
+            connector_audit=connector_audit,
             summary_max_utf8=(
                 self._summary_max_utf8_for_node(node)
                 if node is not None
@@ -660,12 +924,428 @@ def create_tool_executor(
     plan: CompiledHarnessPlan,
     descriptor_snapshot: ToolCatalogSnapshot,
     runtime_registry: RuntimeToolRegistry,
+    connector_admission_snapshot: Any | None = None,
+    connector_broker: Any | None = None,
 ) -> CompiledToolBindingExecutor:
     """Create a compiled-plan scoped executor."""
     return CompiledToolBindingExecutor(
         plan=plan,
         descriptor_snapshot=descriptor_snapshot,
         runtime_registry=runtime_registry,
+        connector_admission_snapshot=connector_admission_snapshot,
+        connector_broker=connector_broker,
+    )
+
+
+def _validate_connector_admissions(
+    *,
+    plan: CompiledHarnessPlan,
+    connector_admission_snapshot: Any | None,
+    connector_broker: Any | None,
+) -> None:
+    connector_nodes = [
+        node for node in plan.nodes if _is_connector_tool_id(node.binding.tool_id)
+    ]
+    if not connector_nodes:
+        return
+    if connector_admission_snapshot is None:
+        from millforge.connectors.runtime import ConnectorAdmissionSnapshotError
+
+        raise ConnectorAdmissionSnapshotError(
+            "compiled connector descriptors require connector admission snapshot"
+        )
+    if connector_broker is None:
+        from millforge.connectors.runtime import ConnectorAdmissionSnapshotError
+
+        raise ConnectorAdmissionSnapshotError(
+            "compiled connector descriptors require connector broker"
+        )
+    for node in connector_nodes:
+        admission = connector_admission_snapshot.require(
+            node.binding.tool_id,
+            node.binding.tool_version,
+            node.binding.descriptor_sha256,
+        )
+        mismatch = _connector_admission_node_mismatch(admission, node)
+        if mismatch is not None:
+            from millforge.connectors.runtime import ConnectorAdmissionSnapshotError
+
+            raise ConnectorAdmissionSnapshotError(
+                "compiled connector descriptor is inconsistent with admission binding: "
+                f"{mismatch}"
+            )
+
+
+def _is_connector_tool_id(tool_id: str) -> bool:
+    return tool_id.startswith("connector.")
+
+
+def _connector_pre_entry_drift(
+    *,
+    admission: Any,
+    node: CompiledHarnessNode,
+    broker: Any,
+) -> tuple[str, str, str] | None:
+    admitted_capabilities = tuple(admission.required_capabilities)
+    compiled_capabilities = tuple(node.required_capabilities)
+    if compiled_capabilities != admitted_capabilities:
+        return (
+            "required_capabilities",
+            _evidence_text(admitted_capabilities),
+            _evidence_text(compiled_capabilities),
+        )
+    evidence_factory = getattr(broker, "provider_tool_evidence", None)
+    if not callable(evidence_factory):
+        return ("provider_tool_evidence", "present", "missing")
+    evidence = evidence_factory(admission.connector_id, admission.provider_tool_name)
+    if evidence is None:
+        return ("provider_tool_evidence", "present", "missing")
+    expected_values = {
+        "connector_id": admission.connector_id,
+        "provider_tool_name": admission.provider_tool_name,
+        "connector_identity_sha256": admission.connector_identity_sha256,
+        "discovery_snapshot_sha256": admission.discovery_snapshot_sha256,
+        "raw_tool_sha256": admission.raw_tool_sha256,
+        "input_schema_sha256": admission.input_schema_sha256,
+        "output_schema_sha256": admission.output_schema_sha256,
+        "provider_description_sha256": admission.provider_description_sha256,
+    }
+    for field, expected in expected_values.items():
+        if expected is None:
+            continue
+        actual = getattr(evidence, field, None)
+        if actual != expected:
+            return (field, _evidence_text(expected), _evidence_text(actual))
+    return None
+
+
+def _connector_admission_node_mismatch(
+    admission: Any, node: CompiledHarnessNode
+) -> str | None:
+    expected = {
+        "side_effect_class": admission.side_effect_class,
+        "idempotency": admission.idempotency,
+    }
+    actual = {
+        "side_effect_class": node.side_effect_class,
+        "idempotency": node.idempotency,
+    }
+    for field, expected_value in expected.items():
+        if not _projection_values_equal(actual[field], expected_value):
+            return field
+    return None
+
+
+def _connector_approval_identity_kind(grant: Any | None) -> str:
+    if grant is None:
+        return "none"
+    has_approval_id = getattr(grant, "approval_id", None) is not None
+    has_nonce = getattr(grant, "nonce", None) is not None
+    if has_approval_id and has_nonce:
+        return "approval_id_and_nonce"
+    if has_approval_id:
+        return "approval_id"
+    if has_nonce:
+        return "nonce"
+    return "none"
+
+
+def _connector_approval_evidence(
+    grants: tuple[Any, ...],
+    representative: Any | None = None,
+) -> dict[str, Any]:
+    representative_grant = (
+        representative
+        if representative is not None
+        else (grants[0] if grants else None)
+    )
+    return {
+        "grant_count": len(grants),
+        "approval_id_present": any(
+            getattr(grant, "approval_id", None) is not None for grant in grants
+        ),
+        "nonce_present": any(
+            getattr(grant, "nonce", None) is not None for grant in grants
+        ),
+        "identity_kind": _connector_approval_identity_kind(representative_grant),
+    }
+
+
+def _connector_explicit_approval_assessment(
+    *,
+    admission: Any,
+    node: CompiledHarnessNode,
+    context: ToolExecutionContext,
+) -> tuple[str, dict[str, Any]]:
+    grants = context.connector_approval_grants
+    if not grants:
+        return "missing", _connector_approval_evidence(grants)
+    expired_scope_seen = False
+    wrong_stage_seen = False
+    wrong_run_seen = False
+    wrong_scope_seen = False
+    for grant in grants:
+        scope_matches = (
+            grant.connector_id == admission.connector_id
+            and grant.provider_tool_name == admission.provider_tool_name
+            and grant.tool_id == node.binding.tool_id
+            and grant.tool_version == node.binding.tool_version
+            and grant.descriptor_sha256 == node.binding.descriptor_sha256
+            and grant.request_id == context.request_id
+            and grant.run_id == context.run_id
+            and _stage_identity_matches(grant.stage, context.stage)
+            and grant.approval_policy == admission.approval_policy.value
+        )
+        if scope_matches:
+            if grant.expires_at_monotonic <= context.current_monotonic:
+                expired_scope_seen = True
+                continue
+            return "approved", _connector_approval_evidence(grants, grant)
+        wrong_stage_seen = wrong_stage_seen or (
+            grant.connector_id == admission.connector_id
+            and grant.provider_tool_name == admission.provider_tool_name
+            and grant.tool_id == node.binding.tool_id
+            and grant.tool_version == node.binding.tool_version
+            and grant.descriptor_sha256 == node.binding.descriptor_sha256
+            and grant.request_id == context.request_id
+            and grant.run_id == context.run_id
+            and not _stage_identity_matches(grant.stage, context.stage)
+        )
+        wrong_run_seen = wrong_run_seen or (
+            grant.connector_id == admission.connector_id
+            and grant.provider_tool_name == admission.provider_tool_name
+            and grant.tool_id == node.binding.tool_id
+            and grant.tool_version == node.binding.tool_version
+            and grant.descriptor_sha256 == node.binding.descriptor_sha256
+            and grant.request_id == context.request_id
+            and grant.run_id != context.run_id
+        )
+        wrong_scope_seen = wrong_scope_seen or (
+            grant.approval_policy == admission.approval_policy.value
+        )
+    if expired_scope_seen:
+        return "expired_or_stale", _connector_approval_evidence(grants)
+    if wrong_stage_seen:
+        return "wrong_stage", _connector_approval_evidence(grants)
+    if wrong_run_seen:
+        return "wrong_run", _connector_approval_evidence(grants)
+    if wrong_scope_seen:
+        return "wrong_scope", _connector_approval_evidence(grants)
+    return "missing", _connector_approval_evidence(grants)
+
+
+def _connector_approval_audit_fields(
+    *,
+    admission: Any,
+    node: CompiledHarnessNode,
+    context: ToolExecutionContext,
+    broker_attempted: bool,
+) -> dict[str, Any]:
+    from millforge.connectors import ConnectorApprovalPolicy
+
+    base = {
+        "connector_id": admission.connector_id,
+        "provider_tool_name": admission.provider_tool_name,
+        "connector_tool_id": node.binding.tool_id,
+        "connector_tool_version": node.binding.tool_version,
+        "connector_descriptor_sha256": node.binding.descriptor_sha256,
+        "connector_identity_sha256": admission.connector_identity_sha256,
+        "discovery_snapshot_sha256": admission.discovery_snapshot_sha256,
+        "approval_policy": admission.approval_policy.value,
+        "broker_attempted": broker_attempted,
+        "drift_decision": "not_reached",
+    }
+    if admission.approval_policy is ConnectorApprovalPolicy.NONE:
+        decision = "approved"
+        evidence = _connector_approval_evidence(context.connector_approval_grants)
+    elif admission.approval_policy is ConnectorApprovalPolicy.FORBIDDEN:
+        decision = "forbidden"
+        evidence = _connector_approval_evidence(context.connector_approval_grants)
+    elif admission.approval_policy is ConnectorApprovalPolicy.OPERATOR_OUT_OF_BAND:
+        decision = "pending"
+        evidence = _connector_approval_evidence(context.connector_approval_grants)
+    elif admission.approval_policy is ConnectorApprovalPolicy.MILLRACE_EXPLICIT:
+        decision, evidence = _connector_explicit_approval_assessment(
+            admission=admission,
+            node=node,
+            context=context,
+        )
+    else:
+        decision = "missing"
+        evidence = _connector_approval_evidence(context.connector_approval_grants)
+    return {
+        **base,
+        "approval_decision": decision,
+        "approval_evidence": evidence,
+    }
+
+
+def _connector_trace_audit_fields(
+    *,
+    audit: Mapping[str, Any],
+    input_sha256: str,
+    result: ToolExecutionResult,
+) -> dict[str, Any]:
+    result_evidence = {}
+    if isinstance(result.structured_data, Mapping):
+        raw_evidence = result.structured_data.get("evidence")
+        if isinstance(raw_evidence, Mapping):
+            result_evidence = {
+                key: raw_evidence[key]
+                for key in ("binding_field", "expected", "actual")
+                if key in raw_evidence
+            }
+    redacted_evidence = redact_tool_value(
+        {
+            "approval_decision": audit.get("approval_decision"),
+            "approval_evidence": audit.get("approval_evidence", {}),
+            "broker_attempted": audit.get("broker_attempted"),
+            "drift_decision": audit.get("drift_decision"),
+            **result_evidence,
+            "error_code": result.error_code,
+            "execution_status": result.status.value,
+            "side_effect_certainty": result.side_effect_certainty.value,
+            "summary": result.summary,
+        }
+    )
+    return {
+        **audit,
+        "request_sha256": input_sha256,
+        "response_sha256": canonical_sha256(redact_tool_value(result.structured_data)),
+        "retry_decision": "retry_allowed" if result.retryable else "retry_denied",
+        "redacted_evidence": redacted_evidence,
+    }
+
+
+def _connector_result_from_broker_outcome(
+    *,
+    call_id: str,
+    node: CompiledHarnessNode,
+    outcome: Any,
+    input_sha256: str,
+    idempotency_key_policy: str | None,
+    idempotency_key: str | None,
+) -> ToolExecutionResult:
+    status = outcome.status
+    code = _connector_error_code_for_outcome(outcome)
+    certainty = outcome.side_effect_certainty
+    retryable = _connector_retryable_for_outcome(
+        status=status,
+        certainty=certainty,
+        idempotency=node.idempotency,
+        requested_retryable=outcome.retryable,
+        idempotency_key_policy=idempotency_key_policy,
+        idempotency_key=idempotency_key,
+    )
+    side_effect_record = _connector_side_effect_record(
+        status=status,
+        code=code,
+        certainty=certainty,
+        summary=outcome.summary,
+        retryable=retryable,
+    )
+    return make_tool_result(
+        call_id=call_id,
+        status=status,
+        code=code,
+        summary=outcome.summary,
+        structured_data=outcome.structured_data,
+        side_effect_class=node.side_effect_class,
+        idempotency=node.idempotency,
+        side_effect_certainty=certainty,
+        side_effect_record=side_effect_record,
+        input_sha256=input_sha256,
+        retryable=retryable,
+    )
+
+
+def _connector_error_code_for_outcome(outcome: Any) -> ToolExecutionErrorCode | None:
+    if outcome.status is ToolExecutionStatus.SUCCESS:
+        return None
+    if outcome.error_code is not None:
+        return outcome.error_code
+    if outcome.status is ToolExecutionStatus.TIMED_OUT:
+        return ToolExecutionErrorCode.TIMEOUT
+    if outcome.status is ToolExecutionStatus.CANCELLED:
+        return ToolExecutionErrorCode.CANCELLED
+    if outcome.status is ToolExecutionStatus.AMBIGUOUS:
+        return ToolExecutionErrorCode.AMBIGUOUS_SIDE_EFFECT
+    return ToolExecutionErrorCode.IMPLEMENTATION_ERROR
+
+
+def _connector_retryable_for_outcome(
+    *,
+    status: ToolExecutionStatus,
+    certainty: SideEffectCertainty,
+    idempotency: Any,
+    requested_retryable: bool,
+    idempotency_key_policy: str | None,
+    idempotency_key: str | None,
+) -> bool:
+    if status is ToolExecutionStatus.SUCCESS:
+        return False
+    if not requested_retryable:
+        return False
+    from millforge import IdempotencyClass
+
+    has_safe_idempotency_key = (
+        idempotency is IdempotencyClass.IDEMPOTENT_WITH_KEY
+        and idempotency_key_policy == "call_id"
+        and idempotency_key is not None
+    )
+    if certainty is SideEffectCertainty.CONFIRMED_COMPLETE:
+        return has_safe_idempotency_key
+    if idempotency is IdempotencyClass.IDEMPOTENT:
+        return True
+    return has_safe_idempotency_key
+
+
+def _connector_side_effect_record(
+    *,
+    status: ToolExecutionStatus,
+    code: ToolExecutionErrorCode | None,
+    certainty: SideEffectCertainty,
+    summary: str,
+    retryable: bool,
+) -> SideEffectRecord | None:
+    if status is ToolExecutionStatus.SUCCESS:
+        return None
+    detail_code = (
+        code.value
+        if code is not None
+        else ToolExecutionErrorCode.IMPLEMENTATION_ERROR.value
+    )
+    return SideEffectRecord(
+        certainty=certainty,
+        detail_code=detail_code,
+        summary=f"connector broker outcome: {summary}",
+        retry_allowed=retryable,
+    )
+
+
+def _connector_explicit_approval_denial(
+    *,
+    admission: Any,
+    node: CompiledHarnessNode,
+    context: ToolExecutionContext,
+) -> dict[str, Any] | None:
+    audit = _connector_approval_audit_fields(
+        admission=admission,
+        node=node,
+        context=context,
+        broker_attempted=False,
+    )
+    if audit["approval_decision"] == "approved":
+        return None
+    return audit
+
+
+def _stage_identity_matches(left: Any, right: Any) -> bool:
+    return (
+        getattr(left, "plane", None) == getattr(right, "plane", None)
+        and getattr(left, "stage_kind_id", None)
+        == getattr(right, "stage_kind_id", None)
+        and getattr(left, "node_id", None) == getattr(right, "node_id", None)
     )
 
 
@@ -711,7 +1391,10 @@ def _node_binding_defect(
         "side_effect_class": node.side_effect_class,
         "idempotency": node.idempotency,
     }
+    connector_tool = _is_connector_tool_id(node.binding.tool_id)
     for field, expected_value in expected.items():
+        if connector_tool and field == "required_capabilities":
+            continue
         if not _projection_values_equal(actual[field], expected_value):
             return (
                 ToolBindingDenialCode.BINDING_MISMATCH,
@@ -723,6 +1406,8 @@ def _node_binding_defect(
                 },
                 False,
             )
+    if connector_tool:
+        return None
     if runtime_registry.resolve(node.binding.implementation_id) is None:
         return (
             ToolBindingDenialCode.NOT_FOUND,

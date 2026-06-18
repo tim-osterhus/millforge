@@ -1,0 +1,311 @@
+{
+  "manifest": {
+    "connector_id": "connector.fake_mcp",
+    "denied_tools": [
+      {
+        "approval_policy": "forbidden",
+        "provider_tool_name": "delete_everything",
+        "reason": "Destructive provider tool is denied in offline admission fixtures.",
+        "review_evidence": {
+          "decision": "denied_destructive_tool",
+          "reviewed_at": "2026-06-16T18:35:00Z"
+        }
+      }
+    ],
+    "expected_connector_identity_sha256": "6a15843c843890bb08c40c9c52ff2d2dc3accb078e4dd9c7b323720882eb966f",
+    "expected_discovery_snapshot_sha256": "2b0e46b57a58858c6b9d75e4c0483ed795e7a14d3c66a491119683b7a2b0a9ac",
+    "expected_identity": {
+      "implementation_digest": null,
+      "implementation_name": "fake-mcp",
+      "implementation_version": "1.0.0",
+      "protocol": "mcp",
+      "protocol_version": "2025-03-26",
+      "transport_kind": "stdio"
+    },
+    "kind": "connector_admission_manifest",
+    "policy_metadata": {
+      "source": "offline-fixture"
+    },
+    "schema_version": "millforge.connector.admission_manifest",
+    "selected_tools": [
+      {
+        "approval_policy": "none",
+        "description": "List deterministic context records through an admitted connector descriptor.",
+        "description_policy": "operator_supplied",
+        "expected_admission_record_sha256": "97daf31600acd46d4575b97f1b1722b38237a71e802db099dc6854f19f5a54f7",
+        "expected_descriptor_sha256": "1e4d572eade3e1b2fa19ac3d19ea286035ec0c8a870418354259f07fc1e28bd7",
+        "expected_raw_tool_sha256": "ebff1e33ca3838bd254ae0eb708d02a40eabeec1d298e973b551207183bf1b25",
+        "idempotency": "idempotent",
+        "implementation_id": "connector.fake_mcp.list_context.v1",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "limit"
+          ],
+          "type": "object"
+        },
+        "input_schema_policy": "provider_exact",
+        "model_tool_name": "connector_list_context",
+        "output_policy": {
+          "max_output_bytes": 65536,
+          "max_summary_utf8": 4096,
+          "redact_secrets": true
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "output_schema_policy": "provider_exact",
+        "produced_artifact_ids": [],
+        "provider_tool_name": "list_context",
+        "required_capabilities": [
+          "cap.connector.list_context"
+        ],
+        "side_effect_class": "read_only",
+        "timeout_policy": {
+          "cancellation_grace_seconds": 10,
+          "timeout_seconds": 90
+        },
+        "tool_id": "connector.fake_mcp.list_context",
+        "tool_version": 1
+      },
+      {
+        "approval_policy": "none",
+        "description": "Echo a message through an admitted connector descriptor.",
+        "description_policy": "operator_supplied",
+        "expected_admission_record_sha256": "4468afb84c99952f8554933a52c325ec07f15ed5a32735d32c251ece3079c06d",
+        "expected_descriptor_sha256": "2675a072d155cdb534462fae415e1d1a8abad89614ad2df423ef94781649835a",
+        "expected_raw_tool_sha256": "cb5024370ac9842c99553dc311015c69243144f01c41115f6de1b32e2d929b06",
+        "idempotency": "idempotent",
+        "implementation_id": "connector.fake_mcp.list_context.v1",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "type": "object"
+        },
+        "input_schema_policy": "provider_exact",
+        "model_tool_name": "connector_echo",
+        "output_policy": {
+          "max_output_bytes": 32768,
+          "max_summary_utf8": 2048,
+          "redact_secrets": true
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "output_schema_policy": "provider_exact",
+        "produced_artifact_ids": [],
+        "provider_tool_name": "echo",
+        "required_capabilities": [
+          "cap.connector.echo"
+        ],
+        "side_effect_class": "read_only",
+        "timeout_policy": {
+          "cancellation_grace_seconds": 5,
+          "timeout_seconds": 45
+        },
+        "tool_id": "connector.fake_mcp.echo",
+        "tool_version": 1
+      }
+    ],
+    "version": "1.0"
+  },
+  "policy": {
+    "allowed_capability_ids": [
+      "cap.connector.echo",
+      "cap.connector.list_context"
+    ],
+    "allowed_protocols": [
+      "mcp"
+    ],
+    "allowed_transport_kinds": [
+      "stdio",
+      "http"
+    ],
+    "max_description_utf8": 512,
+    "side_effect_approval_matrix": {
+      "artifact_write": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "network_read": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "network_write": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "process_execution": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "read_only": [
+        "none",
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "terminal": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ],
+      "workspace_write": [
+        "millrace_explicit",
+        "operator_out_of_band"
+      ]
+    }
+  },
+  "snapshot": {
+    "connector_identity": {
+      "configured_secret_refs": [
+        "fake_mcp_token"
+      ],
+      "connector_id": "connector.fake_mcp",
+      "discovered_at": "2026-06-16T18:35:00Z",
+      "implementation_digest": null,
+      "implementation_name": "fake-mcp",
+      "implementation_version": "1.0.0",
+      "protocol": "mcp",
+      "protocol_version": "2025-03-26",
+      "server_reported_name": "fake-mcp-server",
+      "server_reported_version": "1.0.0-server",
+      "transport_kind": "stdio"
+    },
+    "created_at": "2026-06-16T18:35:00Z",
+    "kind": "connector_discovery_snapshot",
+    "provider_metadata": {
+      "created_at": "2026-06-16T18:35:00Z",
+      "source": "offline-fixture"
+    },
+    "provider_tools": [
+      {
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "limit"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "provider_annotations": {
+          "fixture_created_at": "2026-06-16T18:35:00Z",
+          "title": "List Context"
+        },
+        "provider_description": "List deterministic context records.",
+        "provider_tool_name": "list_context"
+      },
+      {
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "deleted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "deleted"
+          ],
+          "type": "object"
+        },
+        "provider_annotations": {
+          "fixture_created_at": "2026-06-16T18:35:00Z",
+          "title": "Delete Everything"
+        },
+        "provider_description": "Delete workspace records after explicit review.",
+        "provider_tool_name": "delete_everything"
+      },
+      {
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "description": "raw",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "provider_annotations": {
+          "fixture_created_at": "2026-06-16T18:35:00Z",
+          "title": "Echo"
+        },
+        "provider_description": "Provider supplied text remains untrusted.",
+        "provider_tool_name": "echo"
+      }
+    ],
+    "schema_version": "millforge.connector.discovery_snapshot",
+    "version": "1.0"
+  }
+}

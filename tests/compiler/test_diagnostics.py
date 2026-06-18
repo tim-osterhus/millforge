@@ -62,6 +62,7 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
         "MF-R009",
         "MF-R010",
         "MF-R011",
+        "MF-C001_DISCOVERY_NOT_CATALOG",
         "MF-G001",
         "MF-G002",
         "MF-G003",
@@ -107,6 +108,10 @@ def test_diagnostic_registry_is_unique_and_fixed() -> None:
         CompilerPhase.RESOLUTION,
         DiagnosticSeverity.ERROR,
     )
+    assert DIAGNOSTIC_REGISTRY["MF-C001_DISCOVERY_NOT_CATALOG"] == (
+        CompilerPhase.RESOLUTION,
+        DiagnosticSeverity.ERROR,
+    )
     assert DIAGNOSTIC_REGISTRY["MF-C001"] == (
         CompilerPhase.CAPABILITY,
         DiagnosticSeverity.ERROR,
@@ -146,6 +151,10 @@ def test_semantic_diagnostic_code_table_matches_03b_trigger_meanings() -> None:
         "MF-R009": ("catalog-internal-failure", CompilerPhase.RESOLUTION),
         "MF-R010": ("malformed-model-profile", CompilerPhase.RESOLUTION),
         "MF-R011": ("invalid-tool-reference", CompilerPhase.RESOLUTION),
+        "MF-C001_DISCOVERY_NOT_CATALOG": (
+            "discovery-snapshot-not-catalog",
+            CompilerPhase.RESOLUTION,
+        ),
         "MF-G001": ("unknown-prerequisite-node", CompilerPhase.GRAPH),
         "MF-G002": ("self-prerequisite", CompilerPhase.GRAPH),
         "MF-G003": ("duplicate-prerequisite", CompilerPhase.GRAPH),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from enum import Enum
+from inspect import getattr_static
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
@@ -40,6 +41,7 @@ MAX_IMPLEMENTATION_ID_UTF8 = 256
 MAX_MODEL_TOOL_NAME_UTF8 = 64
 MAX_CAPABILITY_ID_UTF8 = 160
 MF_R009 = "MF-R009"
+DISCOVERY_NOT_CATALOG_CODE = "MF-C001_DISCOVERY_NOT_CATALOG"
 
 
 class CatalogLookupClassification(str, Enum):
@@ -189,6 +191,8 @@ class ToolCatalogEntry(BaseModel):
     idempotency: IdempotencyClass
     required_capabilities: tuple[StrictStr, ...] = Field(default_factory=tuple)
     produced_artifact_ids: tuple[StrictStr, ...] = Field(default_factory=tuple)
+    timeout_policy: Any | None = None
+    output_policy: Any | None = None
 
     @field_serializer("input_schema", "output_schema")
     def _serialize_schema(self, value: MappingProxyType[str, Any]) -> Any:
@@ -201,6 +205,8 @@ class ToolCatalogEntry(BaseModel):
         *,
         expected_tool_id: str,
         expected_tool_version: int,
+        timeout_policy: Any | None = None,
+        output_policy: Any | None = None,
     ) -> ToolCatalogEntry:
         """Admit a raw descriptor into the immutable semantic boundary."""
         expected_tool_id = validate_canonical_tool_id(expected_tool_id)
@@ -237,6 +243,8 @@ class ToolCatalogEntry(BaseModel):
             idempotency=raw.idempotency,
             required_capabilities=raw.required_capabilities,
             produced_artifact_ids=raw.produced_artifact_ids,
+            timeout_policy=timeout_policy,
+            output_policy=output_policy,
         )
 
 
@@ -374,6 +382,18 @@ def capture_catalog_snapshot_metadata(
         ) from exc
 
 
+def is_connector_discovery_snapshot_like(snapshot: object) -> bool:
+    """Return whether an object is discovery-shaped, not a semantic catalog."""
+    return all(
+        _has_static_attribute(snapshot, attribute)
+        for attribute in (
+            "connector_identity",
+            "provider_tools",
+            "discovery_snapshot_sha256",
+        )
+    )
+
+
 def admit_model_profile(
     raw_profile: CompiledModelProfile | Mapping[str, Any],
     *,
@@ -391,6 +411,14 @@ def admit_model_profile(
     if profile.profile_id != expected_profile_id:
         raise ValueError("model profile id does not match requested profile_id")
     return profile
+
+
+def _has_static_attribute(value: object, attribute: str) -> bool:
+    try:
+        getattr_static(value, attribute)
+    except AttributeError:
+        return False
+    return True
 
 
 def _freeze_json_object(value: Mapping[str, Any]) -> MappingProxyType[str, Any]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Mapping
 from enum import Enum
@@ -272,6 +273,7 @@ def make_trace_record(
     prerequisite_decisions: Mapping[str, ToolTraceDecision],
     capability_decisions: Mapping[str, ToolTraceDecision],
     result: ToolExecutionResult,
+    connector_audit: Mapping[str, Any] | None = None,
     summary_max_utf8: int = MAX_MODEL_SUMMARY_UTF8,
     occurred_at: str = "1970-01-01T00:00:00+00:00",
     monotonic_offset_ms: float = 0.0,
@@ -282,6 +284,7 @@ def make_trace_record(
         max_string_length=max(summary_max_utf8, 1),
         max_total_bytes=max(summary_max_utf8, 1),
     )
+    connector_fields = dict(connector_audit or {})
     return ToolTraceRecord(
         schema_version="1.0",
         sequence=sequence,
@@ -311,6 +314,7 @@ def make_trace_record(
         side_effect_class=ToolTraceSideEffectClass(result.side_effect_class.value),
         idempotency=ToolTraceIdempotency(result.idempotency.value),
         side_effect_certainty=result.side_effect_certainty,
+        **connector_fields,
         side_effect_detail_code=None if record is None else record.detail_code,
         side_effect_detail_summary=None
         if record is None
@@ -396,6 +400,13 @@ def _validate_schema_value(
     elif expected_type == "integer":
         if not isinstance(value, int) or isinstance(value, bool):
             return f"{path} must be integer"
+    elif expected_type == "number":
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+        ):
+            return f"{path} must be number"
     elif expected_type == "boolean":
         if not isinstance(value, bool):
             return f"{path} must be boolean"

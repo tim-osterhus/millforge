@@ -31,6 +31,13 @@ from millforge.compiler import (
     compile_semantic_from_admission,
     validate_harness_graph,
 )
+from millforge.connectors import (
+    ConnectorDiscoverySnapshot,
+    ConnectorIdentity,
+    ConnectorProtocol,
+    ConnectorTransportKind,
+    DiscoveredProviderTool,
+)
 from tests.compiler.conftest import (
     SHA_B,
     SHA_C,
@@ -272,6 +279,29 @@ class DriftingToolSnapshot:
         return ToolCatalogLookup.invalid(error_code="catalog-snapshot-drift")
 
 
+class DiscoveryLookalikeToolSnapshot:
+    def __init__(self) -> None:
+        self.connector_identity = object()
+        self.provider_tools: tuple[object, ...] = ()
+        self.discovery_snapshot_sha256 = SHA_B
+        self.metadata_reads: list[str] = []
+        self.lookups: list[tuple[str, int]] = []
+
+    @property
+    def snapshot_id(self) -> str:
+        self.metadata_reads.append("id")
+        return SHA_B
+
+    @property
+    def snapshot_sha256(self) -> str:
+        self.metadata_reads.append("sha")
+        return SHA_C
+
+    def resolve_exact(self, tool_id: str, tool_version: int) -> ToolCatalogLookup:
+        self.lookups.append((tool_id, tool_version))
+        raise AssertionError("discovery-shaped snapshots must not resolve tools")
+
+
 def _model_snapshot() -> StaticModelProfileCatalogSnapshot:
     return StaticModelProfileCatalogSnapshot(
         profiles={
@@ -301,6 +331,44 @@ def _invalid_tool_ref_source(tool_ref: str) -> HarnessSource:
     )
     invalid_graph = HarnessGraphSource.model_construct(nodes=(invalid_node,))
     return source.model_copy(update={"graph": invalid_graph})
+
+
+def _connector_discovery_snapshot() -> ConnectorDiscoverySnapshot:
+    return ConnectorDiscoverySnapshot(
+        connector_identity=ConnectorIdentity(
+            connector_id="connector.fake_mcp",
+            protocol=ConnectorProtocol.MCP,
+            protocol_version="2025-03-26",
+            transport_kind=ConnectorTransportKind.STDIO,
+            implementation_name="fake-mcp",
+            implementation_version="1.0.0",
+            server_reported_name="fake-mcp-server",
+            server_reported_version="1.0.0-server",
+            configured_secret_refs=("fake_mcp_token",),
+            discovered_at="2026-06-16T18:35:00Z",
+        ),
+        provider_tools=(
+            DiscoveredProviderTool(
+                provider_tool_name="echo",
+                provider_description="Untrusted provider discovery.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                provider_annotations={"title": "Echo"},
+            ),
+        ),
+        created_at="2026-06-16T18:35:00Z",
+        provider_metadata={"source": "test"},
+    )
 
 
 def test_semantic_diagnostic_registry_accepts_resolution_capability_artifact_codes() -> (
@@ -559,6 +627,46 @@ def test_invalid_direct_semantic_tool_reference_emits_mf_r011_without_catalog_ac
 
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-R011"]
     assert result.resolved_harness is None
+    assert tool_snapshot.metadata_reads == []
+    assert tool_snapshot.lookups == []
+    assert model_snapshot.metadata_reads == []
+    assert model_snapshot.lookups == []
+
+
+def test_connector_discovery_snapshot_is_rejected_before_catalog_metadata() -> None:
+    model_snapshot = CountingModelProfileSnapshot()
+
+    result = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        _minimal_source("connector.fake_mcp.echo@1"),
+        tool_snapshot=cast(Any, _connector_discovery_snapshot()),
+        model_profile_snapshot=model_snapshot,
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == [
+        "MF-C001_DISCOVERY_NOT_CATALOG"
+    ]
+    assert result.resolved_harness is None
+    assert model_snapshot.metadata_reads == []
+    assert model_snapshot.lookups == []
+
+
+def test_discovery_shaped_catalog_lookalike_short_circuits_before_resolve_exact() -> (
+    None
+):
+    tool_snapshot = DiscoveryLookalikeToolSnapshot()
+    model_snapshot = CountingModelProfileSnapshot()
+
+    result = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        _minimal_source("connector.fake_mcp.echo@1"),
+        tool_snapshot=tool_snapshot,
+        model_profile_snapshot=model_snapshot,
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == [
+        "MF-C001_DISCOVERY_NOT_CATALOG"
+    ]
     assert tool_snapshot.metadata_reads == []
     assert tool_snapshot.lookups == []
     assert model_snapshot.metadata_reads == []

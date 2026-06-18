@@ -45,6 +45,12 @@ from millforge.compiler import (
     HarnessCompileRequest,
     compile as compile_harness,
 )
+from millforge.connectors import (
+    ConnectorAdmissionRecord,
+    ConnectorAdmissionSnapshot,
+    ConnectorApprovalPolicy,
+    DeterministicFakeConnectorBroker,
+)
 from millforge.tools import (
     RuntimeToolRegistry,
     FrozenToolRegistrySnapshot,
@@ -517,6 +523,8 @@ async def test_output_schema_descriptor_drift_rejects_stale_compiled_binding_bef
     terminal = _descriptor("builtin.terminal.submit")
     plan = _plan(baseline, terminal)
     registry = ToolRegistry()
+    baseline_registry = ToolRegistry()
+    baseline_registry.register(baseline)
     registry.register(drifted)
     registry.register(terminal)
     calls: list[ValidatedToolCall] = []
@@ -534,6 +542,11 @@ async def test_output_schema_descriptor_drift_rejects_stale_compiled_binding_bef
         plan=plan,
         descriptor_snapshot=registry.freeze(),
         runtime_registry=runtime_registry,
+        connector_admission_snapshot=_connector_admission_snapshot_for(
+            baseline,
+            baseline_registry.freeze(),
+        ),
+        connector_broker=DeterministicFakeConnectorBroker(),
     )
 
     result = await executor.execute_model_tool(
@@ -647,6 +660,11 @@ async def test_connector_shaped_descriptor_compiles_generically_but_execution_re
         plan=plan,
         descriptor_snapshot=snapshot,
         runtime_registry=RuntimeToolRegistry(),
+        connector_admission_snapshot=_connector_admission_snapshot_for(
+            connector,
+            snapshot,
+        ),
+        connector_broker=DeterministicFakeConnectorBroker(),
     )
     result = await executor.execute_model_tool(
         model_tool_name="connector_test_echo",
@@ -655,18 +673,14 @@ async def test_connector_shaped_descriptor_compiles_generically_but_execution_re
         context=_context("terminal.intent"),
     )
 
-    assert result.status is ToolExecutionStatus.HARD_FAILURE
+    assert result.status is ToolExecutionStatus.NOT_EXECUTED
     assert result.error_code == ToolBindingDenialCode.NOT_FOUND.value
-    assert result.structured_data["evidence"]["implementation_id"] == (
-        "impl.connector.test.echo.v1"
-    )
+    assert result.structured_data["evidence"]["provider_tool_name"] == "echo"
     assert result.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
-    assert result.output_sha256 is None
     assert len(executor.trace_records) == 1
     trace = executor.trace_records[0]
-    assert trace.execution_status is ToolExecutionStatus.HARD_FAILURE
+    assert trace.execution_status is ToolExecutionStatus.NOT_EXECUTED
     assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
-    assert trace.output_sha256 is None
 
 
 @pytest.mark.asyncio
@@ -1921,6 +1935,27 @@ def _connector_descriptor(**updates: Any) -> ToolDescriptor:
     }
     values.update(updates)
     return ToolDescriptor(**values)
+
+
+def _connector_admission_snapshot_for(
+    descriptor: ToolDescriptor,
+    snapshot: FrozenToolRegistrySnapshot,
+) -> ConnectorAdmissionSnapshot:
+    record = ConnectorAdmissionRecord(
+        connector_id="connector.test",
+        provider_tool_name="echo",
+        connector_identity_sha256="1" * 64,
+        discovery_snapshot_sha256="2" * 64,
+        raw_tool_sha256="3" * 64,
+        descriptor_sha256=descriptor.descriptor_sha256,
+        required_capabilities=descriptor.required_capabilities,
+        side_effect_class=descriptor.side_effect_class,
+        idempotency=descriptor.idempotency,
+        timeout_policy=descriptor.timeout_policy,
+        output_policy=descriptor.output_policy,
+        approval_policy=ConnectorApprovalPolicy.NONE,
+    )
+    return ConnectorAdmissionSnapshot(records=(record,), descriptor_snapshot=snapshot)
 
 
 def _descriptor_by_implementation(implementation_id: str) -> ToolDescriptor:

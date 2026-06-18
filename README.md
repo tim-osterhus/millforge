@@ -384,12 +384,15 @@ executor-owned, non-effectful pre-entry policy gate before implementation
 entry, covering workspace logical-path containment, artifact declarations and
 availability, shell profile/selector/timeout admission, and terminal artifact
 requirements. The runtime validates implementation output against descriptor
-output schemas after completion and redacts/bounds model-visible results
-before return.
+output schemas after completion and fails closed on invalid output before
+model-visible return, then redacts and bounds accepted results before return.
 
 Every attempted or denied call emits a `ToolTraceRecord`. Pre-entry denials
 persist `side_effect_certainty=not_attempted`, and resolved, ambiguous, and
 uncompiled binding states are preserved through `binding_resolution_status`.
+Connector traces also carry structured approval, drift, request/response,
+retry, and redacted-evidence fields so failures stay auditable without prose
+summaries.
 
 ## Millforge 04D Tool Registry Closure Evidence
 
@@ -415,6 +418,69 @@ gate set includes the focused registry closure suite, the full pytest suite,
 Ruff lint and format checks, MyPy, `pip check`, package build, wheel and sdist
 archive listings, the accepted 04C baseline diff, source-control status, and
 private-state checks for `millrace-agents/`, `ideas/`, and `ref-forge/`.
+
+## Millforge 05A Connector Descriptor Admission
+
+05A adds the public `millforge.connectors` package for deterministic offline
+connector descriptor admission. It exposes frozen connector identity, discovery
+snapshot, admission manifest, admission policy, admission result, admission
+record, and diagnostic contracts, plus `admit_connector_tools(...)` for
+lowering explicitly admitted discovered tools into existing immutable
+`ToolDescriptor` objects.
+
+Discovery snapshots are evidence only: they are not tool catalogs, do not
+implement `ToolCatalogSnapshot`, and are rejected before semantic compilation
+can resolve model-visible tools. Admitted connector descriptors continue through
+the generic `ToolRegistry`, `FrozenToolRegistrySnapshot`, and compiler catalog
+path rather than a connector-specific runtime catalog.
+
+Connector input and output schemas are normalized through the accepted
+compiler-owned JSON Schema subset. Unsupported bound keywords such as
+`maxLength`, `maxItems`, `minimum`, and `maximum` are rejected at admission
+with explicit schema-error diagnostics because runtime does not enforce those
+bounds.
+
+05A remains offline and descriptor-only. It does not implement real MCP stdio
+or HTTP transport, connector process launching, sockets, live connector
+discovery, live connector invocation, credential use, a runtime connector
+broker, production connector presets, custom-tool compilation, Millrace runner
+integration, or Millrace approval token handling.
+
+## Millforge 05B Connector Runtime Admission Snapshot
+
+05B adds the runtime-owned `ConnectorAdmissionSnapshot` and
+`ConnectorAdmissionBinding` contracts, plus the connector-scoped
+`ConnectorBroker`, `ConnectorInvocationRequest`, and `ConnectorBrokerOutcome`
+runtime boundary. The snapshot deep-freezes accepted 05A
+`ConnectorAdmissionRecord` evidence into exact bindings keyed by `tool_id`,
+`tool_version`, and `descriptor_sha256`, exposes a deterministic
+`snapshot_sha256`, and preserves `connector_id`, `provider_tool_name`,
+`connector_identity_sha256`, `discovery_snapshot_sha256`, `raw_tool_sha256`,
+`input_schema_sha256`, `output_schema_sha256`, `provider_description_sha256`,
+`required_capabilities`, `side_effect_class`, `idempotency`,
+`timeout_policy`, `output_policy`, optional `idempotency_key_policy`,
+`approval_policy`, and `admission_record_sha256`. `CompiledToolBindingExecutor`
+and `create_tool_executor(...)` require that the snapshot and broker be
+provided for compiled connector descriptors while built-in-only plans continue
+to construct and execute unchanged.
+
+Before broker entry, the executor revalidates broker-exposed provider evidence
+against the admitted connector identity, discovery snapshot, raw tool, and
+schema or description hashes when those fields are available. It also
+compares preserved admission `required_capabilities` against the compiled
+connector descriptor before broker entry; capability drift fails closed with a
+`binding_mismatch` denial that stays distinct from ordinary runtime
+capability-grant failures.
+
+Broker requests are keyed by `connector_id` and `provider_tool_name`, carry
+validated JSON object arguments plus `tool_id`, `tool_version`,
+`descriptor_sha256`, and runtime provenance, and stay narrow enough for the
+offline `DeterministicFakeConnectorBroker` to keep connector boundary tests
+deterministic.
+
+Snapshot construction fails closed for missing, duplicate, stale,
+descriptor-inconsistent, or non-connector admission records, and later source
+mutation cannot change the frozen runtime bindings.
 
 ### Opt-In Live Model Backend Smoke
 
