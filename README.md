@@ -482,6 +482,29 @@ Snapshot construction fails closed for missing, duplicate, stale,
 descriptor-inconsistent, or non-connector admission records, and later source
 mutation cannot change the frozen runtime bindings.
 
+## Millforge 05C Custom-Tool Mini-Compiler
+
+05C adds the public `millforge.custom_tools` package for deterministic offline
+custom-tool contracts and diagnostics. It exposes frozen source manifest,
+declaration, compiler policy, compilation record, compilation result, and
+diagnostic contracts, plus `compile_custom_tools(...)`, deterministic hash
+helpers, and validation helpers for raw contract inputs.
+
+Accepted `runtime_kind=contract_only` declarations lower into immutable hashed
+`ToolDescriptor` data and one immutable `CustomToolCompilationRecord` per
+descriptor while remaining compatible with the existing `ToolRegistry`,
+`FrozenToolRegistrySnapshot`, and compiler catalog path. Accepted results
+normalize descriptor and record ordering by package, tool, version,
+model-facing identity, implementation, descriptor hash, and record hash, while
+rejected diagnostics are sorted canonically with evidence-aware tie-breakers.
+The contracts keep explicit UTC provenance, closed approval/runtime enums, and
+redacted bounded diagnostics for malformed source.
+
+05C stays compile-only. It does not register executable custom-tool runtime
+implementations, expose a custom tool registry or catalog, launch tools, broker
+connectors, run sandboxed code, integrate with a runner, or claim executable
+runtime support.
+
 ### Opt-In Live Model Backend Smoke
 
 Normal test runs are offline, deterministic, and do not require provider

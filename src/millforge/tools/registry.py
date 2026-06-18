@@ -300,7 +300,7 @@ class FrozenToolRegistrySnapshot:
             )
         self._entries = MappingProxyType(dict(sorted(entries.items())))
         self._descriptor_hash_records = tuple(
-            sorted(records, key=lambda record: (record.tool_id, record.tool_version))
+            sorted(records, key=_descriptor_hash_record_identity_key)
         )
         snapshot_payload = {
             "schema_version": 1,
@@ -414,7 +414,8 @@ class ToolRegistry:
             descriptors = tuple(
                 descriptor
                 for _, descriptor in sorted(
-                    self._descriptors.items(), key=lambda item: item[0]
+                    self._descriptors.items(),
+                    key=lambda item: _descriptor_identity_key(item[1]),
                 )
             )
             self._snapshot = FrozenToolRegistrySnapshot(descriptors)
@@ -441,6 +442,29 @@ def descriptor_hash_payload(descriptor: ToolDescriptor) -> dict[str, Any]:
         "timeout_policy": descriptor.timeout_policy.model_dump(mode="json"),
         "output_policy": descriptor.output_policy.model_dump(mode="json"),
     }
+
+
+def _descriptor_identity_key(
+    descriptor: ToolDescriptor,
+) -> tuple[str, int, str, str, str]:
+    return (
+        descriptor.tool_id,
+        descriptor.tool_version,
+        descriptor.model_tool_name,
+        descriptor.implementation_id,
+        descriptor.descriptor_sha256,
+    )
+
+
+def _descriptor_hash_record_identity_key(
+    record: FrozenDescriptorHashRecord,
+) -> tuple[str, int, str, str]:
+    return (
+        record.tool_id,
+        record.tool_version,
+        record.implementation_id,
+        record.descriptor_sha256,
+    )
 
 
 def _sorted_string_tuple(value: Any, field_name: str) -> tuple[str, ...]:

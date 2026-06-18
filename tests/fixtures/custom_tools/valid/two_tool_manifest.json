@@ -1,0 +1,129 @@
+{
+  "expected": {
+    "accepted": true,
+    "descriptor_sha256_by_tool_id": {
+      "custom.echo": "09c801fd8d27b6ee23588b33802e1338fc47d352236da5b74cddcdb1b733840e",
+      "custom.list": "42052f91d50abd3b7ae899e4d135d7d20c0e69cf265000a2a9589fe501b1ad70"
+    },
+    "record_sha256_by_tool_id": {
+      "custom.echo": "1f378c1adc6e5bbe713b91982863810d7fbe11ca8fb097c8a8240b1fcec67205",
+      "custom.list": "1b331c341dcbbaa4569496b3000f82071b82f1aa29f12ddf4800e82c5b2a7dc3"
+    },
+    "source_sha256": "5fb85466038490596a54ebf0d4daa94f8cb7424b7599162f7ffb4e5f5eae238a"
+  },
+  "manifest": {
+    "created_at": "2026-06-18T04:45:00Z",
+    "package_id": "custom.package",
+    "package_version": 1,
+    "policy_metadata": {
+      "fixture": "custom_tool_regression_matrix"
+    },
+    "source_name": "operator-source",
+    "tools": [
+      {
+        "approval_policy": "none",
+        "description": "Summarize a supplied message.",
+        "description_policy": "operator_supplied",
+        "idempotency": "idempotent",
+        "implementation_id": "custom.echo.impl",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "type": "object"
+        },
+        "model_tool_name": "custom_echo",
+        "output_policy": {
+          "max_output_bytes": 32768,
+          "max_summary_utf8": 4096,
+          "redact_secrets": true
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "required_capabilities": [
+          "cap.custom.echo"
+        ],
+        "side_effect_class": "read_only",
+        "timeout_policy": {
+          "cancellation_grace_seconds": 5,
+          "timeout_seconds": 30
+        },
+        "tool_id": "custom.echo",
+        "tool_version": 1
+      },
+      {
+        "approval_policy": "millrace_explicit",
+        "description": "List deterministic custom records.",
+        "description_policy": "operator_supplied",
+        "idempotency": "idempotent",
+        "implementation_id": "custom.list.impl",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "type": "object"
+        },
+        "model_tool_name": "custom_list",
+        "output_policy": {
+          "max_output_bytes": 32768,
+          "max_summary_utf8": 4096,
+          "redact_secrets": true
+        },
+        "output_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary"
+          ],
+          "type": "object"
+        },
+        "produced_artifact_ids": [
+          "custom_list_report"
+        ],
+        "required_capabilities": [
+          "cap.custom.list"
+        ],
+        "side_effect_class": "workspace_write",
+        "timeout_policy": {
+          "cancellation_grace_seconds": 5,
+          "timeout_seconds": 30
+        },
+        "tool_id": "custom.list",
+        "tool_version": 1
+      }
+    ]
+  },
+  "policy": {
+    "allowed_capability_ids": [
+      "cap.custom.echo",
+      "cap.custom.list"
+    ],
+    "max_description_utf8": 512
+  }
+}

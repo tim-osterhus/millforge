@@ -22,6 +22,12 @@ from millforge import (
     CompiledHarnessPlan,
     CompiledModelProfile,
     CompiledPrerequisite,
+    CustomToolApprovalPolicy,
+    CustomToolCompilerPolicy,
+    CustomToolDeclaration,
+    CustomToolDescriptionPolicy,
+    CustomToolRuntimeKind,
+    CustomToolSourceManifest,
     CompiledPromptPolicy,
     Deadline,
     IdempotencyClass,
@@ -37,7 +43,10 @@ from millforge import (
     ToolExecutionContext,
     ToolExecutionResult,
     ToolExecutionStatus,
+    ToolOutputPolicy,
+    ToolTimeoutPolicy,
     ValidatedToolCall,
+    compile_custom_tools,
 )
 from millforge.compiled_plan import finalize_compiled_plan_sha256
 from millforge.compiler import (
@@ -680,6 +689,86 @@ async def test_connector_shaped_descriptor_compiles_generically_but_execution_re
     assert len(executor.trace_records) == 1
     trace = executor.trace_records[0]
     assert trace.execution_status is ToolExecutionStatus.NOT_EXECUTED
+    assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+
+
+@pytest.mark.asyncio
+async def test_compiled_contract_only_custom_tool_missing_implementation_fails_closed() -> (
+    None
+):
+    source = CustomToolSourceManifest(
+        package_id="custom.package",
+        package_version=1,
+        source_name="operator-source",
+        created_at="2026-06-18T04:45:00Z",
+        tools=(
+            CustomToolDeclaration(
+                tool_id="custom.echo",
+                tool_version=1,
+                implementation_id="custom.echo.impl",
+                runtime_kind=CustomToolRuntimeKind.CONTRACT_ONLY,
+                model_tool_name="custom_echo",
+                description="Summarize a supplied message.",
+                description_policy=CustomToolDescriptionPolicy.OPERATOR_SUPPLIED,
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+                required_capabilities=("cap.custom.echo",),
+                produced_artifact_ids=(),
+                side_effect_class=SideEffectClass.READ_ONLY,
+                idempotency=IdempotencyClass.IDEMPOTENT,
+                timeout_policy=ToolTimeoutPolicy(
+                    timeout_seconds=30,
+                    cancellation_grace_seconds=5,
+                ),
+                output_policy=ToolOutputPolicy(
+                    max_output_bytes=4096,
+                    max_summary_utf8=512,
+                    redact_secrets=True,
+                ),
+                approval_policy=CustomToolApprovalPolicy.NONE,
+            ),
+        ),
+    )
+    result = compile_custom_tools(
+        source,
+        CustomToolCompilerPolicy(allowed_capability_ids=("cap.custom.echo",)),
+    )
+    assert result.accepted is True
+    descriptor = result.descriptors[0]
+    terminal = _descriptor("builtin.terminal.submit")
+    registry = ToolRegistry()
+    registry.register(descriptor)
+    registry.register(terminal)
+    executor = create_tool_executor(
+        plan=_plan(descriptor, terminal),
+        descriptor_snapshot=registry.freeze(),
+        runtime_registry=RuntimeToolRegistry(),
+    )
+
+    denied = await executor.execute_model_tool(
+        model_tool_name="custom_echo",
+        call_id="call-custom-missing-impl",
+        arguments={"message": "hello"},
+        context=_context("cap.custom.echo"),
+    )
+
+    assert denied.status is ToolExecutionStatus.HARD_FAILURE
+    assert denied.error_code == ToolBindingDenialCode.NOT_FOUND.value
+    assert denied.structured_data["evidence"]["binding_field"] == "implementation_id"
+    assert denied.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert denied.output_sha256 is None
+    trace = executor.trace_records[0]
+    assert trace.execution_status is ToolExecutionStatus.HARD_FAILURE
     assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
 
 
