@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import textwrap
 import tomllib  # type: ignore[import-not-found]
 import zipfile
 from collections.abc import Iterator
@@ -90,6 +91,45 @@ FORBIDDEN_WHEEL_DIR_PARTS = {
     "dashboard",
     "dashboards",
 }
+PUBLIC_IMPORT_MODULES = (
+    "millforge",
+    "millforge.connectors",
+    "millforge.custom_tools",
+    "millforge.tools",
+)
+FORBIDDEN_PUBLIC_IMPORT_AUDIT_EVENTS = {
+    "os.fork",
+    "os.kill",
+    "os.posix_spawn",
+    "os.spawn",
+    "os.spawnv",
+    "os.spawnve",
+    "os.startfile",
+    "os.system",
+    "pty.spawn",
+    "socket.__new__",
+    "subprocess.Popen",
+}
+FORBIDDEN_PUBLIC_ARCHIVE_PREFIXES = (
+    "millrace-agents/",
+    "ideas/",
+    "ref-forge/",
+    ".git/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "dist/",
+    "htmlcov/",
+    "build/",
+    "node_modules/",
+)
+FORBIDDEN_PUBLIC_ARCHIVE_NAME_TERMS = (
+    "credential",
+    "mailbox",
+    "runtime_snapshot",
+    "secret",
+    "token",
+)
 
 
 def _public_python_files() -> Iterator[Path]:
@@ -143,10 +183,52 @@ def test_public_modules_have_no_private_forge_imports_or_annotations() -> None:
 def test_public_package_exports_no_private_forge_symbols() -> None:
     exports = tuple(millforge.__all__)
 
+    assert len(exports) == len(set(exports))
     assert "_forge" not in exports
     assert not any(name.startswith("Forge") for name in exports)
     assert not any(name.startswith("_") for name in exports)
     assert not hasattr(millforge, "ForgeGuardrailBackend")
+
+
+def test_public_package_imports_have_no_process_network_or_daemon_side_effects() -> (
+    None
+):
+    script = textwrap.dedent(
+        f"""
+        from __future__ import annotations
+
+        import importlib
+        import json
+        import sys
+
+        forbidden = {sorted(FORBIDDEN_PUBLIC_IMPORT_AUDIT_EVENTS)!r}
+        seen = []
+
+        def audit(event, args):
+            if event in forbidden or event.startswith("socket."):
+                seen.append(event)
+
+        sys.addaudithook(audit)
+        for module_name in {PUBLIC_IMPORT_MODULES!r}:
+            importlib.import_module(module_name)
+        print(json.dumps(seen, sort_keys=True))
+        if seen:
+            raise SystemExit(1)
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        env={"PYTHONPATH": str(REPO_ROOT / "src")},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == []
 
 
 def test_runtime_dependencies_exclude_forge_transport_and_provider_packages() -> None:
@@ -247,6 +329,46 @@ def test_sdist_content_excludes_tests_runtime_artifacts_and_ref_forge(
     assert not any("__pycache__" in Path(name).parts for name in stripped)
     assert not any(name.endswith(".pyc") for name in stripped)
     assert not any("secret" in Path(name).name.lower() for name in stripped)
+
+
+def test_fresh_public_archives_exclude_private_runtime_and_large_temp_state(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "spec05-closure"
+    subprocess.run(
+        [sys.executable, "-m", "build", "--outdir", str(out_dir)],
+        cwd=REPO_ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    wheel_path = next(out_dir.glob("millforge-*.whl"))
+    sdist_path = next(out_dir.glob("millforge-*.tar.gz"))
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        wheel_names = set(wheel.namelist())
+    with tarfile.open(sdist_path) as sdist:
+        sdist_names = {
+            "/".join(Path(name).parts[1:])
+            for name in sdist.getnames()
+            if Path(name).parts[1:]
+        }
+
+    for archive_names in (wheel_names, sdist_names):
+        assert "README.md" in archive_names or "millforge/__init__.py" in archive_names
+        assert not any(
+            name.startswith(FORBIDDEN_PUBLIC_ARCHIVE_PREFIXES) for name in archive_names
+        )
+        assert not any("__pycache__" in Path(name).parts for name in archive_names)
+        assert not any(
+            name.endswith((".pyc", ".pyo", ".log")) for name in archive_names
+        )
+        assert not any(
+            term in Path(name).name.lower()
+            for name in archive_names
+            for term in FORBIDDEN_PUBLIC_ARCHIVE_NAME_TERMS
+        )
 
 
 def test_prompt_assembly_excludes_secrets_and_artifact_contents_and_preserves_braces() -> (

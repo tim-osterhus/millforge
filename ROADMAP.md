@@ -265,22 +265,21 @@ Key outcomes:
 - invalid trials remain visible rather than silently excluded
 - public claims stay bounded to the evaluated workflow and model
 
-### 7. Connector Admission
+### 7. Connector And Custom-Tool Closure
 
-External connectors can expand Millforge beyond built-in tools, but discovery
-is not trust. A connector tool should become model-visible only after explicit
-operator admission and compilation.
+External connectors expand Millforge beyond built-in tools, and 05A through
+05D now cover the offline closure path. Discovery is not trust: a connector
+tool becomes model-visible only after explicit operator admission and
+compilation, and the mixed closure smoke proves built-in, admitted connector,
+and contract-only custom-tool descriptors can coexist in one generic
+registry/catalog/compiler path.
 
-The first standard connector path should be MCP. Millforge should capture a
-discovery snapshot, compare it with an operator-written admission manifest,
-normalize schemas, map explicit capabilities, classify side effects, assign
-approval policy, sanitize model-facing descriptions, and compile immutable
-connector tool descriptors.
-
-At runtime, the model never talks directly to a connector. Calls flow through
-Millforge validation, prerequisite checks, Millrace capability checks, approval
-checks, connector identity revalidation, broker invocation, output validation,
-redaction, and trace recording.
+The implemented offline closure path captures a discovery snapshot, compares
+it with an operator-written admission manifest, normalizes schemas, maps
+explicit capabilities, classifies side effects, assigns approval policy,
+sanitizes model-facing descriptions, compiles immutable connector tool
+descriptors, and validates mixed registry/catalog, harness selection, and
+denial evidence with a deterministic conformance matrix.
 
 Key outcomes:
 
@@ -289,7 +288,12 @@ Key outcomes:
 - connector identity or schema drift fails closed
 - destructive tools require explicit approval or remain forbidden
 - connector output is treated as untrusted data
-- credentials never enter discovery snapshots or compiled descriptors
+- closure fixtures keep built-in, admitted connector, and compiled custom-tool
+  descriptors on the generic registry/catalog path
+- deferred live connector transport, marketplace installation, automatic
+  discovery or admission, custom runtime execution, Millrace runner
+  integration, eval workflows, and live model/backend validation remain future
+  work
 
 ### 8. Local And On-Prem Model Deployment
 
@@ -380,7 +384,7 @@ The roadmap favors evidence over breadth:
 4. prove Planner, Builder, Checker, and Arbiter presets
 5. prove Millrace runner integration without weakening governance
 6. prove reliability improvements in controlled evaluation
-7. expand into connectors, local backends, and vertical packs
+7. expand into live connector transport, local backends, and vertical packs
 
 That sequence keeps Millforge useful without letting it blur into a second
 workflow engine.

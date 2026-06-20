@@ -1,0 +1,1496 @@
+[
+  {
+    "requirement_id": "05A.discovery_non_authoritative",
+    "requirement_summary": "Connector discovery snapshots are inert evidence and cannot satisfy compiler catalog authority by themselves.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/contracts.py",
+      "src/millforge/compiler/semantic.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py",
+      "tests/compiler/test_semantic.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py tests/compiler/test_semantic.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "05A Arbiter verdict result_class=success accepts this current offline connector admission surface.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.explicit_admission_required",
+    "requirement_summary": "Provider tools become model-visible only through an explicit admission manifest and policy.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/admission.py",
+      "src/millforge/connectors/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Admission validates selected and denied tools, expected identity, schemas, capabilities, approval policy, and hashes.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.identity_frozen",
+    "requirement_summary": "Connector identity contracts are frozen, exact-match, and hash deterministically while redacting secret-looking values.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Covered by identity immutability, exact expected identity, timestamp provenance, and secret rejection assertions.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/identity.json",
+      "tests/fixtures/connectors/valid/discovery_snapshot.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.discovery_hashing",
+    "requirement_summary": "Discovery snapshots and raw provider-tool evidence carry deterministic hashes without becoming authoritative catalogs.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Fixture hash assertions pin identity, discovery snapshot, raw provider tool, schema, and provider description hashes.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/expected_hashes.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.admission_hashing",
+    "requirement_summary": "Admitted connector records and lowered descriptors expose deterministic descriptor and admission-record hashes.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/admission.py",
+      "src/millforge/connectors/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Tests compare deterministic admitted descriptors and admission records against checked-in expected hashes.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json",
+      "tests/fixtures/connectors/valid/expected_hashes.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.schema_subset",
+    "requirement_summary": "Connector input and output schemas use the accepted Millforge JSON Schema subset and fail closed for unsupported forms.",
+    "source_specs": [
+      "05A",
+      "05B",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/compiler/schema_validation.py",
+      "src/millforge/connectors/admission.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py",
+      "tests/compiler/test_schema_validation.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py tests/compiler/test_schema_validation.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Admission and compiler schema tests cover unsupported input/output schemas and diagnostic evidence.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/malformed/unsupported_input_schema.json",
+      "tests/fixtures/connectors/malformed/unsupported_output_schema.json",
+      "tests/fixtures/connectors/malformed/missing_output_schema.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.description_policy",
+    "requirement_summary": "Connector descriptions are bounded and treated as untrusted provider text.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/admission.py",
+      "src/millforge/connectors/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Description policy, maximum description length, and secret-bearing material are covered by malformed fixture tests.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/malformed/secret_bearing_material.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.capability_policy",
+    "requirement_summary": "Admitted connector tools declare explicit allowlisted capabilities.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/admission.py",
+      "src/millforge/tools/registry.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py",
+      "tests/test_tool_registry.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py tests/test_tool_registry.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Non-allowlisted capabilities fail admission and accepted descriptors carry required capability tuples.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/admission_policy.json",
+      "tests/fixtures/connectors/malformed/non_allowlisted_capability.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.side_effect_policy",
+    "requirement_summary": "Connector admission preserves side-effect and idempotency metadata through descriptor lowering.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/admission.py",
+      "src/millforge/tools/registry.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Manifest-supplied policies lower into ToolDescriptor values instead of implicit module defaults.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/admission_manifest.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.approval_policy",
+    "requirement_summary": "Connector admission encodes explicit approval policies and denies forbidden tools.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/contracts.py",
+      "src/millforge/connectors/admission.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Denied fixture rows and admission policy matrix assertions cover forbidden and explicit approval handling.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json",
+      "tests/fixtures/connectors/malformed/forbidden_admitted_tool.json"
+    ]
+  },
+  {
+    "requirement_id": "05A.diagnostics",
+    "requirement_summary": "Connector diagnostics expose stable MF-C codes with deterministic redacted evidence.",
+    "source_specs": [
+      "05A",
+      "05A remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/diagnostics.py",
+      "src/millforge/compiler/diagnostics.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_admission.py",
+      "tests/compiler/test_diagnostics.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_admission.py tests/compiler/test_diagnostics.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json"
+    ],
+    "status": "implemented",
+    "notes": "Malformed fixture matrix asserts stable codes rather than fragile prose.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/malformed/duplicate_admitted_model_name.json",
+      "tests/fixtures/connectors/malformed/duplicate_implementation_id.json",
+      "tests/fixtures/connectors/malformed/duplicate_provider_name.json",
+      "tests/fixtures/connectors/malformed/forbidden_admitted_tool.json",
+      "tests/fixtures/connectors/malformed/identity_drift.json",
+      "tests/fixtures/connectors/malformed/missing_provider_tool.json",
+      "tests/fixtures/connectors/malformed/non_allowlisted_capability.json",
+      "tests/fixtures/connectors/malformed/secret_bearing_material.json",
+      "tests/fixtures/connectors/malformed/supplied_hash_mismatch.json",
+      "tests/fixtures/connectors/malformed/unsupported_input_schema.json",
+      "tests/fixtures/connectors/malformed/unsupported_output_schema.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.snapshot_binding",
+    "requirement_summary": "Runtime connector admission snapshots bind records by compiled descriptor identity and expose deterministic snapshot hashes.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/runtime.py",
+      "src/millforge/tools/execution.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "05B Arbiter verdict result_class=success accepts the current runtime-boundary evidence.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.snapshot_staleness",
+    "requirement_summary": "Runtime rejects missing, duplicate, stale, mutated, non-connector, or descriptor-inconsistent admission records.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/runtime.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Snapshot construction and executor construction tests cover stale and inconsistent metadata denial.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.broker_required",
+    "requirement_summary": "Connector descriptors require a connector broker and cannot run through generic runtime implementations.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/broker.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Tests prove malicious direct runtime callables are bypassed for connector descriptors.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.input_preflight",
+    "requirement_summary": "Connector model-call arguments are validated before broker entry.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/tools/results.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Invalid number-schema values deny before broker entry with no captured fake broker requests.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.connector_dispatch_authority",
+    "requirement_summary": "Connector dispatch authority is runtime-owned and derived from admission snapshot plus compiled binding identity.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/runtime.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py",
+      "tests/test_tool_execution_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py tests/test_tool_execution_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Compiled binding and admission snapshot are checked before connector broker invocation.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.narrow_broker_request",
+    "requirement_summary": "Broker requests contain only connector-scoped identity, provider tool, arguments, and run/stage metadata.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/broker.py",
+      "src/millforge/tools/execution.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Assertions verify request shape and absence of capability envelopes, registries, approval tokens, and mutable execution context.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.fake_broker_only",
+    "requirement_summary": "Offline connector runtime evidence uses the deterministic fake broker only.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/fake.py",
+      "src/millforge/connectors/broker.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "No network, provider credentials, connector process, or external service is required by these tests.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.identity_drift",
+    "requirement_summary": "Connector identity, discovery, raw tool, schema, description, and descriptor drift are denied before broker entry.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/runtime.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Pre-entry drift tests cover provider evidence and descriptor/admission mismatches.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json",
+      "tests/fixtures/connectors/malformed/identity_drift.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.capability_drift",
+    "requirement_summary": "Runtime denies broker entry when admitted connector capabilities drift from compiled descriptor capabilities.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/runtime.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "05B remediation history and final Arbiter verdict accept this as closed.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.approval_gate",
+    "requirement_summary": "Runtime connector approval grants are scoped by connector, provider tool, descriptor, request, run, stage, policy, identity, and expiry.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Wrong scope, missing, expired, and accepted explicit approval cases are covered.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.operator_out_of_band",
+    "requirement_summary": "Operator-out-of-band connector approval stays pending or denied unless runtime supplies accepted evidence.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/runtime.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Runtime approval-policy tests cover operator_out_of_band pending denial without broker entry.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.output_validation",
+    "requirement_summary": "Connector broker outputs are schema-validated, redacted, bounded, and summarized before success.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/tools/results.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Invalid connector output, redaction, bounded summary, and output hash behavior are covered.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.retry_certainty",
+    "requirement_summary": "Connector retry decisions depend on side-effect certainty and idempotency policy.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/tools/results.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py",
+      "tests/test_contracts.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py tests/test_contracts.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json",
+      "millrace-agents/history-log/entries/2026-06-18.jsonl"
+    ],
+    "status": "implemented",
+    "notes": "Doublechecker history records the confirmed-complete retry matrix passing after 05B remediation.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.timeout_cancellation_retry",
+    "requirement_summary": "Connector timeout and cancellation outcomes preserve conservative side-effect and retry certainty.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/tools/results.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Tests cover pre-entry and during-broker timeout and cancellation classifications.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.per_invocation_revalidation",
+    "requirement_summary": "Connector provider evidence is revalidated on each invocation.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/fake.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Same-stage second-invocation drift checks prove evidence is not trusted once at executor construction only.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.provider_scope",
+    "requirement_summary": "Connector provider-tool lookup is scoped by connector identity and provider tool name.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/connectors/fake.py",
+      "src/millforge/connectors/broker.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Fake broker keys on connector_id plus provider_tool_name and tests cover duplicate provider names across connectors.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.trace_evidence",
+    "requirement_summary": "Connector traces record binding, admission, approval, drift, broker, retry, side-effect, capability, and redaction decisions.",
+    "source_specs": [
+      "05B",
+      "05B remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/tools/results.py",
+      "src/millforge/compiled_plan.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Structured trace assertions inspect success and denial fields directly.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05B.no_runtime_authority_bleed",
+    "requirement_summary": "Connector runtime boundaries do not grant queue, status, daemon, approval mutation, credential, or provider authority.",
+    "source_specs": [
+      "05B",
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/connectors/broker.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_runtime_boundary.py",
+      "tests/test_tool_execution_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_runtime_boundary.py tests/test_tool_execution_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05b-connector-runtime-boundary-37768b1b48.json"
+    ],
+    "status": "implemented",
+    "notes": "Broker request shape excludes runtime authority objects and runtime-owned Millrace state.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/admission_manifest.json",
+      "tests/fixtures/connectors/valid/admission_policy.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.source_contract",
+    "requirement_summary": "Custom-tool source manifests and declarations are frozen compile-only contracts with positive package versions.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "05C Arbiter verdict result_class=success accepts the current custom-tool mini-compiler surface.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/two_tool_manifest.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.compile_only",
+    "requirement_summary": "Custom tools compile to descriptors and records only; no executable custom runtime is introduced.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/compiler.py",
+      "src/millforge/custom_tools/__init__.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py",
+      "tests/test_tool_execution_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py tests/test_tool_execution_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Public custom_tools exports omit executor authority and execution tests keep missing-implementation behavior closed.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/two_tool_manifest.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.runtime_kind_closed",
+    "requirement_summary": "Custom-tool runtime_kind is closed to contract_only.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Enum and policy tests reject unsupported runtime kinds.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.descriptor_lowering",
+    "requirement_summary": "Accepted custom-tool declarations lower into generic ToolDescriptor objects and ToolCatalogSnapshot entries.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/compiler.py",
+      "src/millforge/tools/registry.py",
+      "src/millforge/compiler/catalogs.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py",
+      "tests/test_tool_registry.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py tests/test_tool_registry.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Registry/catalog projection is shared with built-ins and connectors rather than a parallel custom catalog.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/two_tool_manifest.json",
+      "tests/fixtures/custom_tools/valid/two_tool_manifest_reordered.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.record_hashing",
+    "requirement_summary": "Custom-tool compilation records serialize deterministic descriptor-linked hashes.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Tests assert compilation_record_sha256 is present in JSON dumps and tamper-resistant.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/two_tool_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_expected_hashes.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.schema_subset",
+    "requirement_summary": "Custom-tool input and output schemas reuse the Millforge compiler schema subset.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/compiler/schema_validation.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py",
+      "tests/compiler/test_schema_validation.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py tests/compiler/test_schema_validation.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Malformed fixture cases cover unsupported features, bounds, references, recursion, and missing output schemas.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.source_authority_closed",
+    "requirement_summary": "Custom-tool source manifests cannot supply executable authority, live URLs, path traversal, or expected hash escape hatches.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Executable material, unsafe paths, live URLs, and secret material fail with custom-tool diagnostics.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.capability_artifact_policy",
+    "requirement_summary": "Custom-tool capabilities and artifact policies are explicit, allowlisted, and compatible with side-effect policy.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Policy matrix tests cover non-allowlisted capabilities, artifact failures, and explicit capability requirements.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.approval_policy",
+    "requirement_summary": "Custom-tool approval policies are closed and enforce explicit approval for write or artifact-producing declarations.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Tests reject forbidden approval and none approval for workspace-writing custom tools.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.description_containment",
+    "requirement_summary": "Custom-tool descriptions are operator-supplied, bounded, and rejected when they contain unsafe instructions or secrets.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/diagnostics.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Diagnostic redaction and malformed description fixture cases cover this boundary.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.manifest_atomicity",
+    "requirement_summary": "Rejected custom-tool compilation results contain no partial descriptors or records.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Result contract tests reject descriptors or records on failed compilation and require parity on accepted results.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.hash_determinism",
+    "requirement_summary": "Custom-tool source, descriptor, record, and diagnostic ordering are deterministic across non-semantic input order changes.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/contracts.py",
+      "src/millforge/custom_tools/compiler.py",
+      "src/millforge/custom_tools/diagnostics.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Valid and reordered fixtures produce equivalent accepted result dumps and stable descriptor order.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/two_tool_manifest.json",
+      "tests/fixtures/custom_tools/valid/two_tool_manifest_reordered.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.missing_implementation",
+    "requirement_summary": "Contract-only custom-tool descriptors fail closed through the existing missing-implementation path when executed.",
+    "source_specs": [
+      "05C",
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/execution.py",
+      "src/millforge/custom_tools/compiler.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_tool_execution_boundary.py",
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_tool_execution_boundary.py::test_compiled_contract_only_custom_tool_missing_implementation_fails_closed tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Execution tests assert descriptor-bound missing-implementation evidence, side_effect_certainty not_attempted, trace fields, and no connector broker entry for contract-only custom tools.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json"
+    ]
+  },
+  {
+    "requirement_id": "05C.diagnostics",
+    "requirement_summary": "Custom-tool diagnostics expose MF-CT001 through MF-CT019 with bounded redacted evidence.",
+    "source_specs": [
+      "05C",
+      "05C remediation"
+    ],
+    "implemented_by_files": [
+      "src/millforge/custom_tools/diagnostics.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_custom_tool_compiler.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_custom_tool_compiler.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/arbiter/verdicts/idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json"
+    ],
+    "status": "implemented",
+    "notes": "Diagnostic taxonomy and redaction behavior are asserted directly.",
+    "fixture_paths": [
+      "tests/fixtures/custom_tools/malformed/matrix.json"
+    ]
+  },
+  {
+    "requirement_id": "05D.mixed_registry",
+    "requirement_summary": "Built-in, admitted connector, and compiled custom-tool descriptors coexist in one generic registry path.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/tools/registry.py",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py",
+      "tests/test_connector_runtime_boundary.py",
+      "tests/test_tool_execution_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py tests/test_connector_runtime_boundary.py tests/test_tool_execution_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Closure smoke registers one built-in descriptor, two admitted connector descriptors, and two compiled contract-only custom descriptors in one ToolRegistry.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/closure_discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json",
+      "tests/fixtures/connectors/valid/closure_admission_policy.json",
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_expected_hashes.json",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ]
+  },
+  {
+    "requirement_id": "05D.mixed_catalog",
+    "requirement_summary": "Mixed registry descriptors project into one compiler catalog without parallel connector or custom-tool catalogs.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/compiler/catalogs.py",
+      "src/millforge/tools/registry.py",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Closure smoke freezes the generic registry as a ToolCatalogSnapshot and resolves mixed descriptor hash records through the compiler catalog protocol.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/closure_discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json",
+      "tests/fixtures/connectors/valid/closure_admission_policy.json",
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_expected_hashes.json",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ]
+  },
+  {
+    "requirement_id": "05D.harness_selection",
+    "requirement_summary": "A mixed harness selects exactly built-in, admitted connector, and contract-only custom descriptors from the same catalog.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/compiler/semantic.py",
+      "src/millforge/compiler/service.py",
+      "src/millforge/compiler/lowering.py",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Mixed harness compiles through semantic validation, lowering, and compiler service with exactly one built-in, two connector, and two custom descriptor bindings.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/closure_discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json",
+      "tests/fixtures/connectors/valid/closure_admission_policy.json",
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_expected_hashes.json",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ]
+  },
+  {
+    "requirement_id": "05D.illegal_tool_denial",
+    "requirement_summary": "Uncompiled, ambiguous, unadmitted, denied, drifted, approval-missing, capability-missing, invalid-output, and unsafe-retry calls fail closed.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/compiler/semantic.py",
+      "src/millforge/tools/registry.py",
+      "src/millforge/connectors/runtime.py",
+      "src/millforge/tools/execution.py",
+      "tests/fixtures/connectors/valid/closure_discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py",
+      "tests/test_connector_runtime_boundary.py",
+      "tests/test_tool_execution_boundary.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py tests/test_connector_runtime_boundary.py tests/test_tool_execution_boundary.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Closure smoke asserts denied connector, unadmitted connector, and uncompiled custom tool IDs are missing from the mixed catalog; runtime boundary tests cover ambiguous, drifted, approval-missing, capability-missing, invalid-output, unsafe-retry, timeout, cancellation, and contract-only custom missing-implementation denials.",
+    "fixture_paths": [
+      "tests/fixtures/connectors/valid/closure_discovery_snapshot.json",
+      "tests/fixtures/connectors/valid/closure_admission_manifest.json",
+      "tests/fixtures/custom_tools/valid/closure_source_manifest.json",
+      "tests/fixtures/spec05_mixed_harness/harness.json"
+    ]
+  },
+  {
+    "requirement_id": "05D.no_authority_bleed",
+    "requirement_summary": "Spec 05 closure evidence does not depend on ignored private state as product implementation evidence.",
+    "source_specs": [
+      "05D",
+      "05D authority revision"
+    ],
+    "implemented_by_files": [
+      "tests/test_connector_custom_tool_closure.py",
+      ".gitignore"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py",
+      "git check-ignore -v millrace-agents ideas ref-forge"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/spec-05d-prerequisite-evidence-authority-revision.md",
+      "millrace-agents/runs/run-0d75507e7b014bbca1eca8a7cade7e39/stage_results/request-5a173b3146324bf0a550a29f271c0c72.history_entry.json"
+    ],
+    "status": "implemented",
+    "notes": "Validator rejects private ignored paths as implemented product evidence while accepting them as prerequisite authority paths. No fixture_paths are listed because this row is proven by validator source assertions and .gitignore/private-state checks rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.no_live_claims",
+    "requirement_summary": "Spec 05 matrix rows keep future transport, distribution, runner, custom execution, preset, evaluation, and provider behavior outside implemented scope.",
+    "source_specs": [
+      "05D",
+      "05D authority revision"
+    ],
+    "implemented_by_files": [
+      "tests/test_connector_custom_tool_closure.py",
+      "README.md",
+      "ROADMAP.md"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Validator enforces future-behavior boundaries; README and ROADMAP keep implemented behavior narrower than future integration. No fixture_paths are listed because this row is proven by README/ROADMAP text assertions rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.public_api_boundary",
+    "requirement_summary": "Public package exports are limited to current offline contracts, diagnostics, compiler helpers, and generic tool surfaces.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/__init__.py",
+      "src/millforge/connectors/__init__.py",
+      "src/millforge/custom_tools/__init__.py",
+      "src/millforge/tools/__init__.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py",
+      "tests/test_forge_boundary_packaging.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py tests/test_forge_boundary_packaging.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Tests assert exact connector, custom-tool, and tool package exports, top-level export uniqueness, public source modules, and private Forge exclusion. No fixture_paths are listed because this row is proven by public package export assertions rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.import_side_effect_boundary",
+    "requirement_summary": "Importing public packages performs only ordinary module import work without process, network, credential, daemon, or watcher activity.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "src/millforge/__init__.py",
+      "src/millforge/connectors/__init__.py",
+      "src/millforge/custom_tools/__init__.py",
+      "src/millforge/tools/__init__.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_forge_boundary_packaging.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_forge_boundary_packaging.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "A fresh subprocess audit hook imports each public package and fails on process launch, network socket creation, fork, spawn, kill, or system-command events. No fixture_paths are listed because this row is proven by a subprocess import audit rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.package_boundary",
+    "requirement_summary": "Fresh wheel and sdist package audits exclude private Millrace, ideas, ref-forge, cache, credential, and generated run state.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "pyproject.toml",
+      "src/millforge/__init__.py"
+    ],
+    "covered_by_tests": [
+      "tests/test_forge_boundary_packaging.py"
+    ],
+    "evidence_commands": [
+      "python -m build --outdir dist/spec05-closure",
+      "python -m zipfile --list dist/spec05-closure/*.whl",
+      "tar -tzf dist/spec05-closure/*.tar.gz",
+      "git check-ignore millrace-agents ideas ref-forge"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Tests build fresh temporary wheel and sdist outputs and inspect archive names for private runtime state, caches, logs, credential-like filenames, and generated artifacts. No fixture_paths are listed because this row is proven by fresh package archive inspection rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.documentation_claim_boundary",
+    "requirement_summary": "README and ROADMAP describe current Spec 05 behavior as deterministic offline closure evidence.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "README.md",
+      "ROADMAP.md"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "implemented",
+    "notes": "Documentation tests assert README and ROADMAP name the offline closure surface, mixed descriptor path, deterministic matrix, and current/future boundary. No fixture_paths are listed because this row is proven by README/ROADMAP assertions rather than a row-specific fixture file.",
+    "fixture_paths": []
+  },
+  {
+    "requirement_id": "05D.deferred_scope_boundary",
+    "requirement_summary": "Future distribution and execution work remains outside the offline closure pass.",
+    "source_specs": [
+      "05D"
+    ],
+    "implemented_by_files": [
+      "README.md",
+      "ROADMAP.md"
+    ],
+    "covered_by_tests": [
+      "tests/test_connector_custom_tool_closure.py"
+    ],
+    "evidence_commands": [
+      "python -m pytest tests/test_connector_custom_tool_closure.py"
+    ],
+    "accepted_evidence_paths": [
+      "millrace-agents/specs/done/idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md"
+    ],
+    "status": "deferred",
+    "notes": "Deferred scope remains explicit for real connector transport, marketplace installation, automatic discovery or admission, custom runtime execution, production presets, Millrace runner integration, eval workflows, and live model/backend validation. No fixture_paths are listed because this row records future-only deferred scope, not an implemented fixture-backed behavior.",
+    "fixture_paths": [],
+    "deferred_scope": "Future-only real connector transport, marketplace installation, automatic discovery/admission, custom runtime execution, production presets, Millrace runner integration, eval workflows, live connector execution, live provider/model/tool execution, and live model/backend validation."
+  }
+]

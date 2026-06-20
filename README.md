@@ -407,11 +407,13 @@ execution boundary.
 The package and documentation audits keep the public claim narrow:
 implemented Spec 04 behavior covers registry descriptors, built-in catalog
 data, exact compiled-plan tool binding, built-in execution policy gates,
-trace/result evidence, connector-shaped descriptor readiness through generic
-registry and compiler paths, and closure evidence commands. It does not claim
-connector admission, custom tool compilation, production stage presets,
-Millrace runner integration, eval-suite execution, live connector execution,
-or live provider/model/tool execution as implemented.
+trace/result evidence. Offline 05A through 05D closure work adds connector
+admission, runtime-boundary admission snapshots, compile-only custom-tool
+descriptors, and mixed registry/catalog/compiler evidence through the generic
+tool path. Deferred live connector transport, marketplace installation,
+production stage presets, Millrace runner integration, eval-suite execution,
+live connector execution, and live provider/model/tool execution remain
+deferred.
 
 Default Spec 04 closure verification is offline and deterministic. The retained
 gate set includes the focused registry closure suite, the full pytest suite,
@@ -443,8 +445,8 @@ bounds.
 05A remains offline and descriptor-only. It does not implement real MCP stdio
 or HTTP transport, connector process launching, sockets, live connector
 discovery, live connector invocation, credential use, a runtime connector
-broker, production connector presets, custom-tool compilation, Millrace runner
-integration, or Millrace approval token handling.
+broker, production connector presets, Millrace runner integration, or
+Millrace approval token handling.
 
 ## Millforge 05B Connector Runtime Admission Snapshot
 
@@ -504,6 +506,23 @@ redacted bounded diagnostics for malformed source.
 implementations, expose a custom tool registry or catalog, launch tools, broker
 connectors, run sandboxed code, integrate with a runner, or claim executable
 runtime support.
+
+## Millforge 05D Mixed Connector And Custom-Tool Closure
+
+05D adds deterministic offline closure evidence that combines built-in,
+admitted connector, and compiled contract-only custom-tool descriptors through
+the existing `ToolRegistry`, `FrozenToolRegistrySnapshot`, compiler catalog,
+semantic validation, lowering, and compiler service path. The machine-readable
+conformance matrix at `tests/fixtures/spec05_conformance_matrix.json` and the
+focused smoke in `tests/test_connector_custom_tool_closure.py` back the mixed
+registry, mixed catalog, harness selection, and illegal tool-denial rows.
+
+The closure fixtures cover connector discovery, admission manifest, admission
+policy, custom-tool source manifest, expected hashes, and a mixed harness
+fixture under `tests/fixtures/spec05_mixed_harness/`. 05D remains offline and
+does not add live connector transport, marketplace installation, automatic
+discovery or admission, custom runtime execution, runner integration, eval
+workflows, or live model/backend validation.
 
 ### Opt-In Live Model Backend Smoke
 

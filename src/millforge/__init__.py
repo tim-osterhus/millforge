@@ -216,7 +216,6 @@ __all__: list[str] = [
     "STANDARD_ARTIFACT_FILENAMES",
     "STANDARD_ARTIFACT_IDS",
     "RuntimeArtifactWriter",
-    "RuntimeArtifactWriterProtocol",
     # Contracts
     "ArtifactRef",
     "ArtifactManifestArtifact",

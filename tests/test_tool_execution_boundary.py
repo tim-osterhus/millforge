@@ -58,6 +58,7 @@ from millforge.connectors import (
     ConnectorAdmissionRecord,
     ConnectorAdmissionSnapshot,
     ConnectorApprovalPolicy,
+    ConnectorBrokerOutcome,
     DeterministicFakeConnectorBroker,
 )
 from millforge.tools import (
@@ -749,10 +750,20 @@ async def test_compiled_contract_only_custom_tool_missing_implementation_fails_c
     registry = ToolRegistry()
     registry.register(descriptor)
     registry.register(terminal)
+    broker = DeterministicFakeConnectorBroker(
+        {
+            ("connector.fake_mcp", "echo"): ConnectorBrokerOutcome(
+                status=ToolExecutionStatus.SUCCESS,
+                summary="broker should not run",
+                structured_data={"summary": "unexpected connector execution"},
+            )
+        }
+    )
     executor = create_tool_executor(
         plan=_plan(descriptor, terminal),
         descriptor_snapshot=registry.freeze(),
         runtime_registry=RuntimeToolRegistry(),
+        connector_broker=broker,
     )
 
     denied = await executor.execute_model_tool(
@@ -765,11 +776,23 @@ async def test_compiled_contract_only_custom_tool_missing_implementation_fails_c
     assert denied.status is ToolExecutionStatus.HARD_FAILURE
     assert denied.error_code == ToolBindingDenialCode.NOT_FOUND.value
     assert denied.structured_data["evidence"]["binding_field"] == "implementation_id"
+    assert denied.structured_data["evidence"]["implementation_id"] == (
+        "custom.echo.impl"
+    )
     assert denied.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
     assert denied.output_sha256 is None
+    assert broker.requests == ()
     trace = executor.trace_records[0]
+    assert trace.binding_resolution_status == "resolved"
+    assert trace.binding.tool_id == "custom.echo"
+    assert trace.binding.descriptor_sha256 == descriptor.descriptor_sha256
+    assert trace.binding.implementation_id == "custom.echo.impl"
+    assert trace.capability_decisions == ()
     assert trace.execution_status is ToolExecutionStatus.HARD_FAILURE
     assert trace.side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert trace.output_sha256 is None
+    assert trace.broker_attempted is None
+    assert trace.redacted_evidence == {}
 
 
 @pytest.mark.asyncio
