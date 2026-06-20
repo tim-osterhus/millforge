@@ -292,8 +292,12 @@ Key outcomes:
   descriptors on the generic registry/catalog path
 - deferred live connector transport, marketplace installation, automatic
   discovery or admission, custom runtime execution, Millrace runner
-  integration, eval workflows, and live model/backend validation remain future
-  work
+  integration, eval workflows beyond the compact public contract, and live
+  model/backend validation remain future work
+- compact public eval workflow contracts are implemented in
+  `src/millforge/eval_workflow.py`; 06A covers only the compact graph and
+  stage-contract product surface, not live evals or 06B/06C fixture,
+  capability, runner-mode, or fairness concerns
 
 ### 8. Local And On-Prem Model Deployment
 

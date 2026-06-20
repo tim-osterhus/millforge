@@ -177,6 +177,21 @@ from millforge.custom_tools import (
     redact_custom_tool_text,
     tool_descriptor_from_declaration,
 )
+from millforge.eval_workflow import (
+    CompactEvalWorkflowGraph,
+    EvalAttemptState,
+    EvalCandidateDisposition,
+    EvalStageContract,
+    EvalStageId,
+    EvalTerminalResult,
+    EvalTransitionDecision,
+    EvalWorkflowOutcomeKind,
+    calculate_compact_eval_workflow_sha256,
+    canonical_compact_eval_workflow_bytes,
+    compact_eval_workflow_snapshot,
+    default_compact_eval_workflow_graph,
+    resolve_eval_transition,
+)
 
 __all__: list[str] = [
     # Compiled plan types
@@ -346,4 +361,18 @@ __all__: list[str] = [
     "malformed_input_diagnostic",
     "redact_custom_tool_text",
     "tool_descriptor_from_declaration",
+    # Compact eval workflow contracts
+    "CompactEvalWorkflowGraph",
+    "EvalAttemptState",
+    "EvalCandidateDisposition",
+    "EvalStageContract",
+    "EvalStageId",
+    "EvalTerminalResult",
+    "EvalTransitionDecision",
+    "EvalWorkflowOutcomeKind",
+    "calculate_compact_eval_workflow_sha256",
+    "canonical_compact_eval_workflow_bytes",
+    "compact_eval_workflow_snapshot",
+    "default_compact_eval_workflow_graph",
+    "resolve_eval_transition",
 ]
