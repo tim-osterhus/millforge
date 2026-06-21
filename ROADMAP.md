@@ -296,8 +296,11 @@ Key outcomes:
   model/backend validation remain future work
 - compact public eval workflow contracts are implemented in
   `src/millforge/eval_workflow.py`; 06A covers only the compact graph and
-  stage-contract product surface, not live evals or 06B/06C fixture,
-  capability, runner-mode, or fairness concerns
+  stage-contract product surface, and 06B adds the public capability,
+  fixture-policy, compact-context policy/snapshot, redaction, and
+  resource-ceiling surface in `src/millforge/eval_boundary.py` plus the
+  public artifact-schema/layout and validator-visibility surface in
+  `src/millforge/eval_artifacts.py`
 
 ### 8. Local And On-Prem Model Deployment
 
