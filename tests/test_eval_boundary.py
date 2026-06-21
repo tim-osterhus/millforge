@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
 import millforge
@@ -1425,9 +1425,21 @@ def test_eval_fixture_workspace_snapshot_reports_ignored_generated_paths(
     assert snapshot.deleted_paths == ()
     assert snapshot.unchanged_paths == ("src/app/main.py", "tests/test_app.py")
     assert snapshot.fixture_manifest_sha256 == eval_fixture_manifest_sha256(manifest)
-    assert snapshot.ignored_generated_paths == (
+    ignored_generated_paths = set(snapshot.ignored_generated_paths)
+    assert {
         ".pytest_cache/README.md",
         "src/app/__pycache__/main.cpython-312.pyc",
+    } <= ignored_generated_paths
+    assert all(
+        any(
+            root in PurePosixPath(path).parts
+            for root in manifest.workspace_policy.ignored_generated_roots
+        )
+        or any(
+            path.endswith(suffix)
+            for suffix in manifest.workspace_policy.ignored_generated_suffixes
+        )
+        for path in snapshot.ignored_generated_paths
     )
     assert snapshot.unauthorized_mutation_paths == ()
     assert str(tmp_path) not in snapshot.model_dump_json()

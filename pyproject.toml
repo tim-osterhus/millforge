@@ -63,6 +63,7 @@ only-include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--ignore=tests/fixtures/eval_workflow/workspace"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 markers = [

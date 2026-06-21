@@ -124,6 +124,8 @@ ALLOWED_ROOT_EXPORT_MODULES = {
     "millforge.compiled_plan",
     "millforge.contracts",
     "millforge.custom_tools",
+    "millforge.eval_artifacts",
+    "millforge.eval_boundary",
     "millforge.eval_workflow",
     "millforge.exceptions",
     "millforge.protocols",
