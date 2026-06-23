@@ -66,8 +66,6 @@ EVAL_SPEC_07_HARNESS_IDS = MappingProxyType(dict(EVAL_SPEC_07_HARNESS_IDS))
 _EVAL_SPEC_07_IMPLEMENTED_HARNESS_STAGES = (
     EvalStageId.PLANNER,
     EvalStageId.BUILDER,
-)
-_EVAL_SPEC_07_ABSENT_HARNESS_STAGES = (
     EvalStageId.CHECKER,
     EvalStageId.ARBITER,
 )
@@ -819,8 +817,8 @@ def _default_mode_description(mode_id: str) -> str:
     if mode_id == EVAL_SMALL_MILLFORGE_MODE_ID:
         return (
             "Static compact eval descriptor for the Millforge runner mode. The "
-            "record admits descriptor validation only and defers Spec 07 harness "
-            "preset implementation."
+            "record admits descriptor validation only and defers live Spec 07 "
+            "harness execution."
         )
     raise ValueError("unknown static eval mode id")
 
@@ -1017,16 +1015,15 @@ def _default_confounds_for_dependencies(
                 confound_id="deferred_millforge_harness",
                 kind="deferred_millforge_harness",
                 severity="invalidating",
-                summary="Spec 07 Millforge harness presets are only partially available",
+                summary="Spec 07 Millforge harness live execution is deferred",
                 applies_to=(EVAL_SMALL_MILLFORGE_MODE_ID,),
                 evidence=_spec_07_harness_readiness_evidence(),
                 comparison_effect=(
-                    "Millforge live readiness is blocked by absent Checker and "
-                    "Arbiter harness source records"
+                    "Millforge live readiness is blocked until harness execution "
+                    "dependencies are admitted"
                 ),
                 mitigation=(
-                    "implement and statically bind Checker and Arbiter Spec 07 "
-                    "harness presets before live runs"
+                    "admit Spec 07 harness execution dependencies before live runs"
                 ),
             )
         )
@@ -1098,10 +1095,10 @@ def _deferred_dependency_for_id(dependency_id: str) -> EvalModeDeferredDependenc
             "dependency_kind": "runner_harness",
             "affected_mode": EVAL_SMALL_MILLFORGE_MODE_ID,
             "summary": (
-                "Spec 07 harness presets are partially available; Checker and "
-                "Arbiter source records are absent"
+                "Spec 07 harness source records are available; live harness "
+                "execution is not admitted"
             ),
-            "reference_ids": _spec_07_absent_harness_ids(),
+            "reference_ids": _spec_07_implemented_harness_ids(),
         },
         "model_backend_configuration": {
             "dependency_kind": "model_backend",
@@ -1145,22 +1142,14 @@ def _spec_07_implemented_harness_ids() -> tuple[str, ...]:
     )
 
 
-def _spec_07_absent_harness_ids() -> tuple[str, ...]:
-    return tuple(
-        EVAL_SPEC_07_HARNESS_IDS[stage_id]
-        for stage_id in _EVAL_SPEC_07_ABSENT_HARNESS_STAGES
-    )
-
-
 def _spec_07_harness_readiness_evidence() -> tuple[str, ...]:
-    planner_id, builder_id = _spec_07_implemented_harness_ids()
-    checker_id, arbiter_id = _spec_07_absent_harness_ids()
+    planner_id, builder_id, checker_id, arbiter_id = _spec_07_implemented_harness_ids()
     return (
         f"Planner source record is implemented: {planner_id}",
         f"Builder source record is implemented: {builder_id}",
-        f"Checker source record is absent: {checker_id}",
-        f"Arbiter source record is absent: {arbiter_id}",
-        "full Spec 07 harness preset availability remains unresolved",
+        f"Checker source record is implemented: {checker_id}",
+        f"Arbiter source record is implemented: {arbiter_id}",
+        "live Spec 07 harness execution remains unresolved",
     )
 
 

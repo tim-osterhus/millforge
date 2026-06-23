@@ -52,6 +52,9 @@ DENIED_PUBLIC_TOKENS = (
     "credential",
     "password",
     "provider endpoint",
+    "daemon state",
+    "hidden scorer",
+    "hidden_scorer",
     "live run",
     "live-run",
 )
@@ -218,18 +221,14 @@ def test_public_eval_preset_names_are_root_exported() -> None:
 def test_spec_07_harness_ids_have_exactly_one_source_record() -> None:
     records = iter_eval_preset_source_records()
     harness_counts = Counter(record.harness_id for record in records)
-    implemented_stage_ids = (EvalStageId.PLANNER, EvalStageId.BUILDER)
 
     assert EVAL_PRESET_HARNESS_IDS == EVAL_SPEC_07_HARNESS_IDS
     assert set(harness_counts) == {
-        EVAL_SPEC_07_HARNESS_IDS[stage_id] for stage_id in implemented_stage_ids
+        EVAL_SPEC_07_HARNESS_IDS[stage_id] for stage_id in EvalStageId
     }
     assert all(count == 1 for count in harness_counts.values())
     for harness_id in harness_counts:
         assert eval_preset_source_record(harness_id).harness_id == harness_id
-    for stage_id in (EvalStageId.CHECKER, EvalStageId.ARBITER):
-        with pytest.raises(KeyError):
-            eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[stage_id])
 
 
 def test_preset_records_pin_current_stage_ids_and_terminal_results() -> None:
@@ -240,6 +239,8 @@ def test_preset_records_pin_current_stage_ids_and_terminal_results() -> None:
     assert tuple(record.stage_scope.stage_kind_ids[0] for record in records) == (
         EvalStageId.PLANNER.value,
         EvalStageId.BUILDER.value,
+        EvalStageId.CHECKER.value,
+        EvalStageId.ARBITER.value,
     )
     assert tuple(case.stage_id for case in cases) == tuple(EvalStageId)
     assert {
@@ -249,6 +250,8 @@ def test_preset_records_pin_current_stage_ids_and_terminal_results() -> None:
     } == {
         "eval_planner",
         "eval_builder",
+        "eval_checker",
+        "eval_arbiter",
     }
     assert {case.stage_id: case.legal_terminal_results for case in cases} == {
         stage_id: graph.stage_contracts[stage_id].legal_terminal_results
@@ -263,27 +266,38 @@ def test_preset_model_profile_tracks_default_eval_profile() -> None:
     } == {EVAL_DEFAULT_MODEL_PROFILE_ID}
 
 
-def test_planner_and_builder_sources_are_public_harness_sources() -> None:
-    planner = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER])
-    builder = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER])
+def test_eval_preset_sources_are_public_harness_sources() -> None:
+    expected_terminals = {
+        EvalStageId.PLANNER: ("PLAN_READY", "PLAN_BLOCKED"),
+        EvalStageId.BUILDER: ("BUILDER_COMPLETE", "BUILDER_BLOCKED"),
+        EvalStageId.CHECKER: (
+            "CHECKER_APPROVED",
+            "CHECKER_REJECTED",
+            "CHECKER_BLOCKED",
+        ),
+        EvalStageId.ARBITER: (
+            "ARBITER_CLOSED",
+            "ARBITER_REJECTED",
+            "ARBITER_BLOCKED",
+        ),
+    }
 
-    assert planner.schema_version == "1.0"
-    assert planner.kind == "millforge_harness"
-    assert planner.harness_version == 1
-    assert planner.harness_id == EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER]
-    assert planner.stage_scope.stage_kind_ids == (EvalStageId.PLANNER.value,)
-    assert tuple(
-        node.terminal_result for node in planner.graph.nodes if node.terminal_result
-    ) == ("PLAN_READY", "PLAN_BLOCKED")
-
-    assert builder.schema_version == "1.0"
-    assert builder.kind == "millforge_harness"
-    assert builder.harness_version == 1
-    assert builder.harness_id == EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER]
-    assert builder.stage_scope.stage_kind_ids == (EvalStageId.BUILDER.value,)
-    assert tuple(
-        node.terminal_result for node in builder.graph.nodes if node.terminal_result
-    ) == ("BUILDER_COMPLETE", "BUILDER_BLOCKED")
+    for stage_id in EvalStageId:
+        record = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[stage_id])
+        assert record.schema_version == "1.0"
+        assert record.kind == "millforge_harness"
+        assert record.harness_version == 1
+        assert record.harness_id == EVAL_SPEC_07_HARNESS_IDS[stage_id]
+        assert record.stage_scope.stage_kind_ids == (stage_id.value,)
+        assert record.model_profile_id == EVAL_DEFAULT_MODEL_PROFILE_ID
+        assert (
+            tuple(
+                node.terminal_result
+                for node in record.graph.nodes
+                if node.terminal_result
+            )
+            == expected_terminals[stage_id]
+        )
 
 
 def test_preset_artifact_ids_are_logical_not_layout_filenames() -> None:
@@ -453,6 +467,8 @@ def test_builder_apply_patch_path_handling_is_runtime_tool_boundary() -> None:
 def test_preset_success_terminals_require_real_output_artifacts_only() -> None:
     planner = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER])
     builder = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER])
+    checker = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER])
+    arbiter = eval_preset_source_record(EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER])
 
     assert planner.artifacts.declared_artifact_ids == ("plan",)
     assert {
@@ -474,6 +490,22 @@ def test_preset_success_terminals_require_real_output_artifacts_only() -> None:
         "patch_summary",
         "test_results",
     )
+    assert checker.artifacts.declared_artifact_ids == ("checker_verdict",)
+    assert {
+        item.terminal_result: item.artifact_ids
+        for item in checker.artifacts.required_by_terminal
+    } == {
+        "CHECKER_APPROVED": ("checker_verdict",),
+        "CHECKER_REJECTED": ("checker_verdict",),
+    }
+    assert arbiter.artifacts.declared_artifact_ids == ("arbiter_verdict",)
+    assert {
+        item.terminal_result: item.artifact_ids
+        for item in arbiter.artifacts.required_by_terminal
+    } == {
+        "ARBITER_CLOSED": ("arbiter_verdict",),
+        "ARBITER_REJECTED": ("arbiter_verdict",),
+    }
 
 
 def test_known_contract_gaps_are_public_and_later_packet_owned() -> None:
@@ -491,10 +523,7 @@ def test_known_contract_gaps_are_public_and_later_packet_owned() -> None:
     assert {gap.owner for gap in gaps}.issubset({"07B", "07C", "07B/07C", "07D/07E"})
     assert all(gap.affected_stage_ids for gap in gaps)
     for record in iter_eval_preset_source_records():
-        assert record.harness_id in {
-            EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER],
-            EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER],
-        }
+        assert record.harness_id in set(EVAL_SPEC_07_HARNESS_IDS.values())
     for case in iter_eval_preset_compile_cases():
         assert set(case.contract_gap_ids).issubset(gaps_by_id)
 
@@ -510,9 +539,8 @@ def test_public_preset_metadata_contains_no_private_or_runtime_local_material() 
     assert USER_HOME_PATH.search(rendered) is None
 
 
-def test_checker_and_arbiter_presets_remain_absent_from_source_records() -> None:
+def test_checker_and_arbiter_presets_are_static_sources_not_live_readiness() -> None:
     allowed_statuses = {
-        EvalPresetReadinessStatus.MISSING,
         EvalPresetReadinessStatus.BLOCKED_BY_CONTRACT_GAP,
     }
 
@@ -520,15 +548,15 @@ def test_checker_and_arbiter_presets_remain_absent_from_source_records() -> None
         record.harness_id for record in iter_eval_preset_source_records()
     }
 
-    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER] not in source_harness_ids
-    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER] not in source_harness_ids
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER] in source_harness_ids
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER] in source_harness_ids
 
     for case in iter_eval_preset_compile_cases():
         assert case.readiness_status in allowed_statuses
 
 
-@pytest.mark.parametrize("stage_id", [EvalStageId.PLANNER, EvalStageId.BUILDER])
-def test_planner_and_builder_preset_sources_compile(stage_id: EvalStageId) -> None:
+@pytest.mark.parametrize("stage_id", list(EvalStageId))
+def test_eval_preset_sources_compile(stage_id: EvalStageId) -> None:
     case = _compile_case(stage_id)
     source = eval_preset_source_record(case.harness_id)
     descriptor_capabilities = _descriptor_capability_ids(source)
@@ -553,15 +581,16 @@ def test_planner_and_builder_preset_sources_compile(stage_id: EvalStageId) -> No
         evidence.artifact_id: evidence.terminal_gated_producer_node_ids
         for evidence in resolved.artifact_evidence
         if evidence.terminal_gated_producer_node_ids
-    } == (
-        {"plan": ("write_plan",)}
-        if stage_id == EvalStageId.PLANNER
-        else {
+    } == {
+        EvalStageId.PLANNER: {"plan": ("write_plan",)},
+        EvalStageId.BUILDER: {
             "patch_summary": ("write_patch_summary",),
             "test_results": ("write_test_results",),
             "workspace_diff": ("write_workspace_diff",),
-        }
-    )
+        },
+        EvalStageId.CHECKER: {"checker_verdict": ("write_checker_verdict",)},
+        EvalStageId.ARBITER: {"arbiter_verdict": ("write_arbiter_verdict",)},
+    }[stage_id]
 
     plan = lower_resolved_harness(resolved)
     verified, computed, warnings, restored = verify_compiled_plan_sha256(

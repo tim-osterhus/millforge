@@ -1026,6 +1026,32 @@ class EvalClosureValidationResult(BaseModel):
         return self
 
 
+class EvalCheckerApprovalValidationResult(BaseModel):
+    """Non-mutating validation result for Checker approval public evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    valid: StrictBool
+    evidence_artifact_ids: tuple[StrictStr, ...] = Field(default_factory=tuple)
+    missing_artifact_ids: tuple[StrictStr, ...] = Field(default_factory=tuple)
+    diagnostics: tuple[StrictStr, ...] = Field(default_factory=tuple)
+
+    @model_validator(mode="after")
+    def _checker_approval_result_valid(
+        self,
+    ) -> EvalCheckerApprovalValidationResult:
+        if self.valid:
+            if self.missing_artifact_ids or self.diagnostics:
+                raise ValueError(
+                    "valid checker approval results must not include diagnostics"
+                )
+        elif not self.missing_artifact_ids and not self.diagnostics:
+            raise ValueError(
+                "invalid checker approval results require diagnostics or missing IDs"
+            )
+        return self
+
+
 def _validate_relative_eval_path(value: str, *, allow_dot: bool) -> None:
     if not value:
         raise ValueError("eval paths must be non-empty relative POSIX paths")
@@ -2015,6 +2041,192 @@ def _terminal_path_diagnostics(
     return ()
 
 
+def _checker_gate_diagnostics(
+    validated_artifacts: Mapping[str, BaseModel],
+    outcome_kind: EvalClosureOutcomeKind,
+) -> tuple[str, ...]:
+    from millforge.eval_artifacts import (
+        EvalCheckerVerdictArtifact,
+        EvalCheckerVerdictValue,
+    )
+
+    checker_base = validated_artifacts.get("checker_verdict")
+    if (
+        checker_base is None
+        or outcome_kind == EvalClosureOutcomeKind.VALID_BLOCKED_OUTCOME
+    ):
+        return ()
+    checker = cast(EvalCheckerVerdictArtifact, checker_base)
+    if outcome_kind == EvalClosureOutcomeKind.VALID_CLOSED_SUCCESS:
+        if checker.verdict != EvalCheckerVerdictValue.APPROVED:
+            return ("arbiter closure requires approved checker verdict",)
+    elif checker.verdict == EvalCheckerVerdictValue.BLOCKED:
+        return ("arbiter rejection requires non-blocked checker verdict",)
+    return ()
+
+
+def _test_results_failed(test_results: BaseModel) -> bool:
+    return (
+        getattr(test_results, "exit_code", 0) != 0
+        or getattr(test_results, "failed_count", 0) != 0
+        or not getattr(test_results, "deterministic", True)
+        or not getattr(test_results, "allowed_by_policy", True)
+    )
+
+
+def _failed_command_outcomes(patch_summary: BaseModel) -> tuple[Any, ...]:
+    return tuple(
+        outcome
+        for outcome in getattr(patch_summary, "command_outcomes", ())
+        if outcome.exit_code != 0
+    )
+
+
+def _command_status_diagnostics(
+    validated_artifacts: Mapping[str, BaseModel],
+    outcome_kind: EvalClosureOutcomeKind,
+) -> tuple[str, ...]:
+    if outcome_kind != EvalClosureOutcomeKind.VALID_CLOSED_SUCCESS:
+        return ()
+
+    diagnostics: list[str] = []
+    test_results = validated_artifacts.get("test_results")
+    if test_results is not None and _test_results_failed(test_results):
+        diagnostics.append("arbiter closure cannot claim success with failed tests")
+
+    patch_summary = validated_artifacts.get("patch_summary")
+    if patch_summary is not None:
+        if _failed_command_outcomes(patch_summary):
+            diagnostics.append(
+                "arbiter closure cannot claim success with failed static checks"
+            )
+        if getattr(patch_summary, "unresolved_issues", ()):
+            diagnostics.append(
+                "arbiter closure cannot claim success with unresolved builder issues"
+            )
+    return tuple(diagnostics)
+
+
+def _mutation_evidence_diagnostics(
+    validated_artifacts: Mapping[str, BaseModel],
+    outcome_kind: EvalClosureOutcomeKind,
+) -> tuple[str, ...]:
+    if outcome_kind != EvalClosureOutcomeKind.VALID_CLOSED_SUCCESS:
+        return ()
+
+    manifest_base = validated_artifacts.get("fixture_manifest")
+    workspace_diff = validated_artifacts.get("workspace_diff")
+    if manifest_base is None:
+        return ()
+    manifest = _fixture_manifest_from_artifact_record(manifest_base)
+    if not manifest.expected_mutation_paths:
+        return ()
+    if workspace_diff is None:
+        return ("required mutation paths require workspace_diff artifact",)
+    changed_paths = (
+        tuple(getattr(workspace_diff, "added_paths", ()))
+        + tuple(getattr(workspace_diff, "modified_paths", ()))
+        + tuple(getattr(workspace_diff, "deleted_paths", ()))
+    )
+    if not changed_paths:
+        return ("required mutation paths require non-empty workspace_diff changes",)
+    return ()
+
+
+def _arbiter_acceptance_diagnostics(
+    validated_artifacts: Mapping[str, BaseModel],
+    outcome_kind: EvalClosureOutcomeKind,
+) -> tuple[str, ...]:
+    if outcome_kind != EvalClosureOutcomeKind.VALID_CLOSED_SUCCESS:
+        return ()
+    arbiter_verdict = validated_artifacts.get("arbiter_verdict")
+    if arbiter_verdict is None:
+        return ()
+    if getattr(arbiter_verdict, "open_acceptance_check_ids", ()):
+        return ("arbiter closure cannot leave required acceptance checks open",)
+    return ()
+
+
+def _arbiter_stage_result_diagnostics(
+    validated_artifacts: Mapping[str, BaseModel],
+    inferred_terminal_result: EvalTerminalResult,
+) -> tuple[str, ...]:
+    stage_result = validated_artifacts.get("stage_result")
+    if stage_result is None:
+        return ()
+    if getattr(stage_result, "stage_id", None) != EvalStageId.ARBITER:
+        return ("closure stage_result must belong to eval_arbiter",)
+    terminal_result = getattr(stage_result, "terminal_result", None)
+    if (
+        terminal_result
+        not in default_compact_eval_workflow_graph()
+        .stage_contracts[EvalStageId.ARBITER]
+        .legal_terminal_results
+    ):
+        return ("closure stage_result terminal is illegal for eval_arbiter",)
+    if terminal_result != inferred_terminal_result:
+        return ("closure stage_result terminal does not match arbiter verdict",)
+    return ()
+
+
+def validate_eval_checker_approval(
+    artifact_bundle: Mapping[Any, Any],
+) -> EvalCheckerApprovalValidationResult:
+    """Validate a Checker verdict against visible public execution evidence."""
+    from millforge.eval_artifacts import (
+        EvalCheckerVerdictArtifact,
+        EvalCheckerVerdictValue,
+    )
+
+    validated_artifacts, artifact_diagnostics = _validate_present_closure_artifacts(
+        artifact_bundle
+    )
+    if artifact_diagnostics:
+        return EvalCheckerApprovalValidationResult(
+            valid=False,
+            diagnostics=artifact_diagnostics,
+        )
+
+    checker_base = validated_artifacts.get("checker_verdict")
+    if checker_base is None:
+        return EvalCheckerApprovalValidationResult(
+            valid=False,
+            missing_artifact_ids=("checker_verdict",),
+            diagnostics=("checker approval validation requires checker_verdict",),
+        )
+
+    checker = cast(EvalCheckerVerdictArtifact, checker_base)
+    evidence_artifact_ids = tuple(
+        reference.artifact_id.value for reference in checker.evidence_references
+    )
+    if checker.verdict != EvalCheckerVerdictValue.APPROVED:
+        return EvalCheckerApprovalValidationResult(
+            valid=True,
+            evidence_artifact_ids=evidence_artifact_ids,
+        )
+
+    diagnostics: list[str] = []
+    test_results = validated_artifacts.get("test_results")
+    if test_results is not None and _test_results_failed(test_results):
+        diagnostics.append("checker approval cannot rely on failed tests")
+
+    patch_summary = validated_artifacts.get("patch_summary")
+    if patch_summary is not None and _failed_command_outcomes(patch_summary):
+        diagnostics.append("checker approval cannot rely on failed static checks")
+
+    if diagnostics:
+        return EvalCheckerApprovalValidationResult(
+            valid=False,
+            evidence_artifact_ids=evidence_artifact_ids,
+            diagnostics=tuple(diagnostics),
+        )
+
+    return EvalCheckerApprovalValidationResult(
+        valid=True,
+        evidence_artifact_ids=evidence_artifact_ids,
+    )
+
+
 def validate_eval_closure(
     artifact_bundle: Mapping[Any, Any],
     fixture_snapshot: EvalFixtureWorkspaceSnapshot | Mapping[str, Any],
@@ -2057,6 +2269,19 @@ def validate_eval_closure(
         return _closure_result(
             EvalClosureOutcomeKind.INVALID_ARTIFACT_BOUNDARY,
             diagnostics=terminal_path_diagnostics,
+        )
+
+    gate_diagnostics = (
+        _checker_gate_diagnostics(validated_artifacts, outcome_kind)
+        + _command_status_diagnostics(validated_artifacts, outcome_kind)
+        + _mutation_evidence_diagnostics(validated_artifacts, outcome_kind)
+        + _arbiter_acceptance_diagnostics(validated_artifacts, outcome_kind)
+        + _arbiter_stage_result_diagnostics(validated_artifacts, terminal_result)
+    )
+    if gate_diagnostics:
+        return _closure_result(
+            EvalClosureOutcomeKind.INVALID_ARTIFACT_BOUNDARY,
+            diagnostics=gate_diagnostics,
         )
 
     required_artifact_ids = _required_closure_artifact_ids(outcome_kind)
@@ -2173,6 +2398,7 @@ __all__ = [
     "EvalCommandAdmissionResult",
     "EvalCommandDescriptor",
     "EvalCommandEnvironmentPolicy",
+    "EvalCheckerApprovalValidationResult",
     "EvalContextArtifactSummary",
     "EvalContextRedaction",
     "EvalContextSnapshot",
@@ -2201,6 +2427,7 @@ __all__ = [
     "eval_fixture_manifest_sha256",
     "eval_fixture_workspace_snapshot",
     "eval_stage_capability_envelope",
+    "validate_eval_checker_approval",
     "validate_eval_fixture_path",
     "validate_eval_closure",
     "validate_eval_stage_capability",

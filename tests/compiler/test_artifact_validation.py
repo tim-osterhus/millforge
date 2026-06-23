@@ -250,6 +250,62 @@ def test_terminal_required_artifact_without_gated_producer_is_mf_a005() -> None:
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-A005"]
 
 
+def test_blocked_terminal_without_artifact_policy_does_not_require_fake_verdict() -> (
+    None
+):
+    source = _source(
+        {
+            "inspect": {
+                "tool_ref": "tools.inspect@1",
+                "required": True,
+            },
+            "write_verdict": {
+                "tool_ref": "tools.verdict@1",
+                "produces": ["checker_verdict"],
+                "prerequisites": [{"node_id": "inspect"}],
+            },
+            "approve": {
+                "tool_ref": "tools.approve@1",
+                "terminal_result": "CHECKER_APPROVED",
+                "prerequisites": [{"node_id": "write_verdict"}],
+            },
+            "reject": {
+                "tool_ref": "tools.reject@1",
+                "terminal_result": "CHECKER_REJECTED",
+                "prerequisites": [{"node_id": "write_verdict"}],
+            },
+            "blocked": {
+                "tool_ref": "tools.blocked@1",
+                "terminal_result": "CHECKER_BLOCKED",
+                "prerequisites": [{"node_id": "inspect"}],
+            },
+        },
+        declared=("checker_verdict",),
+        required_by_terminal={
+            "CHECKER_APPROVED": ("checker_verdict",),
+            "CHECKER_REJECTED": ("checker_verdict",),
+        },
+    )
+    entries = _entries(source, {"write_verdict": ("checker_verdict",)})
+    graph = validate_harness_graph(
+        source,
+        entries,
+        allowed_terminal_results={
+            "CHECKER_APPROVED",
+            "CHECKER_REJECTED",
+            "CHECKER_BLOCKED",
+        },
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert graph.diagnostics == ()
+    assert result.ok
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == (
+        "write_verdict",
+    )
+
+
 def test_branch_only_producer_is_not_valid_for_other_terminal_requirement() -> None:
     source = _source(
         {

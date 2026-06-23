@@ -21,6 +21,7 @@ from millforge.eval_boundary import (
     EVAL_DENIED_CAPABILITY_IDS,
     EvalBoundaryBaseline,
     EvalCapabilityId,
+    EvalCheckerApprovalValidationResult,
     EvalClosureOutcomeKind,
     EvalCommandDescriptor,
     EvalCommandEnvironmentPolicy,
@@ -42,6 +43,7 @@ from millforge.eval_boundary import (
     eval_fixture_manifest_from_paths,
     eval_fixture_manifest_sha256,
     eval_fixture_workspace_snapshot,
+    validate_eval_checker_approval,
     validate_eval_closure,
     validate_eval_stage_capability,
     validate_eval_stage_command,
@@ -67,6 +69,7 @@ from millforge.eval_artifacts import (
     EvalModelUsageArtifact,
     EvalPatchSummaryArtifact,
     EvalPlanArtifact,
+    EvalStageResultArtifact,
     EvalTaskArtifact,
     EvalValidatorResultArtifact,
     EvalValidatorVisibilityRecord,
@@ -183,6 +186,8 @@ def test_eval_boundary_contracts_are_public_exports() -> None:
     assert "validate_eval_stage_capability" in millforge.__all__
     assert "validate_eval_stage_command" in millforge.__all__
     assert "validate_eval_fixture_path" in millforge.__all__
+    assert "validate_eval_checker_approval" in millforge.__all__
+    assert "EvalCheckerApprovalValidationResult" in millforge.__all__
     assert "EvalContextTier" in millforge.__all__
     assert "EvalContextArtifactSummary" in millforge.__all__
     assert "EvalContextRedaction" in millforge.__all__
@@ -210,6 +215,11 @@ def test_eval_boundary_contracts_are_public_exports() -> None:
     assert millforge.validate_eval_stage_capability is validate_eval_stage_capability
     assert millforge.validate_eval_stage_command is validate_eval_stage_command
     assert millforge.validate_eval_fixture_path is validate_eval_fixture_path
+    assert millforge.validate_eval_checker_approval is validate_eval_checker_approval
+    assert (
+        millforge.EvalCheckerApprovalValidationResult
+        is EvalCheckerApprovalValidationResult
+    )
     assert millforge.EvalContextTier is EvalContextTier
     assert millforge.EvalContextArtifactSummary is EvalContextArtifactSummary
     assert millforge.EvalResourceCeiling is EvalResourceCeiling
@@ -1700,6 +1710,282 @@ def test_eval_closure_validation_returns_valid_success_rejection_and_blocked(
     assert blocked.terminal_result == EvalTerminalResult.ARBITER_BLOCKED
 
 
+def test_checker_verdict_schema_enforces_approval_and_rejection_gates() -> None:
+    evidence = (_artifact_reference(EvalArtifactId.TEST_RESULTS),)
+
+    with pytest.raises(ValidationError, match="unresolved required issues"):
+        EvalCheckerVerdictArtifact(
+            trial_id="trial-001",
+            created_by="eval_checker",
+            summary="public checker verdict",
+            verdict=EvalCheckerVerdictValue.APPROVED,
+            evidence_references=evidence,
+            unresolved_required_issues=("required behavior still fails",),
+        )
+
+    with pytest.raises(ValidationError, match="unresolved required issues"):
+        EvalCheckerVerdictArtifact(
+            trial_id="trial-001",
+            created_by="eval_checker",
+            summary="public checker verdict",
+            verdict=EvalCheckerVerdictValue.REJECTED,
+            evidence_references=evidence,
+            failed_public_checks=("check-public-tests",),
+            requested_remediation_summary="repair the public failure",
+        )
+
+    rejected = EvalCheckerVerdictArtifact(
+        trial_id="trial-001",
+        created_by="eval_checker",
+        summary="public checker verdict",
+        verdict=EvalCheckerVerdictValue.REJECTED,
+        evidence_references=evidence,
+        failed_public_checks=("check-public-tests",),
+        unresolved_required_issues=("required behavior still fails",),
+        requested_remediation_summary="repair the public failure",
+    )
+    assert rejected.verdict == EvalCheckerVerdictValue.REJECTED
+    assert rejected.unresolved_required_issues == ("required behavior still fails",)
+
+
+@pytest.mark.parametrize(
+    ("test_result_update", "expected_diagnostics"),
+    (
+        (
+            {
+                "exit_code": 1,
+                "output_summary": "public test command exited with failure",
+            },
+            ("checker approval cannot rely on failed tests",),
+        ),
+        (
+            {
+                "failed_count": 1,
+                "output_summary": "public tests failed",
+            },
+            ("checker approval cannot rely on failed tests",),
+        ),
+        (
+            {"deterministic": False, "output_summary": "public tests were flaky"},
+            ("checker approval cannot rely on failed tests",),
+        ),
+        (
+            {"allowed_by_policy": False, "output_summary": "test command denied"},
+            ("checker approval cannot rely on failed tests",),
+        ),
+    ),
+)
+def test_checker_approval_validation_rejects_contradictory_test_evidence(
+    test_result_update: dict[str, object],
+    expected_diagnostics: tuple[str, ...],
+) -> None:
+    manifest = eval_fixture_manifest_from_paths(
+        "compact_fixture",
+        FIXTURE_WORKSPACE,
+        ("src/app/main.py", "tests/test_app.py"),
+        task_id="task-06b-r1-01",
+        expected_mutation_paths=("src/app/main.py",),
+    )
+    bundle = _closure_artifact_bundle(manifest)
+    bundle["test_results"] = bundle["test_results"].model_copy(
+        update=test_result_update
+    )
+
+    result = validate_eval_checker_approval(bundle)
+
+    assert result.valid is False
+    assert result.evidence_artifact_ids == ("workspace_diff", "test_results")
+    assert result.diagnostics == expected_diagnostics
+
+
+def test_checker_approval_validation_rejects_static_check_failure() -> None:
+    manifest = eval_fixture_manifest_from_paths(
+        "compact_fixture",
+        FIXTURE_WORKSPACE,
+        ("src/app/main.py", "tests/test_app.py"),
+        task_id="task-06b-r1-01",
+        expected_mutation_paths=("src/app/main.py",),
+    )
+    bundle = _closure_artifact_bundle(manifest)
+    bundle["checker_verdict"] = bundle["checker_verdict"].model_copy(
+        update={
+            "evidence_references": (
+                _artifact_reference(EvalArtifactId.PATCH_SUMMARY),
+                _artifact_reference(EvalArtifactId.TEST_RESULTS),
+            )
+        }
+    )
+    bundle["patch_summary"] = bundle["patch_summary"].model_copy(
+        update={
+            "command_outcomes": (
+                EvalCommandOutcome(
+                    command_id="ruff_check",
+                    exit_code=1,
+                    summary="static checks failed",
+                ),
+            )
+        }
+    )
+
+    result = validate_eval_checker_approval(bundle)
+
+    assert result.valid is False
+    assert result.evidence_artifact_ids == ("patch_summary", "test_results")
+    assert result.diagnostics == (
+        "checker approval cannot rely on failed static checks",
+    )
+
+
+def test_checker_approval_validation_accepts_consistent_public_evidence() -> None:
+    manifest = eval_fixture_manifest_from_paths(
+        "compact_fixture",
+        FIXTURE_WORKSPACE,
+        ("src/app/main.py", "tests/test_app.py"),
+        task_id="task-06b-r1-01",
+        expected_mutation_paths=("src/app/main.py",),
+    )
+
+    result = validate_eval_checker_approval(_closure_artifact_bundle(manifest))
+
+    assert result.valid is True
+    assert result.evidence_artifact_ids == ("workspace_diff", "test_results")
+    assert result.diagnostics == ()
+
+
+def test_eval_closure_validation_rejects_contradictory_success_evidence(
+    tmp_path: Path,
+) -> None:
+    manifest, fixture_snapshot = _closure_fixture_snapshot(tmp_path)
+
+    checker_rejected = _closure_artifact_bundle(manifest)
+    checker_rejected["checker_verdict"] = EvalCheckerVerdictArtifact(
+        trial_id="trial-001",
+        created_by="eval_checker",
+        summary="public checker verdict",
+        verdict=EvalCheckerVerdictValue.REJECTED,
+        evidence_references=(_artifact_reference(EvalArtifactId.TEST_RESULTS),),
+        failed_public_checks=("check-public-tests",),
+        unresolved_required_issues=("required behavior still fails",),
+        requested_remediation_summary="repair the public failure",
+    )
+    checker_result = validate_eval_closure(
+        checker_rejected,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert checker_result.valid is False
+    assert checker_result.diagnostics == (
+        "arbiter closure requires approved checker verdict",
+    )
+
+    failed_tests = _closure_artifact_bundle(manifest)
+    failed_tests["test_results"] = failed_tests["test_results"].model_copy(
+        update={
+            "exit_code": 1,
+            "failed_count": 1,
+            "passed_count": 0,
+            "output_summary": "public tests failed",
+        }
+    )
+    test_result = validate_eval_closure(
+        failed_tests,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert test_result.valid is False
+    assert test_result.diagnostics == (
+        "arbiter closure cannot claim success with failed tests",
+    )
+
+    failed_static = _closure_artifact_bundle(manifest)
+    failed_static["patch_summary"] = failed_static["patch_summary"].model_copy(
+        update={
+            "command_outcomes": (
+                EvalCommandOutcome(
+                    command_id="ruff_check",
+                    exit_code=1,
+                    summary="static checks failed",
+                ),
+            )
+        }
+    )
+    static_result = validate_eval_closure(
+        failed_static,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert static_result.valid is False
+    assert static_result.diagnostics == (
+        "arbiter closure cannot claim success with failed static checks",
+    )
+
+
+def test_eval_closure_validation_rejects_open_acceptance_mutation_and_terminal_drift(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    shutil.copytree(FIXTURE_WORKSPACE, workspace)
+    manifest = eval_fixture_manifest_from_paths(
+        "compact_fixture",
+        workspace,
+        ("src/app/main.py", "tests/test_app.py"),
+        task_id="task-06b-r1-01",
+        expected_mutation_paths=("src/app/main.py",),
+    )
+    fixture_snapshot = eval_fixture_workspace_snapshot(manifest, workspace)
+
+    missing_mutation = _closure_artifact_bundle(manifest)
+    missing_mutation["workspace_diff"] = missing_mutation["workspace_diff"].model_copy(
+        update={"modified_paths": ()}
+    )
+    mutation_result = validate_eval_closure(
+        missing_mutation,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert mutation_result.valid is False
+    assert mutation_result.diagnostics == (
+        "required mutation paths require non-empty workspace_diff changes",
+    )
+
+    open_acceptance = _closure_artifact_bundle(manifest)
+    arbiter_record = open_acceptance["arbiter_verdict"].model_dump(mode="json")
+    arbiter_record["open_acceptance_check_ids"] = ["check-public-tests"]
+    open_acceptance["arbiter_verdict"] = arbiter_record
+    acceptance_result = validate_eval_closure(
+        open_acceptance,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert acceptance_result.valid is False
+    assert (
+        acceptance_result.outcome_kind
+        == EvalClosureOutcomeKind.INVALID_ARTIFACT_BOUNDARY
+    )
+    assert "unresolved diagnostics" in acceptance_result.diagnostics[0]
+
+    terminal_drift = _closure_artifact_bundle(manifest)
+    terminal_drift["stage_result"] = EvalStageResultArtifact(
+        trial_id="trial-001",
+        created_by="eval_runtime",
+        summary="public stage result",
+        stage_id=EvalStageId.CHECKER,
+        terminal_result=EvalTerminalResult.CHECKER_APPROVED,
+        attempt_count=1,
+        infrastructure_retry_count=0,
+        duration_seconds=1,
+    )
+    terminal_result = validate_eval_closure(
+        terminal_drift,
+        fixture_snapshot,
+        default_eval_capability_envelopes(),
+    )
+    assert terminal_result.valid is False
+    assert terminal_result.diagnostics == (
+        "closure stage_result must belong to eval_arbiter",
+    )
+
+
 def test_eval_closure_validation_accepts_builder_blocked_shortened_path(
     tmp_path: Path,
 ) -> None:
@@ -1830,12 +2116,15 @@ def test_eval_closure_validation_rejects_contradictory_shortened_blocked_path(
     artifact_bundle = _closure_artifact_bundle(
         manifest,
         arbiter_verdict=EvalArbiterVerdictValue.BLOCKED,
-        disposition=EvalCandidateDisposition.APPROVED,
+        disposition=EvalCandidateDisposition.BLOCKED,
         closure_evidence_references=(
             _artifact_reference(EvalArtifactId.TASK),
             _artifact_reference(EvalArtifactId.PLAN),
         ),
     )
+    arbiter_record = artifact_bundle["arbiter_verdict"].model_dump(mode="json")
+    arbiter_record["candidate_disposition"] = EvalCandidateDisposition.APPROVED.value
+    artifact_bundle["arbiter_verdict"] = arbiter_record
     for artifact_id in (
         "workspace_diff",
         "patch_summary",
@@ -1852,8 +2141,9 @@ def test_eval_closure_validation_rejects_contradictory_shortened_blocked_path(
 
     assert result.valid is False
     assert result.outcome_kind == EvalClosureOutcomeKind.INVALID_ARTIFACT_BOUNDARY
-    assert result.diagnostics == (
-        "blocked terminal path requires blocked candidate disposition",
+    assert (
+        "blocked arbiter verdicts require blocked candidate disposition"
+        in (result.diagnostics[0])
     )
 
 

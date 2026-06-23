@@ -377,8 +377,36 @@ class EvalCheckerVerdictArtifact(EvalArtifactBase):
     verdict: EvalCheckerVerdictValue
     evidence_references: tuple[EvalArtifactReference, ...]
     failed_public_checks: tuple[StrictStr, ...] = Field(default_factory=tuple)
+    unresolved_required_issues: tuple[StrictStr, ...] = Field(default_factory=tuple)
     requested_remediation_summary: StrictStr | None = None
     blocker_summary: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def _checker_verdict_valid(self) -> EvalCheckerVerdictArtifact:
+        if not self.evidence_references:
+            raise ValueError("checker verdicts must cite public evidence")
+        if self.verdict == EvalCheckerVerdictValue.APPROVED:
+            if self.failed_public_checks or self.unresolved_required_issues:
+                raise ValueError(
+                    "approved checker verdicts must not include failed checks or "
+                    "unresolved required issues"
+                )
+            if self.requested_remediation_summary or self.blocker_summary:
+                raise ValueError(
+                    "approved checker verdicts must not request remediation or blockers"
+                )
+        elif self.verdict == EvalCheckerVerdictValue.REJECTED:
+            if not self.unresolved_required_issues:
+                raise ValueError(
+                    "rejected checker verdicts must include unresolved required issues"
+                )
+            if not self.requested_remediation_summary:
+                raise ValueError(
+                    "rejected checker verdicts must include remediation summary"
+                )
+        elif not self.blocker_summary:
+            raise ValueError("blocked checker verdicts must include blocker summary")
+        return self
 
 
 class EvalArbiterVerdictArtifact(EvalArtifactBase):
@@ -396,6 +424,42 @@ class EvalArbiterVerdictArtifact(EvalArtifactBase):
         default_factory=tuple
     )
     public_acceptance_status: StrictStr
+    open_acceptance_check_ids: tuple[StrictStr, ...] = Field(default_factory=tuple)
+
+    @model_validator(mode="after")
+    def _arbiter_verdict_valid(self) -> EvalArbiterVerdictArtifact:
+        if not self.closure_evidence_references:
+            raise ValueError("arbiter verdicts must cite public closure evidence")
+        if self.verdict == EvalArbiterVerdictValue.CLOSED:
+            if self.candidate_disposition != EvalCandidateDisposition.APPROVED:
+                raise ValueError(
+                    "closed arbiter verdicts require approved candidate disposition"
+                )
+            if (
+                self.missing_artifact_diagnostics
+                or self.unauthorized_mutation_diagnostics
+                or self.open_acceptance_check_ids
+            ):
+                raise ValueError(
+                    "closed arbiter verdicts must not include unresolved diagnostics"
+                )
+        elif self.verdict == EvalArbiterVerdictValue.REJECTED:
+            if self.candidate_disposition != EvalCandidateDisposition.REJECTED:
+                raise ValueError(
+                    "rejected arbiter verdicts require rejected candidate disposition"
+                )
+            if not (
+                self.missing_artifact_diagnostics
+                or self.unauthorized_mutation_diagnostics
+                or self.open_acceptance_check_ids
+                or self.public_acceptance_status.strip()
+            ):
+                raise ValueError("rejected arbiter verdicts must include rationale")
+        elif self.candidate_disposition != EvalCandidateDisposition.BLOCKED:
+            raise ValueError(
+                "blocked arbiter verdicts require blocked candidate disposition"
+            )
+        return self
 
 
 class EvalStageResultArtifact(EvalArtifactBase):
