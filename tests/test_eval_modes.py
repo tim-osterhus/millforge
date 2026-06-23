@@ -276,6 +276,26 @@ def test_default_descriptors_declare_deterministic_confound_surface() -> None:
             assert confound.comparison_effect
             assert confound.mitigation
 
+    millforge_harness_confound = next(
+        confound
+        for confound in default_eval_small_millforge_mode().declared_confounds
+        if confound.kind == "deferred_millforge_harness"
+    )
+    rendered_evidence = " ".join(millforge_harness_confound.evidence)
+    assert millforge_harness_confound.summary == (
+        "Spec 07 Millforge harness presets are only partially available"
+    )
+    assert "Planner source record is implemented" in rendered_evidence
+    assert "Builder source record is implemented" in rendered_evidence
+    assert "Checker source record is absent" in rendered_evidence
+    assert "Arbiter source record is absent" in rendered_evidence
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER] in rendered_evidence
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER] in rendered_evidence
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER] in rendered_evidence
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER] in rendered_evidence
+    assert "all presets unimplemented" not in rendered_evidence
+    assert "named but not implemented" not in rendered_evidence
+
 
 def test_default_deferred_dependencies_include_live_admission_semantics() -> None:
     pi_dependency = default_eval_small_pi_mode().deferred_dependencies[0]
@@ -294,8 +314,22 @@ def test_default_deferred_dependencies_include_live_admission_semantics() -> Non
     assert millforge_dependency.dependency_kind == "runner_harness"
     assert millforge_dependency.affected_mode == "eval_small_millforge"
     assert set(millforge_dependency.reference_ids) == set(
-        EVAL_SPEC_07_HARNESS_IDS.values()
+        (
+            EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER],
+            EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER],
+        )
     )
+    assert millforge_dependency.summary == (
+        "Spec 07 harness presets are partially available; Checker and Arbiter "
+        "source records are absent"
+    )
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.PLANNER] not in (
+        millforge_dependency.reference_ids
+    )
+    assert EVAL_SPEC_07_HARNESS_IDS[EvalStageId.BUILDER] not in (
+        millforge_dependency.reference_ids
+    )
+    assert "named but not implemented" not in millforge_dependency.summary
 
 
 def test_default_fairness_comparison_is_engineering_smoke_only() -> None:
@@ -403,6 +437,19 @@ def test_live_admission_fails_closed_with_structured_deferred_dependencies() -> 
         "fixture_workspace_creation",
     }
     assert millforge_admission.admitted is False
+    millforge_harness_dependency = next(
+        dependency
+        for dependency in millforge_admission.deferred_dependencies
+        if dependency.dependency_id == "spec_07_harness_presets"
+    )
+    assert millforge_harness_dependency.summary == (
+        "Spec 07 harness presets are partially available; Checker and Arbiter "
+        "source records are absent"
+    )
+    assert set(millforge_harness_dependency.reference_ids) == {
+        EVAL_SPEC_07_HARNESS_IDS[EvalStageId.CHECKER],
+        EVAL_SPEC_07_HARNESS_IDS[EvalStageId.ARBITER],
+    }
     assert {
         dependency.dependency_id
         for dependency in millforge_admission.deferred_dependencies
