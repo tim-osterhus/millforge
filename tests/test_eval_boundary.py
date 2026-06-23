@@ -29,6 +29,7 @@ from millforge.eval_boundary import (
     EvalFixtureFile,
     EvalFixtureManifest,
     EvalFixtureWorkspacePolicy,
+    EvalFixtureWorkspaceSnapshot,
     EvalResourceCeiling,
     compact_eval_boundary_baseline,
     compact_eval_boundary_baseline_snapshot,
@@ -327,7 +328,7 @@ def test_eval_artifact_schemas_reject_missing_unknown_and_hidden_material() -> N
     assert valid_plan.artifact_id == EvalArtifactId.PLAN
 
     with pytest.raises(ValidationError):
-        EvalPlanArtifact(
+        EvalPlanArtifact(  # type: ignore[call-arg]
             trial_id="trial-001",
             created_by="eval_planner",
             summary="public implementation plan",
@@ -350,7 +351,7 @@ def test_eval_artifact_schemas_reject_missing_unknown_and_hidden_material() -> N
             no_hidden_checks_known=True,
         )
     with pytest.raises(ValidationError):
-        EvalPlanArtifact(
+        EvalPlanArtifact(  # type: ignore[call-arg]
             created_by="eval_planner",
             summary="public implementation plan",
             implementation_steps=("inspect source",),
@@ -1505,7 +1506,7 @@ def test_eval_fixture_workspace_snapshot_reports_symlink_escape(
 
 def _closure_fixture_snapshot(
     tmp_path: Path,
-) -> tuple[EvalFixtureManifest, object]:
+) -> tuple[EvalFixtureManifest, EvalFixtureWorkspaceSnapshot]:
     workspace = tmp_path / "workspace"
     shutil.copytree(FIXTURE_WORKSPACE, workspace)
     manifest = eval_fixture_manifest_from_paths(

@@ -78,7 +78,7 @@ explicit_package_bases = true
 # repository runtime metadata under `millrace-agents/` is not package code, and
 # the private Forge subset is upstream-derived code covered by provenance tests
 # rather than Millforge's owned type surface.
-exclude = "^(ref-forge|millrace-agents|src/millforge/_forge)/"
+exclude = "^(ref-forge|millrace-agents|src/millforge/_forge|tests/fixtures/eval_workflow/workspace)/"
 
 [[tool.mypy.overrides]]
 module = "millforge._forge.*"

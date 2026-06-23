@@ -10,7 +10,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from pydantic import (
     BaseModel,
@@ -1471,8 +1471,17 @@ def default_eval_stage_resource_ceiling(stage_id: EvalStageId) -> EvalResourceCe
 
 def default_eval_trial_resource_ceiling() -> EvalResourceCeiling:
     """Return the default positive bounded resource ceiling for one trial."""
+    defaults = EVAL_TRIAL_RESOURCE_CEILING_DEFAULTS
     return EvalResourceCeiling(
-        scope="trial", **dict(EVAL_TRIAL_RESOURCE_CEILING_DEFAULTS)
+        scope="trial",
+        prompt_tokens=defaults["prompt_tokens"],
+        completion_tokens=defaults["completion_tokens"],
+        model_calls=defaults["model_calls"],
+        wall_clock_seconds=defaults["wall_clock_seconds"],
+        shell_commands=defaults["shell_commands"],
+        shell_command_seconds=defaults["shell_command_seconds"],
+        writable_bytes=defaults["writable_bytes"],
+        artifact_bytes=defaults["artifact_bytes"],
     )
 
 
@@ -1942,9 +1951,14 @@ def _closure_evidence_artifact_ids(
 def _closure_outcome_kind(
     validated_artifacts: Mapping[str, BaseModel],
 ) -> tuple[EvalClosureOutcomeKind, EvalTerminalResult, EvalCandidateDisposition]:
-    from millforge.eval_artifacts import EvalArbiterVerdictValue
+    from millforge.eval_artifacts import (
+        EvalArbiterVerdictArtifact,
+        EvalArbiterVerdictValue,
+    )
 
-    arbiter_verdict = validated_artifacts["arbiter_verdict"]
+    arbiter_verdict = cast(
+        EvalArbiterVerdictArtifact, validated_artifacts["arbiter_verdict"]
+    )
     verdict = arbiter_verdict.verdict
     disposition = arbiter_verdict.candidate_disposition
     if verdict == EvalArbiterVerdictValue.BLOCKED:
@@ -1976,11 +1990,15 @@ def _terminal_path_diagnostics(
     validated_artifacts: Mapping[str, BaseModel],
     outcome_kind: EvalClosureOutcomeKind,
 ) -> tuple[str, ...]:
-    from millforge.eval_artifacts import EvalArbiterVerdictValue
+    from millforge.eval_artifacts import (
+        EvalArbiterVerdictArtifact,
+        EvalArbiterVerdictValue,
+    )
 
-    arbiter_verdict = validated_artifacts.get("arbiter_verdict")
-    if arbiter_verdict is None:
+    arbiter_verdict_base = validated_artifacts.get("arbiter_verdict")
+    if arbiter_verdict_base is None:
         return ("arbiter verdict is required to prove terminal path",)
+    arbiter_verdict = cast(EvalArbiterVerdictArtifact, arbiter_verdict_base)
 
     verdict = arbiter_verdict.verdict
     disposition = arbiter_verdict.candidate_disposition
