@@ -324,6 +324,20 @@ from millforge.eval_modes import (
     default_eval_small_millforge_mode,
     default_eval_small_pi_mode,
 )
+from millforge.eval_presets import (
+    EVAL_PRESET_HARNESS_IDS,
+    EVAL_PRESET_MODEL_PROFILE_ID,
+    EVAL_PRESET_SCHEMA_VERSION,
+    EvalPresetCompileCase,
+    EvalPresetContractGap,
+    EvalPresetId,
+    EvalPresetReadinessStatus,
+    EvalPresetSourceRecord,
+    eval_preset_contract_gaps,
+    eval_preset_source_record,
+    iter_eval_preset_compile_cases,
+    iter_eval_preset_source_records,
+)
 
 __all__: list[str] = [
     # Compiled plan types
@@ -636,4 +650,17 @@ __all__: list[str] = [
     "default_eval_model_profile",
     "default_eval_small_millforge_mode",
     "default_eval_small_pi_mode",
+    # Compact eval preset metadata
+    "EVAL_PRESET_HARNESS_IDS",
+    "EVAL_PRESET_MODEL_PROFILE_ID",
+    "EVAL_PRESET_SCHEMA_VERSION",
+    "EvalPresetCompileCase",
+    "EvalPresetContractGap",
+    "EvalPresetId",
+    "EvalPresetReadinessStatus",
+    "EvalPresetSourceRecord",
+    "eval_preset_contract_gaps",
+    "eval_preset_source_record",
+    "iter_eval_preset_compile_cases",
+    "iter_eval_preset_source_records",
 ]

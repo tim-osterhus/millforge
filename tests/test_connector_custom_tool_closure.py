@@ -127,6 +127,7 @@ ALLOWED_ROOT_EXPORT_MODULES = {
     "millforge.eval_artifacts",
     "millforge.eval_boundary",
     "millforge.eval_modes",
+    "millforge.eval_presets",
     "millforge.eval_workflow",
     "millforge.exceptions",
     "millforge.protocols",
