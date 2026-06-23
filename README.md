@@ -339,16 +339,36 @@ live provider dependencies, or Millrace runner integration.
 ## Millforge 04B Built-In Tool Descriptor Data
 
 04B adds the descriptor-only production `builtin.*` catalog data under
-`src/millforge/tools/`. It defines the 18 version-1 built-in descriptors for
+`src/millforge/tools/`. It now spans 26 version-1 built-in descriptors for
 request inspection, workspace listing/reading/searching/writing/patching,
-named test execution, static checks, artifact read/write, and terminal
-submit/reject/escalate actions, all using the accepted 04A registry contracts.
+named test execution, static checks, artifact read/write, terminal
+submit/reject/escalate actions, and the fixed artifact bridge readers and
+split verdict writers, all using the accepted 04A registry contracts.
 
 The built-in catalog stays import-safe and side-effect-free. It exposes the
 immutable descriptor set, deterministic registry construction helper, and
 frozen exact-version snapshot helper, but it still does not add tool execution,
 dispatch maps, connector admission, custom tools, production presets, queue
 policy, implementation registration objects, or Millrace runner integration.
+
+### Spec 07 Capability Projection Boundary
+
+Spec 07 compile cases validate concrete tool-level compiler/catalog grants,
+including `request.read`, `artifact.read`, `artifact.write`, `workspace.read`,
+`workspace.write`, `workspace.diff.read`, `process.test`,
+`process.static_check`, and `terminal.intent`. These grants are the catalog
+capability vocabulary used by built-in descriptors and semantic compilation.
+
+That vocabulary remains separate from the broader 06B eval-stage capability
+envelope concepts. 06B envelopes include `evidence.emit`, `runner.invoke`,
+`shell.run`, and broad workspace, package, network, git, and runtime-control
+envelopes. Spec 07 projects eval-stage needs into concrete compiler/catalog
+tool grants; it does not rename or replace the 06B capability names.
+
+The boundary is pinned by
+`tests/test_eval_presets.py::test_checker_compile_case_needs_tool_level_grants_not_only_06b_eval_envelope`
+and
+`tests/test_builtin_tool_catalog.py::test_builtin_descriptors_feed_capability_validation`.
 
 ## Millforge 04C Tool Execution Boundary
 

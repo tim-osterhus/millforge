@@ -10,10 +10,18 @@ import millforge
 import millforge.eval_presets as eval_presets
 import pytest
 
+from millforge import CapabilityEnvelope, CapabilityGrant, CompiledModelProfile
+from millforge.compiler import (
+    CompileInvocation,
+    HarnessCompileRequest,
+    HarnessSource,
+    compile_semantic,
+)
 from millforge.eval_modes import EVAL_DEFAULT_MODEL_PROFILE_ID, EVAL_SPEC_07_HARNESS_IDS
 from millforge.eval_presets import (
     EVAL_PRESET_HARNESS_IDS,
     EVAL_PRESET_MODEL_PROFILE_ID,
+    EvalPresetCompileCase,
     EvalPresetReadinessStatus,
     eval_preset_contract_gaps,
     eval_preset_source_record,
@@ -21,6 +29,12 @@ from millforge.eval_presets import (
     iter_eval_preset_source_records,
 )
 from millforge.eval_workflow import EvalStageId, default_compact_eval_workflow_graph
+from millforge.tools import create_builtin_tool_snapshot
+from tests.compiler.conftest import (
+    SHA_B,
+    SHA_C,
+    StaticModelProfileCatalogSnapshot,
+)
 
 DENIED_PUBLIC_TOKENS = (
     "millrace-agents",
@@ -38,6 +52,98 @@ WINDOWS_ABSOLUTE_PATH = re.compile(
 )
 POSIX_ABSOLUTE_PATH = re.compile(r"(?:^|[\s\"'`([{<])/(?!/)[^\s\"'`)\]}>,]*")
 USER_HOME_PATH = re.compile(r"(?:^|[\s\"'`([{<])~(?:/|\\)[^\s\"'`)\]}>,]*")
+
+
+def _compile_case(stage_id: EvalStageId) -> EvalPresetCompileCase:
+    return {case.stage_id: case for case in iter_eval_preset_compile_cases()}[stage_id]
+
+
+def _model_snapshot() -> StaticModelProfileCatalogSnapshot:
+    return StaticModelProfileCatalogSnapshot(
+        snapshot_id=SHA_B,
+        snapshot_sha256=SHA_C,
+        profiles={
+            EVAL_DEFAULT_MODEL_PROFILE_ID: CompiledModelProfile(
+                profile_id=EVAL_DEFAULT_MODEL_PROFILE_ID
+            )
+        },
+    )
+
+
+def _compile_request(
+    case: EvalPresetCompileCase, grants: tuple[str, ...]
+) -> HarnessCompileRequest:
+    return HarnessCompileRequest(
+        request_id=f"request.{case.stage_id.value}.spec07.v1",
+        source_path="harness.yaml",
+        source_root="/tmp",
+        source_format="yaml",
+        output_dir="out",
+        output_root="/tmp",
+        expected_harness_id=case.harness_id,
+        stage_kind_id=case.stage_id.value,
+        legal_terminal_results=(case.legal_terminal_results[0].value,),
+        capability_envelope=CapabilityEnvelope(
+            grants=tuple(CapabilityGrant(capability_id=grant) for grant in grants)
+        ),
+    )
+
+
+def _source_for_case(
+    case: EvalPresetCompileCase,
+    nodes: dict[str, dict[str, object]],
+    *,
+    declared_artifact_ids: tuple[str, ...] | None = None,
+) -> HarnessSource:
+    terminal_result = case.legal_terminal_results[0].value
+    return HarnessSource.model_validate(
+        {
+            "schema_version": "1.0",
+            "kind": "millforge_harness",
+            "harness_id": case.harness_id,
+            "harness_version": 1,
+            "stage_scope": {"stage_kind_ids": [case.stage_id.value]},
+            "model_profile_id": EVAL_DEFAULT_MODEL_PROFILE_ID,
+            "prompt": {
+                "policy_id": f"{case.harness_id}.policy.v1",
+                "system_instructions": "Compile the focused Spec 07 conformance case.",
+                "include_request_context": True,
+            },
+            "budgets": {
+                "max_iterations": 4,
+                "max_validation_retries": 1,
+                "max_tool_errors": 1,
+                "max_prerequisite_violations": 1,
+                "max_premature_terminal_attempts": 1,
+            },
+            "context": {
+                "strategy_id": "forge.tiered.v1",
+                "budget_tokens": 4096,
+                "keep_recent_iterations": 1,
+                "phase_thresholds": [0.5, 0.75, 0.9],
+            },
+            "graph": {
+                "nodes": {
+                    **nodes,
+                    "complete": {
+                        "tool_ref": "builtin.terminal.submit@1",
+                        "terminal_result": terminal_result,
+                        "prerequisites": [{"node_id": node_id} for node_id in nodes],
+                    },
+                }
+            },
+            "artifacts": {
+                "declared_artifact_ids": list(
+                    declared_artifact_ids
+                    if declared_artifact_ids is not None
+                    else case.input_artifact_ids + case.output_artifact_ids
+                ),
+                "required_by_terminal": {
+                    terminal_result: list(case.output_artifact_ids),
+                },
+            },
+        }
+    )
 
 
 def _render_public_payload() -> str:
@@ -182,3 +288,234 @@ def test_spec_07_presets_remain_non_ready_metadata_only_records() -> None:
 
     for case in iter_eval_preset_compile_cases():
         assert case.readiness_status in allowed_statuses
+
+
+def test_checker_compile_case_accepts_fixed_bridge_readers_without_duplicate_bindings() -> (
+    None
+):
+    case = _compile_case(EvalStageId.CHECKER)
+    source = _source_for_case(
+        case,
+        {
+            "read_plan": {"tool_ref": "builtin.artifact.read_plan@1"},
+            "read_patch_summary": {"tool_ref": "builtin.artifact.read_patch_summary@1"},
+            "read_test_results": {"tool_ref": "builtin.artifact.read_test_results@1"},
+            "read_workspace_diff": {
+                "tool_ref": "builtin.artifact.read_workspace_diff@1"
+            },
+            "run_static_check": {
+                "tool_ref": "builtin.shell.run_static_check@1",
+                "prerequisites": [{"node_id": "read_workspace_diff"}],
+            },
+            "run_tests": {
+                "tool_ref": "builtin.shell.run_tests@1",
+                "prerequisites": [{"node_id": "run_static_check"}],
+            },
+            "write_checker_verdict": {
+                "tool_ref": "builtin.artifact.write_checker_verdict@1",
+                "produces": ["checker_verdict"],
+                "prerequisites": [{"node_id": "run_tests"}],
+            },
+        },
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(
+            _compile_request(case, case.required_capability_ids)
+        ),
+        source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert result.diagnostics == ()
+    assert result.resolved_harness is not None
+    assert "MF-R005" not in {diagnostic.code for diagnostic in result.diagnostics}
+    assert result.resolved_harness.required_capability_ids == (
+        "artifact.read",
+        "artifact.write",
+        "process.static_check",
+        "process.test",
+        "terminal.intent",
+    )
+
+
+def test_arbiter_compile_case_accepts_fixed_checker_verdict_reader_only() -> None:
+    case = _compile_case(EvalStageId.ARBITER)
+    source = _source_for_case(
+        case,
+        {
+            "read_checker_verdict": {
+                "tool_ref": "builtin.artifact.read_checker_verdict@1"
+            },
+            "write_arbiter_verdict": {
+                "tool_ref": "builtin.artifact.write_arbiter_verdict@1",
+                "produces": ["arbiter_verdict"],
+                "prerequisites": [{"node_id": "read_checker_verdict"}],
+            },
+        },
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(
+            _compile_request(case, case.required_capability_ids)
+        ),
+        source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert result.diagnostics == ()
+    assert result.resolved_harness is not None
+    resolved = result.resolved_harness
+    read_binding = next(
+        binding
+        for binding in resolved.resolved_nodes
+        if binding.node_id == "read_checker_verdict"
+    )
+    assert read_binding.descriptor.input_schema["type"] == "object"
+    assert read_binding.descriptor.input_schema["properties"] == {}
+    assert read_binding.descriptor.input_schema["required"] == ()
+    assert read_binding.descriptor.input_schema["additionalProperties"] is False
+    assert "artifact_id" not in read_binding.descriptor.input_schema["properties"]
+    assert "scorer" not in resolved.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("stage_id", "writer_node_id", "wanted_artifact_id", "extra_artifact_id"),
+    [
+        (
+            EvalStageId.CHECKER,
+            "write_checker_verdict",
+            "checker_verdict",
+            "arbiter_verdict",
+        ),
+        (
+            EvalStageId.ARBITER,
+            "write_arbiter_verdict",
+            "arbiter_verdict",
+            "checker_verdict",
+        ),
+    ],
+)
+def test_spec_07_compile_cases_reject_generic_verdict_overproduction(
+    stage_id: EvalStageId,
+    writer_node_id: str,
+    wanted_artifact_id: str,
+    extra_artifact_id: str,
+) -> None:
+    case = _compile_case(stage_id)
+    reader_node = (
+        {
+            "read_checker_verdict": {
+                "tool_ref": "builtin.artifact.read_checker_verdict@1"
+            }
+        }
+        if stage_id == EvalStageId.ARBITER
+        else {"read_plan": {"tool_ref": "builtin.artifact.read_plan@1"}}
+    )
+    source = _source_for_case(
+        case,
+        {
+            **reader_node,
+            writer_node_id: {
+                "tool_ref": "builtin.artifact.write_verdict@1",
+                "produces": [wanted_artifact_id, extra_artifact_id],
+                "prerequisites": [
+                    {"node_id": next(iter(reader_node))},
+                ],
+            },
+        },
+        declared_artifact_ids=case.output_artifact_ids,
+    )
+    generic = create_builtin_tool_snapshot().resolve_exact(
+        "builtin.artifact.write_verdict", 1
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(
+            _compile_request(case, case.required_capability_ids)
+        ),
+        source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert generic.entry is not None
+    assert set(generic.entry.produced_artifact_ids) == {
+        "checker_verdict",
+        "arbiter_verdict",
+    }
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-A001"]
+    assert result.diagnostics[0].node_id == writer_node_id
+    assert result.diagnostics[0].fields[0].value == extra_artifact_id
+
+
+def test_checker_compile_case_needs_tool_level_grants_not_only_06b_eval_envelope() -> (
+    None
+):
+    case = _compile_case(EvalStageId.CHECKER)
+    source = _source_for_case(
+        case,
+        {
+            "read_request": {"tool_ref": "builtin.request.read_requirements@1"},
+            "read_plan": {
+                "tool_ref": "builtin.artifact.read_plan@1",
+                "prerequisites": [{"node_id": "read_request"}],
+            },
+            "run_static_check": {
+                "tool_ref": "builtin.shell.run_static_check@1",
+                "prerequisites": [{"node_id": "read_plan"}],
+            },
+            "run_tests": {
+                "tool_ref": "builtin.shell.run_tests@1",
+                "prerequisites": [{"node_id": "run_static_check"}],
+            },
+            "write_checker_verdict": {
+                "tool_ref": "builtin.artifact.write_checker_verdict@1",
+                "produces": ["checker_verdict"],
+                "prerequisites": [{"node_id": "run_tests"}],
+            },
+        },
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(
+            _compile_request(
+                case,
+                (
+                    "artifact.read",
+                    "artifact.write",
+                    "evidence.emit",
+                    "workspace.read",
+                ),
+            )
+        ),
+        source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == [
+        "MF-C001",
+        "MF-C001",
+        "MF-C001",
+        "MF-C001",
+    ]
+    assert {diagnostic.fields[0].value for diagnostic in result.diagnostics} == {
+        "process.static_check",
+        "process.test",
+        "request.read",
+        "terminal.intent",
+    }
+    assert all(
+        capability in case.required_capability_ids
+        for capability in {
+            "artifact.read",
+            "artifact.write",
+            "process.static_check",
+            "process.test",
+            "request.read",
+            "terminal.intent",
+        }
+    )

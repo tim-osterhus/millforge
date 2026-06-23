@@ -55,14 +55,24 @@ _ARTIFACT_FILENAMES = {
     "plan": "plan.md",
     "patch_summary": "patch_summary.md",
     "test_results": "test_results.md",
+    "workspace_diff": "workspace_diff.md",
     "checker_verdict": "checker_verdict.md",
     "arbiter_verdict": "arbiter_verdict.md",
 }
 _ARTIFACT_CONTENT_TYPE = "text/markdown"
+_READ_TOOL_ARTIFACT_ID = {
+    "builtin.artifact.read_plan": "plan",
+    "builtin.artifact.read_patch_summary": "patch_summary",
+    "builtin.artifact.read_test_results": "test_results",
+    "builtin.artifact.read_workspace_diff": "workspace_diff",
+    "builtin.artifact.read_checker_verdict": "checker_verdict",
+}
 _WRITE_TOOL_CONTENT_FIELD = {
     "builtin.artifact.write_plan": ("plan", "plan"),
     "builtin.artifact.write_patch_summary": ("patch_summary", "summary"),
     "builtin.artifact.write_test_results": ("test_results", "results"),
+    "builtin.artifact.write_checker_verdict": ("checker_verdict", "verdict"),
+    "builtin.artifact.write_arbiter_verdict": ("arbiter_verdict", "verdict"),
 }
 _SHELL_TEST_PROFILES = {
     "tool-boundary": (
@@ -127,9 +137,17 @@ def create_builtin_runtime_registry() -> RuntimeToolRegistry:
         "builtin.shell.run_tests": _shell_run_profile,
         "builtin.shell.run_static_check": _shell_run_profile,
         "builtin.artifact.read": _artifact_read,
+        "builtin.artifact.read_plan": _artifact_read,
+        "builtin.artifact.read_patch_summary": _artifact_read,
+        "builtin.artifact.read_test_results": _artifact_read,
+        "builtin.artifact.read_workspace_diff": _artifact_read,
+        "builtin.artifact.read_checker_verdict": _artifact_read,
         "builtin.artifact.write_plan": _artifact_write,
         "builtin.artifact.write_patch_summary": _artifact_write,
         "builtin.artifact.write_test_results": _artifact_write,
+        "builtin.artifact.write_workspace_diff": _artifact_write,
+        "builtin.artifact.write_checker_verdict": _artifact_write,
+        "builtin.artifact.write_arbiter_verdict": _artifact_write,
         "builtin.artifact.write_verdict": _artifact_write,
         "builtin.terminal.submit": _terminal_intent,
         "builtin.terminal.reject": _terminal_intent,
@@ -499,7 +517,7 @@ def _artifact_read(
     call: ValidatedToolCall,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    artifact_id = str(call.arguments["artifact_id"])
+    artifact_id = _read_artifact_id(call)
     max_bytes = _bounded_int(
         call.arguments.get("max_bytes"), _DEFAULT_MAX_BYTES, _MAX_BYTES
     )
@@ -547,6 +565,24 @@ def _artifact_write(
     if call.binding.tool_id == "builtin.artifact.write_verdict":
         artifact_id = str(call.arguments["artifact_id"])
         content = str(call.arguments["verdict"])
+    elif call.binding.tool_id == "builtin.artifact.write_workspace_diff":
+        artifact_id = "workspace_diff"
+        diff_result = _workspace_read_diff(_workspace_read_diff_call(call), context)
+        if diff_result.status is not ToolExecutionStatus.SUCCESS:
+            return _denied(
+                call,
+                ToolExecutionErrorCode(diff_result.error_code)
+                if diff_result.error_code is not None
+                else ToolExecutionErrorCode.POLICY_DENIED,
+                diff_result.summary,
+            )
+        if not isinstance(diff_result.structured_data, dict):
+            return _denied(
+                call,
+                ToolExecutionErrorCode.IMPLEMENTATION_ERROR,
+                "workspace diff runtime returned invalid structured data",
+            )
+        content = str(diff_result.structured_data["diff"])
     else:
         artifact_id, field = _WRITE_TOOL_CONTENT_FIELD[call.binding.tool_id]
         content = str(call.arguments[field])
@@ -831,10 +867,10 @@ def _failure_output(call: ValidatedToolCall, summary: str) -> dict[str, Any]:
         return {**common, "diff": "", "truncated": False, "diff_sha256": "0" * 64}
     if tool_id.startswith("builtin.shell."):
         return {**common, "exit_code": -1, "artifact_refs": [], "truncated": False}
-    if tool_id == "builtin.artifact.read":
+    if tool_id == "builtin.artifact.read" or tool_id in _READ_TOOL_ARTIFACT_ID:
         return {
             **common,
-            "artifact_id": str(call.arguments.get("artifact_id", "")),
+            "artifact_id": _failure_artifact_id(call),
             "content": "",
             "content_sha256": "0" * 64,
             "truncated": False,
@@ -952,8 +988,10 @@ def _artifact_pre_entry_policy_error(
             ToolExecutionErrorCode.POLICY_DENIED, "artifact root is unavailable"
         )
     root.resolve(strict=True)
-    if call.binding.tool_id == "builtin.artifact.read":
-        artifact_id = str(call.arguments["artifact_id"])
+    if call.binding.tool_id == "builtin.artifact.read" or (
+        call.binding.tool_id in _READ_TOOL_ARTIFACT_ID
+    ):
+        artifact_id = _read_artifact_id(call)
         error = _artifact_policy_error(context, artifact_id, produced_ids=None)
         if error is not None:
             return _policy_error(ToolExecutionErrorCode.POLICY_DENIED, error)
@@ -961,6 +999,11 @@ def _artifact_pre_entry_policy_error(
         return None
     if call.binding.tool_id == "builtin.artifact.write_verdict":
         artifact_id = str(call.arguments["artifact_id"])
+    elif call.binding.tool_id == "builtin.artifact.write_workspace_diff":
+        artifact_id = "workspace_diff"
+        diff_error = _workspace_policy_error(_workspace_read_diff_call(call), context)
+        if diff_error is not None:
+            return diff_error
     else:
         artifact_id = _WRITE_TOOL_CONTENT_FIELD[call.binding.tool_id][0]
     error = _artifact_policy_error(
@@ -1190,6 +1233,33 @@ def _artifact_policy_error(
     return None
 
 
+def _read_artifact_id(call: ValidatedToolCall) -> str:
+    artifact_id = _READ_TOOL_ARTIFACT_ID.get(call.binding.tool_id)
+    if artifact_id is not None:
+        return artifact_id
+    return str(call.arguments["artifact_id"])
+
+
+def _failure_artifact_id(call: ValidatedToolCall) -> str:
+    artifact_id = _READ_TOOL_ARTIFACT_ID.get(call.binding.tool_id)
+    if artifact_id is not None:
+        return artifact_id
+    return str(call.arguments.get("artifact_id", ""))
+
+
+def _workspace_read_diff_call(call: ValidatedToolCall) -> ValidatedToolCall:
+    descriptor = _descriptor_for_tool_id("builtin.workspace.read_diff")
+    binding = call.binding.model_copy(
+        update={
+            "tool_id": descriptor.tool_id,
+            "tool_version": descriptor.tool_version,
+            "descriptor_sha256": descriptor.descriptor_sha256,
+            "implementation_id": descriptor.implementation_id,
+        }
+    )
+    return call.model_copy(update={"binding": binding, "arguments": {}})
+
+
 def _artifact_logical_path(artifact_id: str) -> str:
     try:
         return _ARTIFACT_FILENAMES[artifact_id]
@@ -1205,6 +1275,13 @@ def _artifact_ref(artifact_id: str) -> ArtifactRef:
         path=Path("millforge") / _artifact_logical_path(artifact_id),
         content_type=_ARTIFACT_CONTENT_TYPE,
     )
+
+
+def _descriptor_for_tool_id(tool_id: str) -> Any:
+    for descriptor in iter_builtin_tool_descriptors():
+        if descriptor.tool_id == tool_id:
+            return descriptor
+    raise KeyError(tool_id)
 
 
 def _bounded_int(value: Any, default: int, maximum: int) -> int:

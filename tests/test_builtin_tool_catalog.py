@@ -63,6 +63,23 @@ COMMON_STATUS_SUMMARY_PROPERTIES: JsonObject = {
 }
 EMPTY_OBJECT_SCHEMA = _object_schema({}, [])
 
+
+def _fixed_artifact_read_output_schema(artifact_id: str) -> JsonObject:
+    return _object_schema(
+        {
+            **COMMON_STATUS_SUMMARY_PROPERTIES,
+            "artifact_id": {
+                "enum": [artifact_id],
+                "type": "string",
+            },
+            "content": STRING_SCHEMA,
+            "content_sha256": STRING_SCHEMA,
+            "truncated": BOOLEAN_SCHEMA,
+        },
+        ["artifact_id", "content", "content_sha256", "status", "summary", "truncated"],
+    )
+
+
 EXPECTED_TOOL_IDS = (
     "builtin.request.inspect",
     "builtin.request.read_requirements",
@@ -75,9 +92,17 @@ EXPECTED_TOOL_IDS = (
     "builtin.shell.run_tests",
     "builtin.shell.run_static_check",
     "builtin.artifact.read",
+    "builtin.artifact.read_plan",
+    "builtin.artifact.read_patch_summary",
+    "builtin.artifact.read_test_results",
+    "builtin.artifact.read_workspace_diff",
+    "builtin.artifact.read_checker_verdict",
     "builtin.artifact.write_plan",
     "builtin.artifact.write_patch_summary",
     "builtin.artifact.write_test_results",
+    "builtin.artifact.write_workspace_diff",
+    "builtin.artifact.write_checker_verdict",
+    "builtin.artifact.write_arbiter_verdict",
     "builtin.artifact.write_verdict",
     "builtin.terminal.submit",
     "builtin.terminal.reject",
@@ -96,9 +121,17 @@ EXPECTED_CAPABILITIES = {
     "builtin.shell.run_tests": ("process.test",),
     "builtin.shell.run_static_check": ("process.static_check",),
     "builtin.artifact.read": ("artifact.read",),
+    "builtin.artifact.read_plan": ("artifact.read",),
+    "builtin.artifact.read_patch_summary": ("artifact.read",),
+    "builtin.artifact.read_test_results": ("artifact.read",),
+    "builtin.artifact.read_workspace_diff": ("artifact.read",),
+    "builtin.artifact.read_checker_verdict": ("artifact.read",),
     "builtin.artifact.write_plan": ("artifact.write",),
     "builtin.artifact.write_patch_summary": ("artifact.write",),
     "builtin.artifact.write_test_results": ("artifact.write",),
+    "builtin.artifact.write_workspace_diff": ("artifact.write", "workspace.diff.read"),
+    "builtin.artifact.write_checker_verdict": ("artifact.write",),
+    "builtin.artifact.write_arbiter_verdict": ("artifact.write",),
     "builtin.artifact.write_verdict": ("artifact.write",),
     "builtin.terminal.submit": ("terminal.intent",),
     "builtin.terminal.reject": ("terminal.intent",),
@@ -109,6 +142,9 @@ EXPECTED_ARTIFACTS = {
     "builtin.artifact.write_plan": ("plan",),
     "builtin.artifact.write_patch_summary": ("patch_summary",),
     "builtin.artifact.write_test_results": ("test_results",),
+    "builtin.artifact.write_workspace_diff": ("workspace_diff",),
+    "builtin.artifact.write_checker_verdict": ("checker_verdict",),
+    "builtin.artifact.write_arbiter_verdict": ("arbiter_verdict",),
     "builtin.artifact.write_verdict": ("arbiter_verdict", "checker_verdict"),
 }
 
@@ -154,6 +190,26 @@ EXPECTED_CLASSIFICATIONS = {
         SideEffectClass.READ_ONLY,
         IdempotencyClass.IDEMPOTENT,
     ),
+    "builtin.artifact.read_plan": (
+        SideEffectClass.READ_ONLY,
+        IdempotencyClass.IDEMPOTENT,
+    ),
+    "builtin.artifact.read_patch_summary": (
+        SideEffectClass.READ_ONLY,
+        IdempotencyClass.IDEMPOTENT,
+    ),
+    "builtin.artifact.read_test_results": (
+        SideEffectClass.READ_ONLY,
+        IdempotencyClass.IDEMPOTENT,
+    ),
+    "builtin.artifact.read_workspace_diff": (
+        SideEffectClass.READ_ONLY,
+        IdempotencyClass.IDEMPOTENT,
+    ),
+    "builtin.artifact.read_checker_verdict": (
+        SideEffectClass.READ_ONLY,
+        IdempotencyClass.IDEMPOTENT,
+    ),
     "builtin.artifact.write_plan": (
         SideEffectClass.ARTIFACT_WRITE,
         IdempotencyClass.IDEMPOTENT_WITH_KEY,
@@ -163,6 +219,18 @@ EXPECTED_CLASSIFICATIONS = {
         IdempotencyClass.IDEMPOTENT_WITH_KEY,
     ),
     "builtin.artifact.write_test_results": (
+        SideEffectClass.ARTIFACT_WRITE,
+        IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    "builtin.artifact.write_workspace_diff": (
+        SideEffectClass.ARTIFACT_WRITE,
+        IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    "builtin.artifact.write_checker_verdict": (
+        SideEffectClass.ARTIFACT_WRITE,
+        IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    "builtin.artifact.write_arbiter_verdict": (
         SideEffectClass.ARTIFACT_WRITE,
         IdempotencyClass.IDEMPOTENT_WITH_KEY,
     ),
@@ -256,6 +324,11 @@ EXPECTED_INPUT_SCHEMAS = {
         },
         ["artifact_id"],
     ),
+    "builtin.artifact.read_plan": EMPTY_OBJECT_SCHEMA,
+    "builtin.artifact.read_patch_summary": EMPTY_OBJECT_SCHEMA,
+    "builtin.artifact.read_test_results": EMPTY_OBJECT_SCHEMA,
+    "builtin.artifact.read_workspace_diff": EMPTY_OBJECT_SCHEMA,
+    "builtin.artifact.read_checker_verdict": EMPTY_OBJECT_SCHEMA,
     "builtin.artifact.write_plan": _object_schema({"plan": STRING_SCHEMA}, ["plan"]),
     "builtin.artifact.write_patch_summary": _object_schema(
         {"summary": STRING_SCHEMA},
@@ -264,6 +337,15 @@ EXPECTED_INPUT_SCHEMAS = {
     "builtin.artifact.write_test_results": _object_schema(
         {"results": STRING_SCHEMA},
         ["results"],
+    ),
+    "builtin.artifact.write_workspace_diff": EMPTY_OBJECT_SCHEMA,
+    "builtin.artifact.write_checker_verdict": _object_schema(
+        {"verdict": STRING_SCHEMA},
+        ["verdict"],
+    ),
+    "builtin.artifact.write_arbiter_verdict": _object_schema(
+        {"verdict": STRING_SCHEMA},
+        ["verdict"],
     ),
     "builtin.artifact.write_verdict": _object_schema(
         {
@@ -411,6 +493,19 @@ EXPECTED_OUTPUT_SCHEMAS = {
         },
         ["artifact_id", "content", "content_sha256", "status", "summary", "truncated"],
     ),
+    "builtin.artifact.read_plan": _fixed_artifact_read_output_schema("plan"),
+    "builtin.artifact.read_patch_summary": _fixed_artifact_read_output_schema(
+        "patch_summary"
+    ),
+    "builtin.artifact.read_test_results": _fixed_artifact_read_output_schema(
+        "test_results"
+    ),
+    "builtin.artifact.read_workspace_diff": _fixed_artifact_read_output_schema(
+        "workspace_diff"
+    ),
+    "builtin.artifact.read_checker_verdict": _fixed_artifact_read_output_schema(
+        "checker_verdict"
+    ),
     "builtin.artifact.write_plan": _object_schema(
         {
             **COMMON_STATUS_SUMMARY_PROPERTIES,
@@ -428,6 +523,30 @@ EXPECTED_OUTPUT_SCHEMAS = {
         ["artifact_id", "content_sha256", "status", "summary"],
     ),
     "builtin.artifact.write_test_results": _object_schema(
+        {
+            **COMMON_STATUS_SUMMARY_PROPERTIES,
+            "artifact_id": STRING_SCHEMA,
+            "content_sha256": STRING_SCHEMA,
+        },
+        ["artifact_id", "content_sha256", "status", "summary"],
+    ),
+    "builtin.artifact.write_workspace_diff": _object_schema(
+        {
+            **COMMON_STATUS_SUMMARY_PROPERTIES,
+            "artifact_id": STRING_SCHEMA,
+            "content_sha256": STRING_SCHEMA,
+        },
+        ["artifact_id", "content_sha256", "status", "summary"],
+    ),
+    "builtin.artifact.write_checker_verdict": _object_schema(
+        {
+            **COMMON_STATUS_SUMMARY_PROPERTIES,
+            "artifact_id": STRING_SCHEMA,
+            "content_sha256": STRING_SCHEMA,
+        },
+        ["artifact_id", "content_sha256", "status", "summary"],
+    ),
+    "builtin.artifact.write_arbiter_verdict": _object_schema(
         {
             **COMMON_STATUS_SUMMARY_PROPERTIES,
             "artifact_id": STRING_SCHEMA,
@@ -468,10 +587,18 @@ EXPECTED_OUTPUT_SCHEMAS = {
 
 EXPECTED_BUILTIN_DESCRIPTOR_HASHES = {
     "builtin.artifact.read": "925f7b4152a695ebd64e7341f709b938e0df9523b25ed5ee8e603e383483c926",
+    "builtin.artifact.read_checker_verdict": "04d6aed8d4b141e66802431cf2f90e53f50c5f5cf038770980eb1b7818bb3e74",
+    "builtin.artifact.read_patch_summary": "14303661b4bac05801425a491d34787d6a1136a8d0db87292e08078f360a7b5d",
+    "builtin.artifact.read_plan": "5a9f3ac1f3d038a0624ca7fd8e3416dcf11b60ba01c564a719cc60712c4aea59",
+    "builtin.artifact.read_test_results": "fab7f940118f83edc5a58e48eaa637d2569839328cdd7655e28fb09bc17f86c5",
+    "builtin.artifact.read_workspace_diff": "2855ace6581a09dbb3b1d8574a961be08884dce20034294dce241ff2c30f764e",
+    "builtin.artifact.write_arbiter_verdict": "998c8d39b30460253f91a6458431d12cceb88c7bfc8a2d19438b3b321855d672",
+    "builtin.artifact.write_checker_verdict": "97707fb2d787ca928465490adcf2b1647ceb6cf94ec384fdc57e5ceacdcf6672",
     "builtin.artifact.write_patch_summary": "1790cd8470902fa89434a83a3b27d9a3cc7c37cd75d059654e0fc3dbb31c1c96",
     "builtin.artifact.write_plan": "a863fd921266dcb54f694bd51cc57b68cad8ea68bdcff2fb8cea5abca0f5370e",
     "builtin.artifact.write_test_results": "485ad6582ffaf257933abc7ee94b29d57a83fd757f51db5c8526a6eb2a17e561",
     "builtin.artifact.write_verdict": "d9faf4fd76aac48768cd70b132c39f51d339f28034a010b4e98661edf976aa93",
+    "builtin.artifact.write_workspace_diff": "2a4fe7b333036aa95664482eb310795219b94a9fdb650e64a2a1ec3b7cc73823",
     "builtin.request.inspect": "166b7f135c25b683e7fb12762c98e380f17e5a9bf1f21ca231e6804b38c1fa6a",
     "builtin.request.read_requirements": "9a39700d56e58134541114c99bc1fdbd2a6788bed1e16c517fcaf373151cddf2",
     "builtin.shell.run_static_check": "eed0d6ad8cb9d268964527190ab7d2efc74182f0c80a3d956bc37a44b5c36a0c",
@@ -488,10 +615,10 @@ EXPECTED_BUILTIN_DESCRIPTOR_HASHES = {
 }
 
 EXPECTED_BUILTIN_SNAPSHOT_SHA256 = (
-    "621be3b11711f4602ab761add762e499803b4fb776da806a4852a742166d3e2f"
+    "d60d6b347ad1d0e860e340ae0d51662b0ee9373e9bfd82d4aa7642c16586d80e"
 )
 EXPECTED_BUILTIN_SNAPSHOT_ID = (
-    "16ee09eff72aefb6968f21a7175852323ae690f0c33baaa72ec8de354b146066"
+    "fbbf8d800b9cc1e1981fa5f98bffd0e81a8abf0818679e37e020d5b9f1826ec0"
 )
 
 
@@ -501,13 +628,13 @@ def test_builtin_catalog_has_exact_descriptor_matrix() -> None:
 
     assert descriptors is BUILTIN_TOOL_DESCRIPTORS
     assert tuple(by_id) == EXPECTED_TOOL_IDS
-    assert len(descriptors) == 18
+    assert len(descriptors) == 26
     assert {descriptor.tool_version for descriptor in descriptors} == {
         BUILTIN_TOOL_VERSION
     }
     assert {descriptor.tool_version for descriptor in descriptors} == {1}
-    assert len({descriptor.implementation_id for descriptor in descriptors}) == 18
-    assert len({descriptor.model_tool_name for descriptor in descriptors}) == 18
+    assert len({descriptor.implementation_id for descriptor in descriptors}) == 26
+    assert len({descriptor.model_tool_name for descriptor in descriptors}) == 26
     assert len(set(public_tools.BUILTIN_CAPABILITY_IDS)) == len(
         public_tools.BUILTIN_CAPABILITY_IDS
     )

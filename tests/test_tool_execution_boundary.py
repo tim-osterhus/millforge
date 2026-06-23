@@ -73,7 +73,11 @@ from millforge.tools import (
     create_tool_executor,
     iter_builtin_tool_descriptors,
 )
-from millforge.tools.path_policy import PathPolicyError, validate_logical_path
+from millforge.tools.path_policy import (
+    PathPolicyError,
+    canonical_sha256_bytes,
+    validate_logical_path,
+)
 from millforge.tools.results import canonical_sha256
 from tests.compiler.conftest import StaticModelProfileCatalogSnapshot
 
@@ -1181,6 +1185,285 @@ async def test_artifact_builtins_enforce_compiled_policy_and_return_refs(
     )
     assert denied.status is ToolExecutionStatus.NOT_EXECUTED
     assert denied.error_code == ToolExecutionErrorCode.POLICY_DENIED.value
+
+
+def test_builtin_runtime_registry_wires_every_builtin_descriptor() -> None:
+    registry = builtin_runtime.create_builtin_runtime_registry()
+
+    for descriptor in iter_builtin_tool_descriptors():
+        implementation = registry.resolve(descriptor.implementation_id)
+        assert implementation is not None, descriptor.tool_id
+        assert implementation is not builtin_runtime._not_implemented
+
+
+@pytest.mark.asyncio
+async def test_fixed_artifact_readers_use_logical_ids_policy_refs_and_hashes(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "millforge"
+    artifact_root.mkdir()
+    (artifact_root / "plan.md").write_text("SECRET_TOKEN=abc123\n", encoding="utf-8")
+    (artifact_root / "workspace_diff.md").write_text("diff --git\n", encoding="utf-8")
+    descriptors = (
+        _descriptor("builtin.artifact.read_plan"),
+        _descriptor("builtin.artifact.read_workspace_diff"),
+    )
+    plan = _plan(*descriptors, _descriptor("builtin.terminal.submit"))
+    executor = create_builtin_tool_executor(plan)
+    context = _context(
+        "artifact.read",
+        artifact_root=artifact_root,
+        compiled_artifact_policy=CompiledArtifactPolicy(
+            declared_artifact_ids=("plan", "workspace_diff"),
+            required_by_terminal=(),
+        ),
+    )
+
+    read_plan = await executor.execute_model_tool(
+        model_tool_name="read_plan_artifact",
+        call_id="call-fixed-read-plan",
+        arguments={},
+        context=context,
+    )
+    read_diff = await executor.execute_model_tool(
+        model_tool_name="read_workspace_diff_artifact",
+        call_id="call-fixed-read-diff",
+        arguments={},
+        context=context,
+    )
+    schema_denied = await executor.execute_model_tool(
+        model_tool_name="read_plan_artifact",
+        call_id="call-fixed-read-schema-denied",
+        arguments={"artifact_id": "workspace_diff", "path": "workspace_diff.md"},
+        context=context,
+    )
+    policy_denied = await executor.execute_model_tool(
+        model_tool_name="read_workspace_diff_artifact",
+        call_id="call-fixed-read-policy-denied",
+        arguments={},
+        context=context.model_copy(
+            update={
+                "compiled_artifact_policy": CompiledArtifactPolicy(
+                    declared_artifact_ids=("plan",),
+                    required_by_terminal=(),
+                )
+            }
+        ),
+    )
+    capability_denied = await executor.execute_model_tool(
+        model_tool_name="read_plan_artifact",
+        call_id="call-fixed-read-capability-denied",
+        arguments={},
+        context=_context(
+            artifact_root=artifact_root,
+            compiled_artifact_policy=CompiledArtifactPolicy(
+                declared_artifact_ids=("plan", "workspace_diff"),
+                required_by_terminal=(),
+            ),
+        ),
+    )
+
+    assert read_plan.status is ToolExecutionStatus.SUCCESS
+    assert read_plan.structured_data["artifact_id"] == "plan"
+    assert read_plan.structured_data["content_sha256"] == canonical_sha256_bytes(
+        (artifact_root / "plan.md").read_bytes()
+    )
+    assert "SECRET_TOKEN=abc123" not in read_plan.structured_data["content"]
+    assert read_plan.output_sha256 == canonical_sha256(read_plan.structured_data)
+    assert read_plan.artifact_refs[0].path.as_posix() == "millforge/plan.md"
+    assert read_diff.status is ToolExecutionStatus.SUCCESS
+    assert read_diff.structured_data["artifact_id"] == "workspace_diff"
+    assert read_diff.artifact_refs[0].path.as_posix() == "millforge/workspace_diff.md"
+    assert schema_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert schema_denied.error_code == ToolBindingDenialCode.INVALID_ARGUMENTS.value
+    assert policy_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert policy_denied.error_code == ToolExecutionErrorCode.POLICY_DENIED.value
+    assert capability_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert (
+        capability_denied.error_code == ToolExecutionErrorCode.CAPABILITY_DENIED.value
+    )
+
+    traces = executor.trace_records
+    assert [trace.tool_call_id for trace in traces] == [
+        "call-fixed-read-plan",
+        "call-fixed-read-diff",
+        "call-fixed-read-schema-denied",
+        "call-fixed-read-policy-denied",
+        "call-fixed-read-capability-denied",
+    ]
+    assert traces[0].execution_status is ToolExecutionStatus.SUCCESS
+    assert traces[0].output_sha256 == read_plan.output_sha256
+    assert traces[3].side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+    assert traces[4].capability_decisions[0].decision.value == "denied"
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_artifact_writer_uses_diff_boundary_and_atomic_artifact(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    artifact_root = tmp_path / "millforge"
+    workspace.mkdir()
+    artifact_root.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, stdout=subprocess.PIPE)
+    (workspace / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "tracked.txt"], cwd=workspace, check=True, stdout=subprocess.PIPE
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=workspace,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
+    )
+    (workspace / "tracked.txt").write_text("after\n", encoding="utf-8")
+    descriptor = _descriptor("builtin.artifact.write_workspace_diff")
+    plan = _plan(descriptor, _descriptor("builtin.terminal.submit"))
+    executor = create_builtin_tool_executor(plan)
+    context = _context(
+        "artifact.write",
+        "workspace.diff.read",
+        workspace_root=workspace,
+        artifact_root=artifact_root,
+        compiled_artifact_policy=plan.artifact_policy,
+    )
+
+    written = await executor.execute_model_tool(
+        model_tool_name="write_workspace_diff_artifact",
+        call_id="call-write-workspace-diff",
+        arguments={},
+        context=context,
+    )
+    schema_denied = await executor.execute_model_tool(
+        model_tool_name="write_workspace_diff_artifact",
+        call_id="call-write-workspace-diff-schema-denied",
+        arguments={"path": "plan.md", "content": "wrong"},
+        context=context,
+    )
+    capability_denied = await executor.execute_model_tool(
+        model_tool_name="write_workspace_diff_artifact",
+        call_id="call-write-workspace-diff-capability-denied",
+        arguments={},
+        context=_context(
+            "artifact.write",
+            workspace_root=workspace,
+            artifact_root=artifact_root,
+            compiled_artifact_policy=plan.artifact_policy,
+        ),
+    )
+
+    artifact_path = artifact_root / "workspace_diff.md"
+    assert written.status is ToolExecutionStatus.SUCCESS
+    assert written.structured_data["artifact_id"] == "workspace_diff"
+    assert written.artifact_refs[0].path.as_posix() == "millforge/workspace_diff.md"
+    assert "-before" in artifact_path.read_text(encoding="utf-8")
+    assert "+after" in artifact_path.read_text(encoding="utf-8")
+    assert written.structured_data["content_sha256"] == canonical_sha256_bytes(
+        artifact_path.read_bytes()
+    )
+    assert written.output_sha256 == canonical_sha256(written.structured_data)
+    assert written.side_effect_certainty is SideEffectCertainty.CONFIRMED_COMPLETE
+    assert schema_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert schema_denied.error_code == ToolBindingDenialCode.INVALID_ARGUMENTS.value
+    assert capability_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert (
+        capability_denied.error_code == ToolExecutionErrorCode.CAPABILITY_DENIED.value
+    )
+
+    traces = executor.trace_records
+    assert traces[0].tool_call_id == "call-write-workspace-diff"
+    assert traces[0].execution_status is ToolExecutionStatus.SUCCESS
+    assert traces[0].output_sha256 == written.output_sha256
+    assert [decision.decision.value for decision in traces[0].capability_decisions] == [
+        "allowed",
+        "allowed",
+    ]
+    assert traces[2].side_effect_certainty is SideEffectCertainty.NOT_ATTEMPTED
+
+
+@pytest.mark.asyncio
+async def test_split_verdict_writers_are_separate_policy_bound_artifacts(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "millforge"
+    artifact_root.mkdir()
+    checker = _descriptor("builtin.artifact.write_checker_verdict")
+    arbiter = _descriptor("builtin.artifact.write_arbiter_verdict")
+    plan = _plan(checker, arbiter, _descriptor("builtin.terminal.submit"))
+    executor = create_builtin_tool_executor(plan)
+    context = _context(
+        "artifact.write",
+        artifact_root=artifact_root,
+        compiled_artifact_policy=plan.artifact_policy,
+    )
+
+    checker_written = await executor.execute_model_tool(
+        model_tool_name="write_checker_verdict_artifact",
+        call_id="call-write-checker-verdict",
+        arguments={"verdict": "checker ok"},
+        context=context,
+    )
+    arbiter_written = await executor.execute_model_tool(
+        model_tool_name="write_arbiter_verdict_artifact",
+        call_id="call-write-arbiter-verdict",
+        arguments={"verdict": "arbiter ok"},
+        context=context,
+    )
+    schema_denied = await executor.execute_model_tool(
+        model_tool_name="write_checker_verdict_artifact",
+        call_id="call-write-checker-verdict-schema-denied",
+        arguments={"artifact_id": "arbiter_verdict", "verdict": "wrong"},
+        context=context,
+    )
+    undeclared = await executor.execute_model_tool(
+        model_tool_name="write_arbiter_verdict_artifact",
+        call_id="call-write-arbiter-verdict-undeclared",
+        arguments={"verdict": "denied"},
+        context=context.model_copy(
+            update={
+                "compiled_artifact_policy": CompiledArtifactPolicy(
+                    declared_artifact_ids=("checker_verdict",),
+                    required_by_terminal=(),
+                )
+            }
+        ),
+    )
+    generic_cross_write = await executor.execute_model_tool(
+        model_tool_name="write_verdict_artifact",
+        call_id="call-write-generic-verdict-uncompiled",
+        arguments={"artifact_id": "arbiter_verdict", "verdict": "wrong"},
+        context=context,
+    )
+
+    assert checker_written.status is ToolExecutionStatus.SUCCESS
+    assert checker_written.structured_data["artifact_id"] == "checker_verdict"
+    assert checker_written.artifact_refs[0].path.as_posix() == (
+        "millforge/checker_verdict.md"
+    )
+    assert (artifact_root / "checker_verdict.md").read_text(
+        encoding="utf-8"
+    ) == "checker ok"
+    assert arbiter_written.status is ToolExecutionStatus.SUCCESS
+    assert arbiter_written.structured_data["artifact_id"] == "arbiter_verdict"
+    assert arbiter_written.artifact_refs[0].path.as_posix() == (
+        "millforge/arbiter_verdict.md"
+    )
+    assert (artifact_root / "arbiter_verdict.md").read_text(
+        encoding="utf-8"
+    ) == "arbiter ok"
+    assert schema_denied.status is ToolExecutionStatus.NOT_EXECUTED
+    assert schema_denied.error_code == ToolBindingDenialCode.INVALID_ARGUMENTS.value
+    assert undeclared.status is ToolExecutionStatus.NOT_EXECUTED
+    assert undeclared.error_code == ToolExecutionErrorCode.POLICY_DENIED.value
+    assert generic_cross_write.status is ToolExecutionStatus.NOT_EXECUTED
+    assert generic_cross_write.error_code == ToolBindingDenialCode.NOT_FOUND.value
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ from millforge.connectors import (
     ConnectorTransportKind,
     DiscoveredProviderTool,
 )
+from millforge.tools import create_builtin_tool_snapshot
 from tests.compiler.conftest import (
     SHA_B,
     SHA_C,
@@ -943,6 +944,104 @@ def test_duplicate_exact_tool_bindings_are_rejected_before_lookup() -> None:
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-R005"]
     assert tool_snapshot.metadata_reads == []
     assert tool_snapshot.lookups == []
+
+
+def test_duplicate_generic_artifact_read_bindings_are_rejected_before_lookup() -> None:
+    source = _source(
+        {
+            "read_plan": {"tool_ref": "builtin.artifact.read@1"},
+            "read_diff": {"tool_ref": "builtin.artifact.read@1"},
+            "done": {
+                "tool_ref": "builtin.terminal.submit@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "read_plan"}, {"node_id": "read_diff"}],
+            },
+        }
+    )
+    tool_snapshot = CountingToolSnapshot(
+        {
+            ("builtin.artifact.read", 1): _entry("builtin.artifact.read"),
+            ("builtin.terminal.submit", 1): _entry("builtin.terminal.submit"),
+        }
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(_request()),
+        source,
+        tool_snapshot=tool_snapshot,
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == ["MF-R005"]
+    assert tool_snapshot.metadata_reads == []
+    assert tool_snapshot.lookups == []
+
+
+def test_fixed_artifact_readers_compile_without_duplicate_binding_or_hidden_artifacts() -> (
+    None
+):
+    payload = _source(
+        {
+            "read_plan": {"tool_ref": "builtin.artifact.read_plan@1"},
+            "read_diff": {"tool_ref": "builtin.artifact.read_workspace_diff@1"},
+            "write_verdict": {
+                "tool_ref": "builtin.artifact.write_checker_verdict@1",
+                "produces": ["checker_verdict"],
+                "prerequisites": [{"node_id": "read_plan"}, {"node_id": "read_diff"}],
+            },
+            "done": {
+                "tool_ref": "builtin.terminal.submit@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "write_verdict"}],
+            },
+        }
+    ).model_dump(mode="json")
+    payload["artifacts"] = {
+        "declared_artifact_ids": ["checker_verdict"],
+        "required_by_terminal": {
+            "BUILDER_COMPLETE": ["checker_verdict"],
+        },
+    }
+    request = _request().model_copy(
+        update={
+            "capability_envelope": CapabilityEnvelope(
+                grants=(
+                    CapabilityGrant(capability_id="artifact.read"),
+                    CapabilityGrant(capability_id="artifact.write"),
+                    CapabilityGrant(capability_id="terminal.intent"),
+                )
+            )
+        }
+    )
+
+    result = compile_semantic(
+        CompileInvocation.from_request(request),
+        HarnessSource.model_validate(payload),
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert result.diagnostics == ()
+    assert result.resolved_harness is not None
+    assert {
+        binding.binding.tool_id for binding in result.resolved_harness.resolved_nodes
+    } == {
+        "builtin.artifact.read_plan",
+        "builtin.artifact.read_workspace_diff",
+        "builtin.artifact.write_checker_verdict",
+        "builtin.terminal.submit",
+    }
+    assert [
+        evidence.model_dump(mode="json")
+        for evidence in result.resolved_harness.artifact_evidence
+    ] == [
+        {
+            "artifact_id": "checker_verdict",
+            "all_producer_node_ids": ["write_verdict"],
+            "terminal_gated_producer_node_ids": ["write_verdict"],
+        }
+    ]
+    assert "scorer" not in result.resolved_harness.model_dump_json()
 
 
 def test_duplicate_model_tool_names_are_rejected_after_resolution() -> None:

@@ -300,6 +300,43 @@ _ARTIFACT_READ_OUTPUT_SCHEMA: JsonObject = {
     ],
     "additionalProperties": False,
 }
+
+
+def _fixed_artifact_read_output_schema(artifact_id: str) -> JsonObject:
+    return {
+        "type": "object",
+        "properties": {
+            **_COMMON_STATUS_SUMMARY_PROPERTIES,
+            "artifact_id": {"type": "string", "enum": [artifact_id]},
+            "content": {"type": "string"},
+            "content_sha256": {"type": "string"},
+            "truncated": {"type": "boolean"},
+        },
+        "required": [
+            "status",
+            "summary",
+            "artifact_id",
+            "content",
+            "content_sha256",
+            "truncated",
+        ],
+        "additionalProperties": False,
+    }
+
+
+_ARTIFACT_READ_PLAN_OUTPUT_SCHEMA = _fixed_artifact_read_output_schema("plan")
+_ARTIFACT_READ_PATCH_SUMMARY_OUTPUT_SCHEMA = _fixed_artifact_read_output_schema(
+    "patch_summary"
+)
+_ARTIFACT_READ_TEST_RESULTS_OUTPUT_SCHEMA = _fixed_artifact_read_output_schema(
+    "test_results"
+)
+_ARTIFACT_READ_WORKSPACE_DIFF_OUTPUT_SCHEMA = _fixed_artifact_read_output_schema(
+    "workspace_diff"
+)
+_ARTIFACT_READ_CHECKER_VERDICT_OUTPUT_SCHEMA = _fixed_artifact_read_output_schema(
+    "checker_verdict"
+)
 _ARTIFACT_WRITE_PLAN_INPUT_SCHEMA: JsonObject = {
     "type": "object",
     "properties": {"plan": {"type": "string"}},
@@ -316,6 +353,18 @@ _ARTIFACT_WRITE_TEST_RESULTS_INPUT_SCHEMA: JsonObject = {
     "type": "object",
     "properties": {"results": {"type": "string"}},
     "required": ["results"],
+    "additionalProperties": False,
+}
+_ARTIFACT_WRITE_CHECKER_VERDICT_INPUT_SCHEMA: JsonObject = {
+    "type": "object",
+    "properties": {"verdict": {"type": "string"}},
+    "required": ["verdict"],
+    "additionalProperties": False,
+}
+_ARTIFACT_WRITE_ARBITER_VERDICT_INPUT_SCHEMA: JsonObject = {
+    "type": "object",
+    "properties": {"verdict": {"type": "string"}},
+    "required": ["verdict"],
     "additionalProperties": False,
 }
 _ARTIFACT_WRITE_VERDICT_INPUT_SCHEMA: JsonObject = {
@@ -531,6 +580,56 @@ BUILTIN_TOOL_DESCRIPTORS: tuple[ToolDescriptor, ...] = (
         idempotency=IdempotencyClass.IDEMPOTENT,
     ),
     _descriptor(
+        tool_id="builtin.artifact.read_plan",
+        model_tool_name="read_plan_artifact",
+        description="Read the fixed plan artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_READ_PLAN_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_READ,),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.read_patch_summary",
+        model_tool_name="read_patch_summary_artifact",
+        description="Read the fixed patch summary artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_READ_PATCH_SUMMARY_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_READ,),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.read_test_results",
+        model_tool_name="read_test_results_artifact",
+        description="Read the fixed test results artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_READ_TEST_RESULTS_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_READ,),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.read_workspace_diff",
+        model_tool_name="read_workspace_diff_artifact",
+        description="Read the fixed workspace diff artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_READ_WORKSPACE_DIFF_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_READ,),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.read_checker_verdict",
+        model_tool_name="read_checker_verdict_artifact",
+        description="Read the fixed checker verdict artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_READ_CHECKER_VERDICT_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_READ,),
+        side_effect_class=SideEffectClass.READ_ONLY,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+    ),
+    _descriptor(
         tool_id="builtin.artifact.write_plan",
         model_tool_name="write_plan_artifact",
         description="Write a plan artifact.",
@@ -560,6 +659,42 @@ BUILTIN_TOOL_DESCRIPTORS: tuple[ToolDescriptor, ...] = (
         output_schema=_ARTIFACT_WRITE_OUTPUT_SCHEMA,
         required_capabilities=(BUILTIN_CAP_ARTIFACT_WRITE,),
         produced_artifact_ids=("test_results",),
+        side_effect_class=SideEffectClass.ARTIFACT_WRITE,
+        idempotency=IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.write_workspace_diff",
+        model_tool_name="write_workspace_diff_artifact",
+        description="Write the current workspace diff artifact.",
+        input_schema=_EMPTY_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_WRITE_OUTPUT_SCHEMA,
+        required_capabilities=(
+            BUILTIN_CAP_WORKSPACE_DIFF_READ,
+            BUILTIN_CAP_ARTIFACT_WRITE,
+        ),
+        produced_artifact_ids=("workspace_diff",),
+        side_effect_class=SideEffectClass.ARTIFACT_WRITE,
+        idempotency=IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.write_checker_verdict",
+        model_tool_name="write_checker_verdict_artifact",
+        description="Write a checker verdict artifact.",
+        input_schema=_ARTIFACT_WRITE_CHECKER_VERDICT_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_WRITE_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_WRITE,),
+        produced_artifact_ids=("checker_verdict",),
+        side_effect_class=SideEffectClass.ARTIFACT_WRITE,
+        idempotency=IdempotencyClass.IDEMPOTENT_WITH_KEY,
+    ),
+    _descriptor(
+        tool_id="builtin.artifact.write_arbiter_verdict",
+        model_tool_name="write_arbiter_verdict_artifact",
+        description="Write an arbiter verdict artifact.",
+        input_schema=_ARTIFACT_WRITE_ARBITER_VERDICT_INPUT_SCHEMA,
+        output_schema=_ARTIFACT_WRITE_OUTPUT_SCHEMA,
+        required_capabilities=(BUILTIN_CAP_ARTIFACT_WRITE,),
+        produced_artifact_ids=("arbiter_verdict",),
         side_effect_class=SideEffectClass.ARTIFACT_WRITE,
         idempotency=IdempotencyClass.IDEMPOTENT_WITH_KEY,
     ),

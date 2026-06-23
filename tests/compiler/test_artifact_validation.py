@@ -282,6 +282,70 @@ def test_branch_only_producer_is_not_valid_for_other_terminal_requirement() -> N
     assert result.producer_evidence[0].terminal_gated_producer_node_ids == ()
 
 
+def test_workspace_read_diff_is_not_a_terminal_artifact_producer() -> None:
+    source = _source(
+        {
+            "read_diff": {
+                "tool_ref": "builtin.workspace.read_diff@1",
+                "produces": ["workspace_diff"],
+            },
+            "done": {
+                "tool_ref": "builtin.terminal.submit@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "read_diff"}],
+            },
+        },
+        declared=("workspace_diff",),
+        required_by_terminal={"BUILDER_COMPLETE": ("workspace_diff",)},
+    )
+    entries = _entries(source, {"read_diff": ()})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert [diagnostic.code for diagnostic in result.diagnostics] == [
+        "MF-A002",
+        "MF-A004",
+    ]
+    assert result.producer_evidence[0].all_producer_node_ids == ()
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == ()
+
+
+def test_workspace_diff_artifact_writer_satisfies_terminal_artifact_requirement() -> (
+    None
+):
+    source = _source(
+        {
+            "write_diff": {
+                "tool_ref": "builtin.artifact.write_workspace_diff@1",
+                "produces": ["workspace_diff"],
+            },
+            "done": {
+                "tool_ref": "builtin.terminal.submit@1",
+                "terminal_result": "BUILDER_COMPLETE",
+                "prerequisites": [{"node_id": "write_diff"}],
+            },
+        },
+        declared=("workspace_diff",),
+        required_by_terminal={"BUILDER_COMPLETE": ("workspace_diff",)},
+    )
+    entries = _entries(source, {"write_diff": ("workspace_diff",)})
+    graph = validate_harness_graph(
+        source, entries, allowed_terminal_results={"BUILDER_COMPLETE"}
+    )
+
+    result = validate_artifacts(source, entries, graph)
+
+    assert result.ok
+    assert result.producer_evidence[0].artifact_id == "workspace_diff"
+    assert result.producer_evidence[0].all_producer_node_ids == ("write_diff",)
+    assert result.producer_evidence[0].terminal_gated_producer_node_ids == (
+        "write_diff",
+    )
+
+
 def test_global_required_producer_satisfies_terminal_artifact_requirement() -> None:
     source = _source(
         {
