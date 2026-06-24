@@ -272,8 +272,10 @@ compiler-output boundary, hash stability, output-state guarantees, runtime
 loader/preflight compatibility, Forge adapter field compatibility, and package
 content inspection without live provider calls. The public offline Spec 07
 preset registry and readiness report now live in `millforge.eval_presets`,
-while live Spec 07 execution and admission remain deferred to the owning
-workstream.
+the public offline 08B eval-trial contract boundary, including
+caller-selected append-only campaign-store APIs, now lives in
+`millforge.eval_trials`, while live Spec 07 execution and admission remain
+deferred to the owning workstream.
 
 03C R2 closure evidence maps the latest Arbiter gaps to completed work:
 canonical lowering/internal diagnostic meanings, three representative YAML/JSON
