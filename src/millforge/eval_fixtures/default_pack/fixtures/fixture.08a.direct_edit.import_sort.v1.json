@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "fixture_id": "fixture.08a.direct_edit.import_sort.v1",
+  "category": "direct_edit",
+  "difficulty": {
+    "level": "basic",
+    "rationale": "Single source edit with a focused visible regression check.",
+    "estimated_minutes": 15
+  },
+  "visible_prompt": "Fix the formatting helper so the displayed names are sorted and comma separated.",
+  "visible_acceptance_criteria": [
+    "The formatting helper returns names in deterministic alphabetical order.",
+    "Existing public behavior remains covered by the focused test."
+  ],
+  "file_allowlist": [
+    "src/sample_names.py",
+    "tests/test_sample_names.py"
+  ],
+  "expected_mutation_policy": {
+    "mutation_kind": "source_change_required",
+    "allowed_paths": [
+      "src/sample_names.py"
+    ],
+    "forbidden_paths": [
+      "tests/test_sample_names.py"
+    ],
+    "summary": "A source edit is required; the public test must remain unchanged."
+  },
+  "file_manifest_hashes": [
+    {
+      "hash_kind": "fixture_file_sha256_v1",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "visible_checks": [
+    {
+      "check_id": "visible-name-format-test",
+      "summary": "Run the focused visible formatting test.",
+      "command": "python -m pytest tests/test_sample_names.py"
+    }
+  ],
+  "hidden_checks": [
+    {
+      "check_id": "case-stability-regression",
+      "summary": "Confirm mixed-case inputs keep deterministic ordering.",
+      "scorer_rubric": "Review the final source behavior against the withheld mixed-case ordering case."
+    }
+  ],
+  "expected_final_outcome": "valid_completion",
+  "fixture_hash_kind": "eval_suite_fixture_sha256_v1",
+  "fixture_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+}

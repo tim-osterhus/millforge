@@ -1,0 +1,12 @@
+{
+  "fixture_pack_id": "pack.08a.offline.default.v1",
+  "fixture_ids": [
+    "fixture.08a.direct_edit.import_sort.v1",
+    "fixture.08a.multi_file.api_contract.v1",
+    "fixture.08a.bug_diagnosis.traceback.v1",
+    "fixture.08a.evidence_discipline.no_source_change.v1",
+    "fixture.08a.recovery.malformed_artifact.v1",
+    "fixture.08a.false_closure.visible_green.v1"
+  ],
+  "pack_summary": "Small offline fixture pack for deterministic eval-suite contract and scorer development."
+}

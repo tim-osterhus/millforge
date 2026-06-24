@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "fixture_id": "fixture.08a.bug_diagnosis.traceback.v1",
+  "category": "bug_diagnosis",
+  "difficulty": {
+    "level": "intermediate",
+    "rationale": "Requires diagnosing the failing branch before editing a small function.",
+    "estimated_minutes": 25
+  },
+  "visible_prompt": "Diagnose why the parser rejects blank optional notes and fix only the root cause.",
+  "visible_acceptance_criteria": [
+    "Blank optional notes are accepted.",
+    "Non-empty notes keep their current validation behavior."
+  ],
+  "file_allowlist": [
+    "src/sample_parser.py",
+    "tests/test_sample_parser.py"
+  ],
+  "expected_mutation_policy": {
+    "mutation_kind": "source_change_required",
+    "allowed_paths": [
+      "src/sample_parser.py"
+    ],
+    "forbidden_paths": [
+      "tests/test_sample_parser.py"
+    ],
+    "summary": "Only the parser implementation should change."
+  },
+  "file_manifest_hashes": [
+    {
+      "hash_kind": "fixture_file_sha256_v1",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "visible_checks": [
+    {
+      "check_id": "visible-parser-tests",
+      "summary": "Run the focused visible parser tests.",
+      "command": "python -m pytest tests/test_sample_parser.py"
+    }
+  ],
+  "hidden_checks": [
+    {
+      "check_id": "minimal-diagnosis-review",
+      "summary": "Confirm the change is limited to the failing optional-note branch.",
+      "scorer_rubric": "Reject broad rewrites that bypass validation instead of fixing the diagnosed branch."
+    }
+  ],
+  "expected_final_outcome": "valid_completion",
+  "fixture_hash_kind": "eval_suite_fixture_sha256_v1",
+  "fixture_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+}

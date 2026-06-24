@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "fixture_id": "fixture.08a.multi_file.api_contract.v1",
+  "category": "multi_file_consistency",
+  "difficulty": {
+    "level": "intermediate",
+    "rationale": "Requires keeping implementation, export surface, and tests aligned.",
+    "estimated_minutes": 30
+  },
+  "visible_prompt": "Add a public normalize_label helper and expose it through the package root.",
+  "visible_acceptance_criteria": [
+    "The helper is available from the package root.",
+    "The helper and its focused tests agree on whitespace normalization."
+  ],
+  "file_allowlist": [
+    "src/sample_labels.py",
+    "src/sample_package.py",
+    "tests/test_sample_labels.py"
+  ],
+  "expected_mutation_policy": {
+    "mutation_kind": "source_change_required",
+    "allowed_paths": [
+      "src/sample_labels.py",
+      "src/sample_package.py"
+    ],
+    "forbidden_paths": [
+      "tests/test_sample_labels.py"
+    ],
+    "summary": "Implementation and export files may change; tests must remain unchanged."
+  },
+  "file_manifest_hashes": [
+    {
+      "hash_kind": "fixture_file_sha256_v1",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "visible_checks": [
+    {
+      "check_id": "visible-label-tests",
+      "summary": "Run the focused visible label tests.",
+      "command": "python -m pytest tests/test_sample_labels.py"
+    }
+  ],
+  "hidden_checks": [
+    {
+      "check_id": "root-export-regression",
+      "summary": "Confirm package-root import and direct module import produce the same result.",
+      "scorer_rubric": "Inspect both public import routes and reject a partial implementation."
+    }
+  ],
+  "expected_final_outcome": "valid_completion",
+  "fixture_hash_kind": "eval_suite_fixture_sha256_v1",
+  "fixture_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+}
