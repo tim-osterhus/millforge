@@ -603,11 +603,14 @@ def default_eval_small_pi_mode() -> EvalModeDescriptor:
     )
 
 
-def default_eval_small_millforge_mode() -> EvalModeDescriptor:
+def default_eval_small_millforge_mode(
+    *, spec_07_static_presets_ready: bool = False
+) -> EvalModeDescriptor:
     """Return the default compact eval descriptor for the Millforge runner."""
     return _default_eval_mode(
         mode_id=EVAL_SMALL_MILLFORGE_MODE_ID,
         runner_kind=EvalRunnerKind.MILLFORGE,
+        spec_07_static_presets_ready=spec_07_static_presets_ready,
     )
 
 
@@ -727,7 +730,10 @@ def admit_eval_mode_live_execution(
 
 
 def _default_eval_mode(
-    *, mode_id: str, runner_kind: EvalRunnerKind
+    *,
+    mode_id: str,
+    runner_kind: EvalRunnerKind,
+    spec_07_static_presets_ready: bool = False,
 ) -> EvalModeDescriptor:
     graph = default_compact_eval_workflow_graph()
     workflow_snapshot = compact_eval_workflow_snapshot(graph)
@@ -769,15 +775,10 @@ def _default_eval_mode(
         validator_visibility_policy=_default_validator_visibility_policy(),
         trial_resource_ceiling=default_eval_trial_resource_ceiling(),
         closure_boundary_id=EVAL_CLOSURE_BOUNDARY_ID,
-        deferred_dependencies=(
-            (
-                _deferred_dependency_for_id("spec_07_harness_presets")
-                if runner_kind == EvalRunnerKind.MILLFORGE
-                else _deferred_dependency_for_id("pi_live_runtime_support")
-            ),
-        )
-        if runner_kind in {EvalRunnerKind.MILLFORGE, EvalRunnerKind.PI}
-        else (),
+        deferred_dependencies=_static_descriptor_deferred_dependencies(
+            runner_kind=runner_kind,
+            spec_07_static_presets_ready=spec_07_static_presets_ready,
+        ),
         declared_confounds=_default_declared_confounds(),
         fairness_fingerprint_kind=EVAL_MODE_FAIRNESS_FINGERPRINT_KIND,
         fairness_fingerprint="0" * 64,
@@ -821,6 +822,20 @@ def _default_mode_description(mode_id: str) -> str:
             "harness execution."
         )
     raise ValueError("unknown static eval mode id")
+
+
+def _static_descriptor_deferred_dependencies(
+    *,
+    runner_kind: EvalRunnerKind,
+    spec_07_static_presets_ready: bool,
+) -> tuple[EvalModeDeferredDependency, ...]:
+    if runner_kind == EvalRunnerKind.MILLFORGE:
+        if spec_07_static_presets_ready:
+            return ()
+        return (_deferred_dependency_for_id("spec_07_harness_presets"),)
+    if runner_kind == EvalRunnerKind.PI:
+        return (_deferred_dependency_for_id("pi_live_runtime_support"),)
+    return ()
 
 
 def _fairness_payload(descriptor: EvalModeDescriptor) -> dict[str, Any]:

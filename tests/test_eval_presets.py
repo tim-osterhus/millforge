@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from collections import Counter
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 import millforge
 import millforge.eval_presets as eval_presets
@@ -19,8 +23,12 @@ from millforge import (
 )
 from millforge.compiler import (
     CompileInvocation,
+    CompileStatus,
     HarnessCompileRequest,
+    HarnessSourceParser,
     HarnessSource,
+    PlanCommitCertainty,
+    SourceDocument,
     compile_semantic,
     lower_resolved_harness,
     parse_tool_reference,
@@ -31,6 +39,10 @@ from millforge.eval_presets import (
     EVAL_PRESET_MODEL_PROFILE_ID,
     EvalPresetCompileCase,
     EvalPresetReadinessStatus,
+    compile_all_eval_presets,
+    eval_preset_readiness_report,
+    eval_spec_07_presets_available,
+    eval_spec_07_static_readiness_proven,
     eval_preset_contract_gaps,
     eval_preset_source_record,
     iter_eval_preset_compile_cases,
@@ -63,6 +75,9 @@ WINDOWS_ABSOLUTE_PATH = re.compile(
 )
 POSIX_ABSOLUTE_PATH = re.compile(r"(?:^|[\s\"'`([{<])/(?!/)[^\s\"'`)\]}>,]*")
 USER_HOME_PATH = re.compile(r"(?:^|[\s\"'`([{<])~(?:/|\\)[^\s\"'`)\]}>,]*")
+READINESS_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "eval_presets" / "readiness_report.json"
+)
 
 
 def _compile_case(stage_id: EvalStageId) -> EvalPresetCompileCase:
@@ -212,10 +227,247 @@ def _render_public_payload() -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=True, allow_nan=False)
 
 
+def _canonical_readiness_report_json() -> str:
+    return canonical_json_serialize(
+        eval_preset_readiness_report().model_dump(mode="json")
+    )
+
+
+def _mutated_source_payloads(
+    stage_id: EvalStageId,
+    mutate: Callable[[dict[str, Any]], None],
+) -> list[dict[str, Any]]:
+    payloads = [
+        record.model_dump(mode="json") for record in iter_eval_preset_source_records()
+    ]
+    for payload in payloads:
+        if payload["stage_scope"]["stage_kind_ids"] == [stage_id.value]:
+            mutate(payload)
+            return payloads
+    raise AssertionError(f"missing source payload for stage {stage_id.value}")
+
+
+def _install_source_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+    payloads: list[dict[str, Any]],
+) -> None:
+    records = tuple(HarnessSource.model_validate(payload) for payload in payloads)
+    monkeypatch.setattr(eval_presets, "_SOURCE_RECORDS", records)
+    monkeypatch.setattr(
+        eval_presets,
+        "_SOURCE_RECORD_BY_HARNESS_ID",
+        MappingProxyType({record.harness_id: record for record in records}),
+    )
+
+
 def test_public_eval_preset_names_are_root_exported() -> None:
     for name in eval_presets.__all__:
         assert getattr(millforge, name) is getattr(eval_presets, name)
         assert name in millforge.__all__
+
+
+def test_public_readiness_helper_exposes_exact_spec_07_presets() -> None:
+    report = eval_preset_readiness_report()
+
+    assert (
+        millforge.eval_spec_07_presets_available() == eval_spec_07_presets_available()
+    )
+    assert report.available is True
+    assert report.harness_ids == (
+        "millforge.eval.planner.single_task.v1",
+        "millforge.eval.builder.code_patch.v1",
+        "millforge.eval.checker.evidence_review.v1",
+        "millforge.eval.arbiter.closure.v1",
+    )
+    assert report.harness_ids == eval_spec_07_presets_available()
+    assert report.compile_cases == iter_eval_preset_compile_cases()
+    assert report.contract_gaps == eval_preset_contract_gaps()
+    assert (
+        tuple(record.harness_id for record in report.source_records)
+        == report.harness_ids
+    )
+    assert (
+        tuple(plan.harness_id for plan in report.compiled_plans) == report.harness_ids
+    )
+    assert report.tool_catalog.catalog_kind == "builtin_tool_catalog"
+    assert report.model_profile_catalog.catalog_kind == "eval_model_profile_catalog"
+    assert report.hygiene.ascii_safe is True
+    assert report.hygiene.secret_free is True
+    assert eval_spec_07_static_readiness_proven(report) is True
+
+
+def test_public_static_readiness_helper_fails_closed_for_incomplete_report() -> None:
+    report = eval_preset_readiness_report()
+
+    assert (
+        eval_spec_07_static_readiness_proven(
+            report.model_copy(update={"compiled_plans": report.compiled_plans[:-1]})
+        )
+        is False
+    )
+    assert (
+        eval_spec_07_static_readiness_proven(
+            report.model_copy(update={"harness_ids": report.harness_ids[:-1]})
+        )
+        is False
+    )
+
+
+def test_public_readiness_report_matches_stable_fixture() -> None:
+    rendered = _canonical_readiness_report_json()
+    fixture = READINESS_FIXTURE_PATH.read_text(encoding="utf-8")
+
+    assert rendered.isascii()
+    assert rendered == fixture
+    assert fixture.endswith("\n")
+    lowered = fixture.lower()
+    for token in DENIED_PUBLIC_TOKENS:
+        assert token.lower() not in lowered
+    assert WINDOWS_ABSOLUTE_PATH.search(fixture) is None
+    assert POSIX_ABSOLUTE_PATH.search(fixture) is None
+    assert USER_HOME_PATH.search(fixture) is None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update({"harness_id": "millforge.test.builtin.old.v1"}),
+        lambda payload: payload["stage_scope"].update({"stage_kind_ids": ["planner"]}),
+        lambda payload: payload["graph"]["nodes"][-2].update(
+            {"terminal_result": "PLANNER_COMPLETE"}
+        ),
+        lambda payload: payload["graph"]["nodes"].append(
+            {
+                "node_id": "duplicate_request_read",
+                "tool_ref": "builtin.request.inspect@1",
+                "required": False,
+                "prerequisites": [],
+                "terminal_result": None,
+                "produces": [],
+            }
+        ),
+        lambda payload: payload["artifacts"]["required_by_terminal"][0].update(
+            {"artifact_ids": ["plan.json"]}
+        ),
+        lambda payload: (
+            payload["artifacts"]["declared_artifact_ids"].append("missing_plan"),
+            payload["artifacts"]["required_by_terminal"][0].update(
+                {"artifact_ids": ["plan", "missing_plan"]}
+            ),
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains api_key shaped private material"}
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains generated daemon state"}
+        ),
+        lambda payload: payload["prompt"].update(
+            {
+                "system_instructions": (
+                    "contains millrace-agents/state/runtime_snapshot.json "
+                    "generated runtime state"
+                )
+            }
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains ideas/private intake material"}
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains ref-forge material"}
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains hidden scorer language"}
+        ),
+        lambda payload: payload["prompt"].update(
+            {"system_instructions": "contains /tmp/local path material"}
+        ),
+    ],
+)
+def test_readiness_report_fails_closed_for_source_record_negative_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    _install_source_payloads(
+        monkeypatch,
+        _mutated_source_payloads(EvalStageId.PLANNER, mutate),
+    )
+
+    with pytest.raises((KeyError, RuntimeError, ValueError)):
+        eval_preset_readiness_report()
+
+
+def test_readiness_report_fails_when_required_harness_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = tuple(iter_eval_preset_source_records()[1:])
+    monkeypatch.setattr(eval_presets, "_SOURCE_RECORDS", records)
+    monkeypatch.setattr(
+        eval_presets,
+        "_SOURCE_RECORD_BY_HARNESS_ID",
+        MappingProxyType({record.harness_id: record for record in records}),
+    )
+
+    with pytest.raises((KeyError, RuntimeError, ValueError)):
+        eval_preset_readiness_report()
+
+
+@pytest.mark.parametrize(
+    ("stage_id", "writer_node_id", "bad_artifact_id"),
+    [
+        (EvalStageId.CHECKER, "write_checker_verdict", "arbiter_verdict"),
+        (EvalStageId.ARBITER, "write_arbiter_verdict", "checker_verdict"),
+    ],
+)
+def test_readiness_report_fails_closed_for_cross_verdict_writers(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_id: EvalStageId,
+    writer_node_id: str,
+    bad_artifact_id: str,
+) -> None:
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["artifacts"]["declared_artifact_ids"].append(bad_artifact_id)
+        for node in payload["graph"]["nodes"]:
+            if node["node_id"] == writer_node_id:
+                node["produces"].append(bad_artifact_id)
+                return
+        raise AssertionError(f"missing node {writer_node_id}")
+
+    _install_source_payloads(monkeypatch, _mutated_source_payloads(stage_id, mutate))
+
+    with pytest.raises((RuntimeError, ValueError)):
+        eval_preset_readiness_report()
+
+
+@pytest.mark.parametrize(
+    "capability_id",
+    [
+        "workspace.read",
+        "connector.gmail.read",
+        "custom.private_tool",
+        "network.fetch",
+        "package.install",
+        "git.fetch",
+        "runtime-control.snapshot",
+    ],
+)
+def test_readiness_report_fails_when_planner_gains_forbidden_authority(
+    monkeypatch: pytest.MonkeyPatch, capability_id: str
+) -> None:
+    cases = tuple(
+        case.model_copy(
+            update={
+                "required_capability_ids": case.required_capability_ids
+                + (capability_id,)
+            }
+        )
+        if case.stage_id == EvalStageId.PLANNER
+        else case
+        for case in iter_eval_preset_compile_cases()
+    )
+    monkeypatch.setattr(eval_presets, "_COMPILE_CASES", cases)
+
+    with pytest.raises(ValueError):
+        eval_preset_readiness_report()
 
 
 def test_spec_07_harness_ids_have_exactly_one_source_record() -> None:
@@ -553,6 +805,101 @@ def test_checker_and_arbiter_presets_are_static_sources_not_live_readiness() -> 
 
     for case in iter_eval_preset_compile_cases():
         assert case.readiness_status in allowed_statuses
+
+
+def test_compile_all_eval_presets_uses_public_offline_compiler_surface() -> None:
+    graph = default_compact_eval_workflow_graph()
+    compiled_records = compile_all_eval_presets()
+
+    assert tuple(record.harness_id for record in compiled_records) == (
+        "millforge.eval.planner.single_task.v1",
+        "millforge.eval.builder.code_patch.v1",
+        "millforge.eval.checker.evidence_review.v1",
+        "millforge.eval.arbiter.closure.v1",
+    )
+    assert tuple(record.stage_id for record in compiled_records) == tuple(EvalStageId)
+
+    for record in compiled_records:
+        case = _compile_case(record.stage_id)
+        source = eval_preset_source_record(record.harness_id)
+        descriptor_capabilities = _descriptor_capability_ids(source)
+
+        assert record.preset_id == case.preset_id
+        assert record.parse_diagnostics == ()
+        assert record.semantic_diagnostics == ()
+        assert record.compile_result.status is CompileStatus.COMMITTED
+        assert (
+            record.compile_result.plan_commit_certainty is PlanCommitCertainty.COMMITTED
+        )
+        assert record.compile_result.diagnostics == ()
+        assert record.compile_result.harness_id == record.harness_id
+        assert record.compile_result.compiled_sha256 == record.compiled_sha256
+        assert record.verified_compiled_sha256 == record.compiled_sha256
+        assert record.hash_verification_warnings == ()
+
+        plan = record.compiled_plan
+        contract = graph.stage_contracts[record.stage_id]
+        assert plan.harness_id == record.harness_id
+        assert plan.stage_kind_ids == (record.stage_id.value,)
+        assert plan.model_profile.profile_id == EVAL_DEFAULT_MODEL_PROFILE_ID
+        assert plan.required_capabilities == descriptor_capabilities
+        assert case.required_capability_ids == descriptor_capabilities
+        assert set(plan.terminal_result_map.values()) == {
+            terminal.value for terminal in contract.legal_terminal_results
+        }
+        assert set(plan.artifact_policy.declared_artifact_ids) == set(
+            contract.output_artifact_ids
+        )
+        for requirement in plan.artifact_policy.required_by_terminal:
+            assert set(requirement.artifact_ids).issubset(
+                set(plan.artifact_policy.declared_artifact_ids)
+            )
+
+
+@pytest.mark.parametrize("stage_id", list(EvalStageId))
+def test_formatting_only_source_payload_changes_preserve_compiled_plan_hash(
+    stage_id: EvalStageId,
+) -> None:
+    helper_record = {record.stage_id: record for record in compile_all_eval_presets()}[
+        stage_id
+    ]
+    source = eval_preset_source_record(helper_record.harness_id)
+    pretty_bytes = json.dumps(
+        source.model_dump(mode="json"),
+        sort_keys=True,
+        ensure_ascii=True,
+        allow_nan=False,
+        indent=2,
+    ).encode("utf-8")
+    parsed = HarnessSourceParser().parse(
+        SourceDocument(
+            logical_path=f"{helper_record.harness_id}.json",
+            format="json",
+            content=pretty_bytes,
+        )
+    )
+
+    assert parsed.diagnostics == ()
+    assert parsed.source is not None
+
+    result = compile_semantic(
+        CompileInvocation.from_request(
+            _compile_request(
+                _compile_case(stage_id),
+                _descriptor_capability_ids(source),
+                all_terminal_results=True,
+            )
+        ),
+        parsed.source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_model_snapshot(),
+    )
+
+    assert result.diagnostics == ()
+    assert result.resolved_harness is not None
+    plan = lower_resolved_harness(result.resolved_harness)
+    assert plan.source_sha256 == helper_record.source_sha256
+    assert plan.compiled_sha256 == helper_record.compiled_sha256
 
 
 @pytest.mark.parametrize("stage_id", list(EvalStageId))

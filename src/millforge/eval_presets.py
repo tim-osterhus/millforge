@@ -8,20 +8,40 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from collections.abc import Mapping
 from enum import Enum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from pydantic import field_serializer, field_validator, model_validator
 
+from millforge.compiled_plan import CompiledHarnessPlan
+from millforge.compiled_plan import CompiledModelProfile
+from millforge.compiled_plan import canonical_json_serialize
+from millforge.compiled_plan import verify_compiled_plan_sha256
+from millforge.contracts import CapabilityEnvelope
+from millforge.contracts import CapabilityGrant
+from millforge.compiler import CompileInvocation
+from millforge.compiler import CompilerDiagnostic
+from millforge.compiler import HarnessCompileRequest
+from millforge.compiler import HarnessCompileResult
 from millforge.compiler import HarnessSource
+from millforge.compiler import HarnessSourceParser
+from millforge.compiler import ModelProfileCatalogLookup
+from millforge.compiler import SourceDocument
+from millforge.compiler import admit_model_profile
+from millforge.compiler import compile
+from millforge.compiler import compile_semantic
+from millforge.compiler import lower_resolved_harness
 from millforge.eval_modes import EVAL_DEFAULT_MODEL_PROFILE_ID
 from millforge.eval_modes import EVAL_SPEC_07_HARNESS_IDS
 from millforge.eval_workflow import EvalStageId
 from millforge.eval_workflow import EvalTerminalResult
 from millforge.eval_workflow import default_compact_eval_workflow_graph
+from millforge.tools import create_builtin_tool_snapshot
 
 EVAL_PRESET_SCHEMA_VERSION = 1
 EVAL_PRESET_MODEL_PROFILE_ID = EVAL_DEFAULT_MODEL_PROFILE_ID
@@ -134,6 +154,167 @@ class EvalPresetContractGap(BaseModel):
         return tuple(stage_id.value for stage_id in value)
 
 
+class EvalPresetCompiledRecord(BaseModel):
+    """Offline public compiler result for one Spec 07 preset source."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preset_id: EvalPresetId
+    harness_id: StrictStr
+    stage_id: EvalStageId
+    source_document_sha256: StrictStr
+    source_sha256: StrictStr
+    compiled_sha256: StrictStr
+    parse_diagnostics: tuple[CompilerDiagnostic, ...]
+    semantic_diagnostics: tuple[CompilerDiagnostic, ...]
+    compile_result: HarnessCompileResult
+    compiled_plan: CompiledHarnessPlan
+    verified_compiled_sha256: StrictStr
+    hash_verification_warnings: tuple[StrictStr, ...] = Field(default_factory=tuple)
+
+
+class EvalPresetTerminalArtifactEvidence(BaseModel):
+    """Terminal-scoped logical artifact requirements for a preset."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    terminal_result: StrictStr
+    artifact_ids: tuple[StrictStr, ...]
+
+
+class EvalPresetBoundedBudgetEvidence(BaseModel):
+    """Deterministic bounded execution budget evidence from one source record."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_iterations: StrictInt
+    max_validation_retries: StrictInt
+    max_tool_errors: StrictInt
+    max_prerequisite_violations: StrictInt
+    max_premature_terminal_attempts: StrictInt
+    context_budget_tokens: StrictInt
+
+
+class EvalPresetSourceRecordEvidence(BaseModel):
+    """Public source-record evidence for one Spec 07 preset."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preset_id: EvalPresetId
+    harness_id: StrictStr
+    stage_id: StrictStr
+    source_document_sha256: StrictStr
+    source_sha256: StrictStr
+    descriptor_fingerprints: Mapping[StrictStr, StrictStr]
+    model_profile_id: StrictStr
+    legal_terminal_results: tuple[StrictStr, ...]
+    declared_artifact_ids: tuple[StrictStr, ...]
+    terminal_required_artifacts: tuple[EvalPresetTerminalArtifactEvidence, ...]
+    terminal_gated_artifact_producers: Mapping[StrictStr, tuple[StrictStr, ...]]
+    required_tool_capability_ids: tuple[StrictStr, ...]
+    bounded_budget: EvalPresetBoundedBudgetEvidence
+    source_location_evidence: StrictStr
+
+    @field_serializer("descriptor_fingerprints", "terminal_gated_artifact_producers")
+    def _serialize_mapping(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(value)
+
+
+class EvalPresetCompiledPlanEvidence(BaseModel):
+    """Public compiled-plan hash evidence for one Spec 07 preset."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    harness_id: StrictStr
+    stage_id: StrictStr
+    compiled_sha256: StrictStr
+    verified_compiled_sha256: StrictStr
+    parse_diagnostic_count: StrictInt
+    semantic_diagnostic_count: StrictInt
+    hash_verification_warnings: tuple[StrictStr, ...]
+
+
+class EvalPresetCatalogEvidence(BaseModel):
+    """Deterministic public catalog snapshot evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    catalog_kind: StrictStr
+    snapshot_id: StrictStr
+    snapshot_sha256: StrictStr
+
+
+class EvalPresetHygieneEvidence(BaseModel):
+    """Readiness report hygiene result."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ascii_safe: bool
+    host_path_free: bool
+    secret_free: bool
+    private_material_free: bool
+    generated_runtime_state_free: bool
+    live_execution_claim_free: bool
+
+
+class EvalPresetReadinessReport(BaseModel):
+    """Public readiness summary for the Spec 07 compact-eval presets."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: StrictInt = EVAL_PRESET_SCHEMA_VERSION
+    available: bool
+    harness_ids: tuple[StrictStr, ...]
+    compile_cases: tuple[EvalPresetCompileCase, ...]
+    contract_gaps: tuple[EvalPresetContractGap, ...]
+    source_records: tuple[EvalPresetSourceRecordEvidence, ...]
+    compiled_plans: tuple[EvalPresetCompiledPlanEvidence, ...]
+    tool_catalog: EvalPresetCatalogEvidence
+    model_profile_catalog: EvalPresetCatalogEvidence
+    hygiene: EvalPresetHygieneEvidence
+
+
+class _EvalModelProfileCatalogSnapshot:
+    """Deterministic public eval model-profile catalog for offline compilation."""
+
+    def __init__(self) -> None:
+        profile = admit_model_profile(
+            CompiledModelProfile(profile_id=EVAL_PRESET_MODEL_PROFILE_ID),
+            expected_profile_id=EVAL_PRESET_MODEL_PROFILE_ID,
+        )
+        self._profiles = MappingProxyType({EVAL_PRESET_MODEL_PROFILE_ID: profile})
+
+    @property
+    def snapshot_id(self) -> str:
+        return _stable_sha256(
+            {
+                "kind": "eval_preset_model_profile_catalog",
+                "version": 1,
+                "profile_ids": tuple(self._profiles),
+            }
+        )
+
+    @property
+    def snapshot_sha256(self) -> str:
+        return _stable_sha256(
+            {
+                "profiles": {
+                    profile_id: profile.model_dump(mode="json")
+                    for profile_id, profile in self._profiles.items()
+                }
+            }
+        )
+
+    def resolve_exact(self, profile_id: str) -> ModelProfileCatalogLookup:
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            return ModelProfileCatalogLookup.missing(
+                error_code="profile.missing",
+                evidence={"profile_id": profile_id},
+            )
+        return ModelProfileCatalogLookup.found(profile)
+
+
 _PRESET_IDS: Mapping[EvalStageId, EvalPresetId] = MappingProxyType(
     {
         EvalStageId.PLANNER: EvalPresetId.PLANNER_SINGLE_TASK,
@@ -244,6 +425,12 @@ def _stable_json(value: Any) -> str:
         separators=(",", ":"),
         default=str,
     )
+
+
+def _stable_sha256(value: Any) -> str:
+    import hashlib
+
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
 
 
 def _source_payload_for_stage(stage_id: EvalStageId) -> dict[str, Any]:
@@ -710,6 +897,94 @@ def eval_preset_contract_gaps() -> tuple[EvalPresetContractGap, ...]:
     return _CONTRACT_GAPS
 
 
+def eval_spec_07_presets_available() -> tuple[str, ...]:
+    """Return the exact public Spec 07 preset harness IDs available to compile."""
+    return tuple(record.harness_id for record in _SOURCE_RECORDS)
+
+
+def eval_preset_readiness_report() -> EvalPresetReadinessReport:
+    """Return public readiness metadata for the compact-eval preset surface."""
+    compiled_records = compile_all_eval_presets()
+    report = EvalPresetReadinessReport(
+        available=True,
+        harness_ids=eval_spec_07_presets_available(),
+        compile_cases=_COMPILE_CASES,
+        contract_gaps=_CONTRACT_GAPS,
+        source_records=tuple(
+            _source_record_evidence(case, compiled_record)
+            for case, compiled_record in zip(_COMPILE_CASES, compiled_records)
+        ),
+        compiled_plans=tuple(
+            _compiled_plan_evidence(compiled_record)
+            for compiled_record in compiled_records
+        ),
+        tool_catalog=_tool_catalog_evidence(),
+        model_profile_catalog=_model_profile_catalog_evidence(),
+        hygiene=EvalPresetHygieneEvidence(
+            ascii_safe=True,
+            host_path_free=True,
+            secret_free=True,
+            private_material_free=True,
+            generated_runtime_state_free=True,
+            live_execution_claim_free=True,
+        ),
+    )
+    _validate_readiness_report_closure(report, compiled_records)
+    _reject_public_material_leaks(report.model_dump(mode="json"))
+    return report
+
+
+def eval_spec_07_static_readiness_proven(
+    report: EvalPresetReadinessReport | None = None,
+) -> bool:
+    """Return whether public Spec 07 presets satisfy static readiness only."""
+    report = report or eval_preset_readiness_report()
+    required_harness_ids = tuple(
+        EVAL_PRESET_HARNESS_IDS[stage_id] for stage_id in EvalStageId
+    )
+    hygiene = report.hygiene
+    return (
+        report.available
+        and report.harness_ids == required_harness_ids
+        and len(report.source_records) == len(required_harness_ids)
+        and len(report.compiled_plans) == len(required_harness_ids)
+        and all(
+            plan.harness_id == required_harness_ids[index]
+            and plan.parse_diagnostic_count == 0
+            and plan.semantic_diagnostic_count == 0
+            and plan.compiled_sha256 == plan.verified_compiled_sha256
+            and not plan.hash_verification_warnings
+            for index, plan in enumerate(report.compiled_plans)
+        )
+        and hygiene.ascii_safe
+        and hygiene.host_path_free
+        and hygiene.secret_free
+        and hygiene.private_material_free
+        and hygiene.generated_runtime_state_free
+        and hygiene.live_execution_claim_free
+    )
+
+
+def compile_all_eval_presets() -> tuple[EvalPresetCompiledRecord, ...]:
+    """Compile all public Spec 07 eval preset sources offline and verify hashes."""
+    with tempfile.TemporaryDirectory(prefix="millforge-eval-presets-") as temp_root:
+        root = Path(temp_root)
+        source_root = root / "source"
+        output_root = root / "output"
+        output_dir = "compiled"
+        source_root.mkdir()
+        output_root.joinpath(output_dir).mkdir(parents=True)
+        return tuple(
+            _compile_eval_preset_case(
+                case,
+                source_root=source_root,
+                output_root=output_root,
+                output_dir=output_dir,
+            )
+            for case in _COMPILE_CASES
+        )
+
+
 def _compile_case_for_stage(stage_id: EvalStageId) -> EvalPresetCompileCase:
     graph = default_compact_eval_workflow_graph()
     contract = graph.stage_contracts[stage_id]
@@ -724,6 +999,371 @@ def _compile_case_for_stage(stage_id: EvalStageId) -> EvalPresetCompileCase:
         readiness_status=EvalPresetReadinessStatus.BLOCKED_BY_CONTRACT_GAP,
         contract_gap_ids=_STAGE_GAP_IDS[stage_id],
     )
+
+
+def _compile_eval_preset_case(
+    case: EvalPresetCompileCase,
+    *,
+    source_root: Path,
+    output_root: Path,
+    output_dir: str,
+) -> EvalPresetCompiledRecord:
+    source = eval_preset_source_record(case.harness_id)
+    source_path = f"{case.harness_id}.json"
+    source_bytes = _source_document_bytes(source)
+    source_root.joinpath(source_path).write_bytes(source_bytes)
+
+    parsed = HarnessSourceParser().parse(
+        SourceDocument(
+            logical_path=source_path,
+            format="json",
+            content=source_bytes,
+        )
+    )
+    request = _compile_request_for_case(
+        case,
+        source_path=source_path,
+        source_root=source_root,
+        output_root=output_root,
+        output_dir=output_dir,
+    )
+    semantic = compile_semantic(
+        CompileInvocation.from_request(request),
+        parsed.source or source,
+        tool_snapshot=create_builtin_tool_snapshot(),
+        model_profile_snapshot=_EvalModelProfileCatalogSnapshot(),
+    )
+    if semantic.resolved_harness is not None:
+        lowered = lower_resolved_harness(semantic.resolved_harness)
+    else:
+        lowered = None
+    compile_result = compile(
+        request,
+        tool_catalog=create_builtin_tool_snapshot(),
+        model_profile_catalog=_EvalModelProfileCatalogSnapshot(),
+    )
+    if compile_result.compiled_plan_path is None:
+        raise RuntimeError(
+            f"eval preset compilation did not publish a plan for {case.harness_id}"
+        )
+    compiled_plan_path = output_root / compile_result.compiled_plan_path
+    compiled_plan_bytes = compiled_plan_path.read_text(encoding="utf-8")
+    verified, computed, warnings, restored = verify_compiled_plan_sha256(
+        compiled_plan_bytes,
+        expected_compiled_hash=compile_result.compiled_sha256,
+        expected_harness_id=case.harness_id,
+        expected_harness_version=source.harness_version,
+    )
+    if not verified:
+        raise RuntimeError(
+            f"eval preset compiled hash verification failed for {case.harness_id}"
+        )
+    compiled_plan = restored if restored is not None else lowered
+    if compiled_plan is None:
+        raise RuntimeError(
+            f"eval preset compilation did not produce a plan for {case.harness_id}"
+        )
+    return EvalPresetCompiledRecord(
+        preset_id=case.preset_id,
+        harness_id=case.harness_id,
+        stage_id=case.stage_id,
+        source_document_sha256=parsed.source_document_sha256,
+        source_sha256=compiled_plan.source_sha256,
+        compiled_sha256=compiled_plan.compiled_sha256,
+        parse_diagnostics=parsed.diagnostics,
+        semantic_diagnostics=semantic.diagnostics,
+        compile_result=compile_result,
+        compiled_plan=compiled_plan,
+        verified_compiled_sha256=computed,
+        hash_verification_warnings=tuple(warnings),
+    )
+
+
+def _compile_request_for_case(
+    case: EvalPresetCompileCase,
+    *,
+    source_path: str,
+    source_root: Path,
+    output_root: Path,
+    output_dir: str,
+) -> HarnessCompileRequest:
+    return HarnessCompileRequest(
+        request_id=f"request.{case.stage_id.value}.spec07.public-preset.v1",
+        source_path=source_path,
+        source_root=str(source_root),
+        source_format="json",
+        output_dir=output_dir,
+        output_root=str(output_root),
+        expected_harness_id=case.harness_id,
+        stage_kind_id=case.stage_id.value,
+        legal_terminal_results=tuple(
+            result.value for result in case.legal_terminal_results
+        ),
+        capability_envelope=CapabilityEnvelope(
+            grants=tuple(
+                CapabilityGrant(capability_id=capability_id)
+                for capability_id in case.required_capability_ids
+            )
+        ),
+    )
+
+
+def _source_document_bytes(source: HarnessSource) -> bytes:
+    return canonical_json_serialize(source.model_dump(mode="json")).encode("utf-8")
+
+
+def _source_record_evidence(
+    case: EvalPresetCompileCase,
+    compiled_record: EvalPresetCompiledRecord,
+) -> EvalPresetSourceRecordEvidence:
+    source = eval_preset_source_record(case.harness_id)
+    tool_snapshot = create_builtin_tool_snapshot()
+    descriptor_fingerprints: dict[str, str] = {}
+    capability_ids: set[str] = set()
+    for tool_ref in sorted({node.tool_ref for node in source.graph.nodes}):
+        tool_id, version = tool_ref.rsplit("@", 1)
+        lookup = tool_snapshot.resolve_exact(tool_id, int(version))
+        if lookup.entry is None:
+            raise ValueError(f"unresolved Spec 07 tool reference: {tool_ref}")
+        descriptor_fingerprints[tool_ref] = lookup.entry.descriptor_sha256
+        capability_ids.update(lookup.entry.required_capabilities)
+
+    return EvalPresetSourceRecordEvidence(
+        preset_id=case.preset_id,
+        harness_id=source.harness_id,
+        stage_id=case.stage_id.value,
+        source_document_sha256=compiled_record.source_document_sha256,
+        source_sha256=compiled_record.source_sha256,
+        descriptor_fingerprints=descriptor_fingerprints,
+        model_profile_id=source.model_profile_id,
+        legal_terminal_results=tuple(
+            result.value for result in case.legal_terminal_results
+        ),
+        declared_artifact_ids=source.artifacts.declared_artifact_ids,
+        terminal_required_artifacts=tuple(
+            EvalPresetTerminalArtifactEvidence(
+                terminal_result=item.terminal_result,
+                artifact_ids=item.artifact_ids,
+            )
+            for item in source.artifacts.required_by_terminal
+        ),
+        terminal_gated_artifact_producers=_terminal_gated_artifact_producers(source),
+        required_tool_capability_ids=tuple(sorted(capability_ids)),
+        bounded_budget=EvalPresetBoundedBudgetEvidence(
+            max_iterations=source.budgets.max_iterations,
+            max_validation_retries=source.budgets.max_validation_retries,
+            max_tool_errors=source.budgets.max_tool_errors,
+            max_prerequisite_violations=source.budgets.max_prerequisite_violations,
+            max_premature_terminal_attempts=(
+                source.budgets.max_premature_terminal_attempts
+            ),
+            context_budget_tokens=source.context.budget_tokens,
+        ),
+        source_location_evidence="millforge.eval_presets:public_static_source",
+    )
+
+
+def _terminal_gated_artifact_producers(
+    source: HarnessSource,
+) -> Mapping[str, tuple[str, ...]]:
+    nodes_by_id = {node.node_id: node for node in source.graph.nodes}
+    producer_by_artifact: dict[str, str] = {
+        artifact_id: node.node_id
+        for node in source.graph.nodes
+        for artifact_id in node.produces
+    }
+    terminal_nodes = {
+        node.terminal_result: node
+        for node in source.graph.nodes
+        if node.terminal_result
+    }
+    evidence: dict[str, tuple[str, ...]] = {}
+    for requirement in source.artifacts.required_by_terminal:
+        terminal = terminal_nodes.get(requirement.terminal_result)
+        if terminal is None:
+            evidence[requirement.terminal_result] = ()
+            continue
+        terminal_prerequisites = _transitive_prerequisite_ids(
+            terminal.node_id, nodes_by_id
+        )
+        gated = tuple(
+            producer_by_artifact[artifact_id]
+            for artifact_id in requirement.artifact_ids
+            if producer_by_artifact.get(artifact_id) in terminal_prerequisites
+        )
+        evidence[requirement.terminal_result] = gated
+    return MappingProxyType(evidence)
+
+
+def _transitive_prerequisite_ids(
+    node_id: str, nodes_by_id: Mapping[str, Any]
+) -> set[str]:
+    visited: set[str] = set()
+
+    def visit(current_id: str) -> None:
+        node = nodes_by_id[current_id]
+        for prerequisite in node.prerequisites:
+            if prerequisite.node_id in visited:
+                continue
+            visited.add(prerequisite.node_id)
+            visit(prerequisite.node_id)
+
+    visit(node_id)
+    return visited
+
+
+def _compiled_plan_evidence(
+    compiled_record: EvalPresetCompiledRecord,
+) -> EvalPresetCompiledPlanEvidence:
+    return EvalPresetCompiledPlanEvidence(
+        harness_id=compiled_record.harness_id,
+        stage_id=compiled_record.stage_id.value,
+        compiled_sha256=compiled_record.compiled_sha256,
+        verified_compiled_sha256=compiled_record.verified_compiled_sha256,
+        parse_diagnostic_count=len(compiled_record.parse_diagnostics),
+        semantic_diagnostic_count=len(compiled_record.semantic_diagnostics),
+        hash_verification_warnings=compiled_record.hash_verification_warnings,
+    )
+
+
+def _tool_catalog_evidence() -> EvalPresetCatalogEvidence:
+    snapshot = create_builtin_tool_snapshot()
+    return EvalPresetCatalogEvidence(
+        catalog_kind="builtin_tool_catalog",
+        snapshot_id=snapshot.snapshot_id,
+        snapshot_sha256=snapshot.snapshot_sha256,
+    )
+
+
+def _model_profile_catalog_evidence() -> EvalPresetCatalogEvidence:
+    snapshot = _EvalModelProfileCatalogSnapshot()
+    return EvalPresetCatalogEvidence(
+        catalog_kind="eval_model_profile_catalog",
+        snapshot_id=snapshot.snapshot_id,
+        snapshot_sha256=snapshot.snapshot_sha256,
+    )
+
+
+def _validate_readiness_report_closure(
+    report: EvalPresetReadinessReport,
+    compiled_records: tuple[EvalPresetCompiledRecord, ...],
+) -> None:
+    expected_harness_ids = tuple(
+        EVAL_PRESET_HARNESS_IDS[stage_id] for stage_id in EvalStageId
+    )
+    if report.harness_ids != expected_harness_ids:
+        raise ValueError("readiness report harness IDs must match Spec 07 exactly")
+    if any(
+        harness_id.startswith("millforge.test.builtin.")
+        for harness_id in report.harness_ids
+    ):
+        raise ValueError("readiness report must not expose legacy builtin harness IDs")
+    if len(set(report.harness_ids)) != len(report.harness_ids):
+        raise ValueError("readiness report harness IDs must be unique")
+
+    expected_stage_ids = tuple(stage_id.value for stage_id in EvalStageId)
+    if tuple(record.stage_id for record in report.source_records) != expected_stage_ids:
+        raise ValueError("readiness report stage IDs must match compact eval stages")
+    old_stage_ids = {"planner", "builder", "checker", "arbiter"}
+    if old_stage_ids.intersection(record.stage_id for record in report.source_records):
+        raise ValueError("readiness report must not expose old stage IDs")
+    old_terminals = {
+        "PLANNER_COMPLETE",
+        "BUILDER_DONE",
+        "CHECKER_COMPLETE",
+        "ARBITER_COMPLETE",
+    }
+    if any(
+        terminal in old_terminals
+        for record in report.source_records
+        for terminal in record.legal_terminal_results
+    ):
+        raise ValueError("readiness report must not expose old terminal names")
+
+    forbidden_authority_prefixes = (
+        "connector.",
+        "custom.",
+        "network.",
+        "package.",
+        "git.",
+        "runtime_control.",
+        "runtime-control.",
+    )
+    for case in report.compile_cases:
+        if case.stage_id == EvalStageId.PLANNER and (
+            "workspace.read" in case.required_capability_ids
+        ):
+            raise ValueError("planner readiness must not grant workspace-read")
+        if any(
+            capability_id.startswith(forbidden_authority_prefixes)
+            for capability_id in case.required_capability_ids
+        ):
+            raise ValueError("readiness compile cases contain forbidden authority")
+
+    for source, evidence, compiled_record in zip(
+        _SOURCE_RECORDS, report.source_records, compiled_records
+    ):
+        _reject_public_material_leaks(source.model_dump(mode="json"))
+        tool_refs = tuple(node.tool_ref for node in source.graph.nodes)
+        if len(tool_refs) != len(set(tool_refs)):
+            raise ValueError("readiness source records must not duplicate tool refs")
+        if (
+            evidence.required_tool_capability_ids
+            != compiled_record.compiled_plan.required_capabilities
+        ):
+            raise ValueError("readiness capability evidence must match compiled plans")
+        if evidence.harness_id != compiled_record.harness_id:
+            raise ValueError("readiness source and compiled evidence must align")
+        declared_artifacts = set(evidence.declared_artifact_ids)
+        for artifact_id in declared_artifacts:
+            if (
+                "/" in artifact_id
+                or "\\" in artifact_id
+                or artifact_id.endswith(".json")
+            ):
+                raise ValueError("readiness artifacts must use logical artifact IDs")
+        for requirement in evidence.terminal_required_artifacts:
+            if not set(requirement.artifact_ids).issubset(declared_artifacts):
+                raise ValueError("terminal artifacts must be declared logical IDs")
+            if len(
+                evidence.terminal_gated_artifact_producers[requirement.terminal_result]
+            ) != len(requirement.artifact_ids):
+                raise ValueError(
+                    "terminal-required artifacts need terminal-gated producers"
+                )
+        if evidence.stage_id == EvalStageId.PLANNER.value:
+            if any(".workspace." in tool_ref for tool_ref in tool_refs):
+                raise ValueError("planner readiness must remain workspace-tool free")
+            if "workspace.read" in evidence.required_tool_capability_ids:
+                raise ValueError("planner readiness must not grant workspace-read")
+        if (
+            evidence.stage_id == EvalStageId.CHECKER.value
+            and "arbiter_verdict" in declared_artifacts
+        ):
+            raise ValueError("checker readiness must not write arbiter verdicts")
+        if (
+            evidence.stage_id == EvalStageId.ARBITER.value
+            and "checker_verdict" in declared_artifacts
+        ):
+            raise ValueError("arbiter readiness must not write checker verdicts")
+        if any(
+            capability_id.startswith(forbidden_authority_prefixes)
+            for capability_id in evidence.required_tool_capability_ids
+        ):
+            raise ValueError("readiness report contains forbidden authority")
+
+    rendered = _stable_json(report.model_dump(mode="json"))
+    if not rendered.isascii():
+        raise ValueError("readiness report must be ASCII-safe")
+    forbidden_claims = (
+        "live eval execution",
+        "live model calls",
+        "pi runtime support is admitted",
+        "external millrace runtime integration",
+    )
+    lowered = rendered.lower()
+    if any(claim in lowered for claim in forbidden_claims):
+        raise ValueError("readiness report must not claim live execution admission")
 
 
 _SOURCE_RECORDS: tuple[HarnessSource, ...] = tuple(
@@ -742,11 +1382,17 @@ __all__ = [
     "EVAL_PRESET_MODEL_PROFILE_ID",
     "EVAL_PRESET_SCHEMA_VERSION",
     "EvalPresetCompileCase",
+    "EvalPresetCompiledRecord",
     "EvalPresetContractGap",
     "EvalPresetId",
+    "EvalPresetReadinessReport",
     "EvalPresetReadinessStatus",
+    "compile_all_eval_presets",
     "eval_preset_contract_gaps",
+    "eval_preset_readiness_report",
     "eval_preset_source_record",
+    "eval_spec_07_presets_available",
+    "eval_spec_07_static_readiness_proven",
     "iter_eval_preset_compile_cases",
     "iter_eval_preset_source_records",
 ]

@@ -38,6 +38,10 @@ from millforge.eval_modes import (
     default_eval_small_millforge_mode,
     default_eval_small_pi_mode,
 )
+from millforge.eval_presets import (
+    eval_preset_readiness_report,
+    eval_spec_07_static_readiness_proven,
+)
 from millforge.eval_workflow import (
     EvalStageId,
     EvalTerminalResult,
@@ -330,6 +334,34 @@ def test_default_deferred_dependencies_include_live_admission_semantics() -> Non
     assert "named but not implemented" not in millforge_dependency.summary
 
 
+def test_static_spec_07_readiness_removes_only_harness_preset_dependency() -> None:
+    readiness_proven = eval_spec_07_static_readiness_proven(
+        eval_preset_readiness_report()
+    )
+    before_readiness = default_eval_small_millforge_mode(
+        spec_07_static_presets_ready=False
+    )
+    after_readiness = default_eval_small_millforge_mode(
+        spec_07_static_presets_ready=readiness_proven
+    )
+
+    assert readiness_proven is True
+    assert {
+        dependency.dependency_id
+        for dependency in before_readiness.deferred_dependencies
+    } == {"spec_07_harness_presets"}
+    assert after_readiness.deferred_dependencies == ()
+    assert before_readiness.fairness_fingerprint == (
+        after_readiness.fairness_fingerprint
+    )
+    assert calculate_eval_mode_fairness_fingerprint(before_readiness) == (
+        calculate_eval_mode_fairness_fingerprint(after_readiness)
+    )
+    assert calculate_eval_mode_fairness_fingerprint(default_eval_small_pi_mode()) == (
+        calculate_eval_mode_fairness_fingerprint(after_readiness)
+    )
+
+
 def test_default_fairness_comparison_is_engineering_smoke_only() -> None:
     report = compare_eval_modes_for_fairness()
 
@@ -459,6 +491,38 @@ def test_live_admission_fails_closed_with_structured_deferred_dependencies() -> 
         "resource_ceiling_enforcement",
         "fixture_workspace_creation",
     }
+
+
+def test_live_admission_readds_harness_dependency_after_static_readiness() -> None:
+    readiness_mode = default_eval_small_millforge_mode(
+        spec_07_static_presets_ready=True
+    )
+
+    admission = admit_eval_mode_live_execution(readiness_mode)
+    live_presets_admitted = admit_eval_mode_live_execution(
+        readiness_mode,
+        spec_07_harness_presets_available=True,
+    )
+
+    assert readiness_mode.deferred_dependencies == ()
+    assert {
+        dependency.dependency_id for dependency in admission.deferred_dependencies
+    } == {
+        "spec_07_harness_presets",
+        "model_backend_configuration",
+        "resource_ceiling_enforcement",
+        "fixture_workspace_creation",
+    }
+    assert {
+        dependency.dependency_id
+        for dependency in live_presets_admitted.deferred_dependencies
+    } == {
+        "model_backend_configuration",
+        "resource_ceiling_enforcement",
+        "fixture_workspace_creation",
+    }
+    assert admission.admitted is False
+    assert live_presets_admitted.admitted is False
 
 
 def test_descriptor_owned_mappings_are_immutable_after_validation() -> None:
