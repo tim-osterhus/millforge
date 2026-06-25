@@ -274,8 +274,15 @@ content inspection without live provider calls. The public offline Spec 07
 preset registry and readiness report now live in `millforge.eval_presets`,
 the public offline 08B eval-trial contract boundary, including
 caller-selected append-only campaign-store APIs, now lives in
-`millforge.eval_trials`, while live Spec 07 execution and admission remain
-deferred to the owning workstream.
+`millforge.eval_trials`, and the public offline 08C eval-reporting layer,
+including budget policy, live-admission diagnostics, metric aggregation, and
+deterministic JSON/Markdown report generation, now lives in
+`millforge.eval_reports`, while live Spec 07 execution and admission remain
+deferred to the owning workstream. The 08C `report.json`, `report.md`, and
+report-hash artifacts are deterministic offline evidence only: they document
+campaign contracts, budget/admission state, metrics, confounds, decision rules,
+and reproducibility hashes, and they explicitly do not support Pi-vs-Millforge
+model-performance conclusions from offline fake execution.
 
 03C R2 closure evidence maps the latest Arbiter gaps to completed work:
 canonical lowering/internal diagnostic meanings, three representative YAML/JSON

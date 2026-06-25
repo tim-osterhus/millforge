@@ -541,19 +541,29 @@ def test_offline_fake_runner_emits_scorer_compatible_outcome_shapes(
         EvalTrialArmId.EVAL_SMALL_MILLFORGE.value,
     }
     assert serialized_record["resource_summary"]["zero_external_usage"] is True
+    assert serialized_record["resource_summary"]["artifact_bytes"] > 0
+    assert serialized_record["resource_summary"]["turn_count"] == 0
+    assert serialized_record["resource_summary"]["invalid_tool_call_count"] == 0
+    assert serialized_record["resource_summary"]["malformed_argument_count"] == 0
+    assert serialized_record["resource_summary"]["prerequisite_violation_count"] == 0
+    assert serialized_record["resource_summary"]["premature_terminal_count"] == 0
+    assert serialized_record["resource_summary"]["tool_recovery_count"] == 0
     assert serialized_record["model_usage_summary"]["zero_model_usage"] is True
     assert "compiled_harness_hashes" in serialized_record
     assert "artifact_manifest_hashes" in serialized_record
     assert "scorer_public_summaries" in serialized_record
     assert "scorer_result_hashes" in serialized_record
-    assert calculate_eval_trial_record_hash(
-        run.trial_record.model_copy(
-            update={
-                "fixture_snapshot_hash": "f" * 64,
-                "record_hash": "0" * 64,
-            }
+    assert (
+        calculate_eval_trial_record_hash(
+            run.trial_record.model_copy(
+                update={
+                    "fixture_snapshot_hash": "f" * 64,
+                    "record_hash": "0" * 64,
+                }
+            )
         )
-    ) != run.trial_record.record_hash
+        != run.trial_record.record_hash
+    )
     if expected_outcome is EvalTrialOutcome.INVALID_TRIAL:
         assert set(serialized_record["invalid_trial_explanations"]) == {
             EvalTrialArmId.EVAL_SMALL_PI.value,
@@ -753,7 +763,9 @@ def test_campaign_store_appends_records_and_rejects_duplicates(tmp_path) -> None
     assert trials_path.read_bytes().endswith(b"\n")
     assert (campaign_dir / "artifacts").is_dir()
     serialized = json.loads(trials_path.read_text(encoding="ascii"))
-    assert serialized["fixture_instance_id"] == plan.fixture_instance.fixture_instance_id
+    assert (
+        serialized["fixture_instance_id"] == plan.fixture_instance.fixture_instance_id
+    )
     assert serialized["fixture_snapshot_hash"] == (
         plan.fixture_instance.fixture_snapshot_hash
     )

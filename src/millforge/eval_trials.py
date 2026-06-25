@@ -737,13 +737,30 @@ class EvalTrialResourceSummary(EvalTrialContractModel):
     """Public resource-use summary for deterministic offline records."""
 
     artifact_count: StrictInt
+    artifact_bytes: StrictInt = 0
+    turn_count: StrictInt = 0
+    invalid_tool_call_count: StrictInt = 0
+    malformed_argument_count: StrictInt = 0
+    prerequisite_violation_count: StrictInt = 0
+    premature_terminal_count: StrictInt = 0
+    tool_recovery_count: StrictInt = 0
     resource_artifact_hashes: tuple[EvalHashRecord, ...] = Field(default_factory=tuple)
     zero_external_usage: StrictBool = True
 
     @model_validator(mode="after")
     def _resource_summary_valid(self) -> EvalTrialResourceSummary:
-        if self.artifact_count < 0:
-            raise ValueError("artifact_count must be non-negative")
+        for field_name in (
+            "artifact_count",
+            "artifact_bytes",
+            "turn_count",
+            "invalid_tool_call_count",
+            "malformed_argument_count",
+            "prerequisite_violation_count",
+            "premature_terminal_count",
+            "tool_recovery_count",
+        ):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
         if not self.zero_external_usage:
             raise ValueError("offline trial records must preserve zero external usage")
         return self
@@ -2200,6 +2217,11 @@ def _trial_resource_summary(
     hashes = tuple(record for bundle in bundles for record in bundle.artifact_hashes)
     return EvalTrialResourceSummary(
         artifact_count=sum(len(bundle.artifact_hashes) for bundle in bundles),
+        artifact_bytes=sum(
+            entry.byte_size
+            for bundle in bundles
+            for entry in bundle.artifact_manifest.entries
+        ),
         resource_artifact_hashes=hashes,
         zero_external_usage=all(bundle.zero_external_usage for bundle in bundles),
     )
