@@ -9,6 +9,7 @@ import shlex
 from importlib.resources import files
 from collections.abc import Mapping
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
@@ -33,6 +34,8 @@ EVAL_SUITE_DEFAULT_CAMPAIGN_ID = "eval.08a.default.offline.v1"
 EVAL_SUITE_DEFAULT_CAMPAIGN_CREATED_AT = "1970-01-01T00:00:00Z"
 EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID = "pack.08a.offline.default.v1"
 EVAL_SUITE_DEFAULT_SCORER_VERSION = "eval_suite.scorer.contract.v1"
+EVAL_SUITE_OUTPUT_ROOT_HASH_KIND = "eval_suite_output_root_sha256_v1"
+EVAL_SUITE_CLOSURE_EVIDENCE_HASH_KIND = "eval_suite_offline_closure_evidence_sha256_v1"
 
 _EVAL_FIXTURE_PACK_PACKAGE = "millforge.eval_fixtures.default_pack"
 _EVAL_FIXTURE_PACK_MANIFEST = "manifest.json"
@@ -190,6 +193,18 @@ class EvalTrialOutcome(str, Enum):
     INVALID_TRIAL = "invalid_trial"
 
 
+class EvalOfflineDryCampaignDiagnosticCode(str, Enum):
+    """Fail-closed diagnostics for offline dry-campaign preflight."""
+
+    MISSING_BUDGET_POLICY = "missing_budget_policy"
+    INVALID_BUDGET_POLICY = "invalid_budget_policy"
+    LIVE_EXECUTION_UNAVAILABLE = "live_execution_unavailable"
+    UNSAFE_OUTPUT_ROOT = "unsafe_output_root"
+    FIXTURE_PACK_UNAVAILABLE = "fixture_pack_unavailable"
+    INVALID_TRIAL_COUNT = "invalid_trial_count"
+    MANIFEST_CONFLICT = "manifest_conflict"
+
+
 class EvalFailureTaxonomyLabel(str, Enum):
     """Closed public failure taxonomy labels for scorer results."""
 
@@ -231,6 +246,272 @@ class EvalLiveDenialDiagnostic(EvalSuiteContractModel):
     diagnostic_code: StrictStr
     summary: StrictStr
     rule_id: StrictStr
+
+
+class EvalOfflineDryCampaignDiagnostic(EvalSuiteContractModel):
+    """Structured public diagnostic for dry-campaign validation failures."""
+
+    diagnostic_code: EvalOfflineDryCampaignDiagnosticCode
+    rule_id: StrictStr
+    summary: StrictStr
+
+
+class EvalOfflineDryCampaignConfig(EvalSuiteContractModel):
+    """Public offline dry-campaign configuration after preflight validation."""
+
+    schema_version: StrictInt = EVAL_SUITE_SCHEMA_VERSION
+    fixture_pack_id: StrictStr = EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID
+    fixture_ids: tuple[StrictStr, ...]
+    deterministic_seed: StrictInt = Field(ge=0)
+    trial_count_per_fixture_per_arm: StrictInt = Field(gt=0)
+    output_root_hash_kind: StrictStr = EVAL_SUITE_OUTPUT_ROOT_HASH_KIND
+    output_root_hash: StrictStr
+    output_root_policy: StrictStr = "caller_provided_preflight_validated"
+
+    @model_validator(mode="after")
+    def _config_valid(self) -> EvalOfflineDryCampaignConfig:
+        if self.schema_version != EVAL_SUITE_SCHEMA_VERSION:
+            raise ValueError("unsupported eval-suite dry-campaign schema_version")
+        if self.fixture_pack_id != EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID:
+            raise ValueError("only the default offline fixture pack is installed")
+        if not self.fixture_ids:
+            raise ValueError("dry campaigns require at least one fixture")
+        if len(set(self.fixture_ids)) != len(self.fixture_ids):
+            raise ValueError("dry-campaign fixture IDs must be unique")
+        if self.output_root_hash_kind != EVAL_SUITE_OUTPUT_ROOT_HASH_KIND:
+            raise ValueError("unsupported output root hash kind")
+        _validate_sha256(self.output_root_hash)
+        return self
+
+
+class EvalOfflineDryCampaignPlan(EvalSuiteContractModel):
+    """Public preflight result for a deterministic offline fake campaign."""
+
+    schema_version: StrictInt = EVAL_SUITE_SCHEMA_VERSION
+    config: EvalOfflineDryCampaignConfig
+    campaign_manifest: EvalCampaignManifest
+    fixture_pack_summary: EvalFixturePackSummary
+    admitted_arm_ids: tuple[StrictStr, StrictStr]
+    paired_plan_count: StrictInt = Field(ge=0)
+    planned_arm_trial_count: StrictInt = Field(ge=0)
+    trial_plan_hashes: tuple[StrictStr, ...]
+    campaign_store_root: StrictStr
+    manifest_relative_path: StrictStr
+    budget_policy_ref: EvalBudgetPolicyReference
+    live_execution_admitted: StrictBool = False
+    diagnostics: tuple[EvalOfflineDryCampaignDiagnostic, ...] = Field(
+        default_factory=tuple
+    )
+
+    @model_validator(mode="after")
+    def _dry_plan_valid(self) -> EvalOfflineDryCampaignPlan:
+        if self.schema_version != EVAL_SUITE_SCHEMA_VERSION:
+            raise ValueError("unsupported eval-suite dry-campaign schema_version")
+        if (
+            self.campaign_manifest.execution_mode
+            is not EvalSuiteExecutionMode.OFFLINE_FAKE
+        ):
+            raise ValueError("dry campaigns must use offline fake execution")
+        if (
+            self.live_execution_admitted
+            or self.campaign_manifest.live_execution_admitted
+        ):
+            raise ValueError("dry campaigns do not admit live execution")
+        if self.fixture_pack_summary.fixture_pack_id != self.config.fixture_pack_id:
+            raise ValueError("fixture pack summary must match dry-campaign config")
+        if self.fixture_pack_summary.fixture_pack_hash != (
+            self.campaign_manifest.fixture_pack_hash
+        ):
+            raise ValueError("campaign manifest must reference fixture pack summary")
+        if self.paired_plan_count != len(self.trial_plan_hashes):
+            raise ValueError("paired_plan_count must match trial_plan_hashes")
+        if self.planned_arm_trial_count != self.paired_plan_count * len(
+            self.admitted_arm_ids
+        ):
+            raise ValueError("planned_arm_trial_count must match admitted arms")
+        for digest in self.trial_plan_hashes:
+            _validate_sha256(digest)
+        _validate_relative_artifact_root(self.campaign_store_root)
+        _validate_relative_artifact_root(self.manifest_relative_path)
+        if self.diagnostics:
+            raise ValueError("valid dry-campaign plans must not carry diagnostics")
+        return self
+
+
+class EvalOfflineDryCampaignRunResult(EvalSuiteContractModel):
+    """Filesystem result from one deterministic offline fake campaign run."""
+
+    schema_version: StrictInt = EVAL_SUITE_SCHEMA_VERSION
+    dry_campaign_plan: EvalOfflineDryCampaignPlan
+    report_id: StrictStr
+    campaign_store_root: StrictStr
+    manifest_relative_path: StrictStr
+    plan_relative_path: StrictStr
+    trials_relative_path: StrictStr
+    index_relative_path: StrictStr
+    artifact_root_relative_path: StrictStr
+    report_relative_paths: Mapping[StrictStr, StrictStr]
+    completed_trial_ids: tuple[StrictStr, ...]
+    pending_trial_ids: tuple[StrictStr, ...]
+    appended_trial_ids: tuple[StrictStr, ...]
+    trial_plan_hashes: tuple[StrictStr, ...]
+    trial_record_hashes: tuple[StrictStr, ...]
+    resume_index_hash: StrictStr
+    report_hash: StrictStr
+    report_json_hash: StrictStr
+    report_markdown_hash: StrictStr
+    closure_evidence_relative_path: StrictStr
+    closure_evidence_hash: StrictStr
+    live_execution_admitted: StrictBool = False
+
+    @model_validator(mode="after")
+    def _run_result_valid(self) -> EvalOfflineDryCampaignRunResult:
+        if self.schema_version != EVAL_SUITE_SCHEMA_VERSION:
+            raise ValueError("unsupported eval-suite dry-campaign schema_version")
+        if self.live_execution_admitted:
+            raise ValueError("dry campaigns do not admit live execution")
+        if self.campaign_store_root != self.dry_campaign_plan.campaign_store_root:
+            raise ValueError("campaign store root must match dry-campaign plan")
+        for path_value in (
+            self.campaign_store_root,
+            self.manifest_relative_path,
+            self.plan_relative_path,
+            self.trials_relative_path,
+            self.index_relative_path,
+            self.artifact_root_relative_path,
+            self.closure_evidence_relative_path,
+            *self.report_relative_paths.values(),
+        ):
+            _validate_relative_artifact_root(path_value)
+        expected_prefix = f"{self.campaign_store_root}/"
+        for path_value in (
+            self.manifest_relative_path,
+            self.plan_relative_path,
+            self.trials_relative_path,
+            self.index_relative_path,
+            self.artifact_root_relative_path,
+            self.closure_evidence_relative_path,
+            *self.report_relative_paths.values(),
+        ):
+            if not path_value.startswith(expected_prefix):
+                raise ValueError("dry-campaign output paths must be campaign-relative")
+        for digest in (
+            *self.trial_plan_hashes,
+            *self.trial_record_hashes,
+            self.resume_index_hash,
+            self.report_hash,
+            self.report_json_hash,
+            self.report_markdown_hash,
+            self.closure_evidence_hash,
+        ):
+            _validate_sha256(digest)
+        if set(self.report_relative_paths) != {
+            "report.json",
+            "report.md",
+            "report.sha256",
+        }:
+            raise ValueError("dry-campaign reports must include the public report set")
+        object.__setattr__(
+            self,
+            "report_relative_paths",
+            _freeze_eval_suite_mapping(self.report_relative_paths),
+        )
+        return self
+
+
+class EvalOfflineDryCampaignClosureEvidence(EvalSuiteContractModel):
+    """Compact public closure evidence for one offline dry-campaign run."""
+
+    schema_version: StrictInt = EVAL_SUITE_SCHEMA_VERSION
+    campaign_id: StrictStr
+    report_id: StrictStr
+    fixture_pack_hash: StrictStr
+    campaign_manifest_hash: StrictStr
+    model_manifest_hash: StrictStr
+    workflow_graph_hash: StrictStr
+    trial_plan_hashes: tuple[StrictStr, ...]
+    trial_record_hashes: tuple[StrictStr, ...]
+    resume_index_hash: StrictStr
+    report_hash: StrictStr
+    report_json_hash: StrictStr
+    report_markdown_hash: StrictStr
+    counts: Mapping[StrictStr, StrictInt]
+    unresolved_live_dependencies: tuple[StrictStr, ...]
+    live_denial_diagnostic_codes: tuple[StrictStr, ...]
+    live_denial_test_coverage: tuple[StrictStr, ...]
+    treatment_compiled_harness_hashes: Mapping[StrictStr, StrictStr]
+    public_hygiene_checks: Mapping[StrictStr, StrictBool]
+    claim_boundary: StrictStr
+    closure_evidence_hash_kind: StrictStr = EVAL_SUITE_CLOSURE_EVIDENCE_HASH_KIND
+    closure_evidence_hash: StrictStr
+
+    @model_validator(mode="after")
+    def _closure_evidence_valid(self) -> EvalOfflineDryCampaignClosureEvidence:
+        if self.schema_version != EVAL_SUITE_SCHEMA_VERSION:
+            raise ValueError("unsupported eval-suite closure-evidence schema_version")
+        for digest in (
+            self.fixture_pack_hash,
+            self.campaign_manifest_hash,
+            self.model_manifest_hash,
+            self.workflow_graph_hash,
+            *self.trial_plan_hashes,
+            *self.trial_record_hashes,
+            self.resume_index_hash,
+            self.report_hash,
+            self.report_json_hash,
+            self.report_markdown_hash,
+            *self.treatment_compiled_harness_hashes.values(),
+            self.closure_evidence_hash,
+        ):
+            _validate_sha256(digest)
+        if self.closure_evidence_hash_kind != EVAL_SUITE_CLOSURE_EVIDENCE_HASH_KIND:
+            raise ValueError("unsupported closure evidence hash kind")
+        required_counts = {
+            "fixture_count",
+            "paired_plan_count",
+            "arm_trial_count",
+            "completed_trial_count",
+            "pending_trial_count",
+            "stored_trial_count",
+            "report_artifact_count",
+        }
+        if set(self.counts) != required_counts:
+            raise ValueError("closure evidence counts must use the compact count set")
+        if any(count < 0 for count in self.counts.values()):
+            raise ValueError("closure evidence counts must be non-negative")
+        required_hygiene = {
+            "absolute_paths_absent",
+            "home_paths_absent",
+            "urls_absent",
+            "auth_material_absent",
+            "runtime_state_absent",
+            "hidden_material_absent",
+            "raw_logs_absent",
+        }
+        if set(self.public_hygiene_checks) != required_hygiene:
+            raise ValueError("closure evidence must declare all public hygiene checks")
+        if not all(self.public_hygiene_checks.values()):
+            raise ValueError("closure evidence public hygiene checks must pass")
+        if not self.unresolved_live_dependencies:
+            raise ValueError("closure evidence must retain live dependency boundaries")
+        if not self.live_denial_diagnostic_codes:
+            raise ValueError("closure evidence must cite live denial diagnostics")
+        if not self.live_denial_test_coverage:
+            raise ValueError("closure evidence must cite denial regression coverage")
+        if not self.treatment_compiled_harness_hashes:
+            raise ValueError("closure evidence must include Spec 07E harness hashes")
+        object.__setattr__(self, "counts", _freeze_eval_suite_mapping(self.counts))
+        object.__setattr__(
+            self,
+            "treatment_compiled_harness_hashes",
+            _freeze_eval_suite_mapping(self.treatment_compiled_harness_hashes),
+        )
+        object.__setattr__(
+            self,
+            "public_hygiene_checks",
+            _freeze_eval_suite_mapping(self.public_hygiene_checks),
+        )
+        return self
 
 
 class EvalModelPricingMetadata(EvalSuiteContractModel):
@@ -795,6 +1076,419 @@ def default_eval_suite_campaign_manifest(
     return EvalCampaignManifest.model_validate(payload)
 
 
+def configure_offline_fake_eval_campaign(
+    *,
+    output_root: str | Path,
+    budget_policy: Any,
+    fixture_pack_id: str = EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID,
+    fixture_ids: tuple[str, ...] | None = None,
+    deterministic_seed: int = 0,
+    trial_count_per_fixture_per_arm: int = 1,
+    fake_runner_script: Any | None = None,
+    allow_live_execution: bool = False,
+    allow_live_model_call: bool = False,
+    allow_pi_execution: bool = False,
+    allow_millforge_harness_execution: bool = False,
+    created_at: str = EVAL_SUITE_DEFAULT_CAMPAIGN_CREATED_AT,
+) -> EvalOfflineDryCampaignPlan:
+    """Preflight a deterministic offline fake campaign without writing records."""
+    _reject_offline_dry_live_flags(
+        allow_live_execution=allow_live_execution,
+        allow_live_model_call=allow_live_model_call,
+        allow_pi_execution=allow_pi_execution,
+        allow_millforge_harness_execution=allow_millforge_harness_execution,
+    )
+    if fixture_pack_id != EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID:
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.FIXTURE_PACK_UNAVAILABLE,
+                "eval_suite.dry_campaign.fixture_pack",
+                "Only the installed default offline fixture pack is available.",
+            ).summary
+        )
+    if trial_count_per_fixture_per_arm <= 0:
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.INVALID_TRIAL_COUNT,
+                "eval_suite.dry_campaign.trial_count",
+                "Dry campaigns require a positive trial count per fixture per arm.",
+            ).summary
+        )
+    _validate_offline_dry_output_root(output_root)
+
+    fixture_pack = load_eval_fixture_pack_summary()
+    fixtures_by_id = {
+        fixture.fixture_id: fixture for fixture in load_eval_task_fixtures()
+    }
+    selected_ids = fixture_ids or fixture_pack.fixture_ids
+    missing_ids = tuple(
+        fixture_id for fixture_id in selected_ids if fixture_id not in fixtures_by_id
+    )
+    if missing_ids:
+        raise ValueError("unknown dry-campaign fixture ID")
+    selected_fixtures = tuple(fixtures_by_id[fixture_id] for fixture_id in selected_ids)
+    expanded_fixtures = tuple(
+        fixture
+        for fixture in selected_fixtures
+        for _ in range(trial_count_per_fixture_per_arm)
+    )
+    trial_indexes = tuple(range(len(expanded_fixtures)))
+
+    campaign_manifest = default_eval_suite_campaign_manifest(
+        fixture_pack_hash=fixture_pack.fixture_pack_hash,
+        created_at=created_at,
+    )
+    from millforge.eval_reports import (
+        EvalBudgetUsageEstimate,
+        EvalReportBudgetPolicy,
+        validate_eval_budget_policy,
+    )
+    from millforge.eval_trials import (
+        EvalTrialArmId,
+        canonical_eval_trial_store_manifest_bytes,
+        plan_paired_eval_trials,
+    )
+
+    if budget_policy is None:
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.MISSING_BUDGET_POLICY,
+                "eval_suite.dry_campaign.budget_policy",
+                "Budget policy metadata is required for dry-campaign preflight.",
+            ).summary
+        )
+    budget_policy = EvalReportBudgetPolicy.model_validate(budget_policy)
+    budget_result = validate_eval_budget_policy(
+        budget_policy,
+        campaign_manifest=campaign_manifest,
+        usage=EvalBudgetUsageEstimate(
+            estimated_spend_usd=0.0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            model_calls=0,
+            retries_per_trial=0,
+            wall_clock_seconds=0,
+            trial_count=len(expanded_fixtures) * 2,
+        ),
+    )
+    if not budget_result.valid:
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.INVALID_BUDGET_POLICY,
+                "eval_suite.dry_campaign.budget_policy",
+                budget_result.diagnostics[0].summary,
+            ).summary
+        )
+
+    script = fake_runner_script or _default_offline_fake_runner_script()
+    plans = plan_paired_eval_trials(
+        fixtures=expanded_fixtures,
+        fake_runner_script=script,
+        seed=deterministic_seed,
+        campaign_manifest=campaign_manifest,
+        trial_indexes=trial_indexes,
+        created_at=created_at,
+    )
+    store_manifest = _offline_dry_store_manifest(plans[0])
+    manifest_bytes = canonical_eval_trial_store_manifest_bytes(store_manifest)
+    manifest_path = Path(output_root) / plans[0].campaign_store_root / "manifest.json"
+    if manifest_path.exists() and manifest_path.read_bytes() != manifest_bytes:
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.MANIFEST_CONFLICT,
+                "eval_suite.dry_campaign.manifest_conflict",
+                "Existing campaign manifest differs from dry-campaign preflight.",
+            ).summary
+        )
+
+    config = EvalOfflineDryCampaignConfig(
+        fixture_pack_id=fixture_pack_id,
+        fixture_ids=selected_ids,
+        deterministic_seed=deterministic_seed,
+        trial_count_per_fixture_per_arm=trial_count_per_fixture_per_arm,
+        output_root_hash=hashlib.sha256(str(output_root).encode("utf-8")).hexdigest(),
+    )
+    return EvalOfflineDryCampaignPlan(
+        config=config,
+        campaign_manifest=campaign_manifest,
+        fixture_pack_summary=fixture_pack,
+        admitted_arm_ids=(
+            EvalTrialArmId.EVAL_SMALL_PI.value,
+            EvalTrialArmId.EVAL_SMALL_MILLFORGE.value,
+        ),
+        paired_plan_count=len(plans),
+        planned_arm_trial_count=len(plans) * 2,
+        trial_plan_hashes=tuple(plan.plan_hash for plan in plans),
+        campaign_store_root=plans[0].campaign_store_root,
+        manifest_relative_path=f"{plans[0].campaign_store_root}/manifest.json",
+        budget_policy_ref=EvalBudgetPolicyReference(
+            policy_id=budget_policy.policy_id,
+            summary=budget_policy.summary,
+        ),
+        live_execution_admitted=False,
+        diagnostics=(),
+    )
+
+
+def run_offline_fake_eval_campaign(
+    *,
+    output_root: str | Path,
+    budget_policy: Any,
+    fixture_pack_id: str = EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID,
+    fixture_ids: tuple[str, ...] | None = None,
+    deterministic_seed: int = 0,
+    trial_count_per_fixture_per_arm: int = 1,
+    fake_runner_script: Any | None = None,
+    report_id: str | None = None,
+    allow_live_execution: bool = False,
+    allow_live_model_call: bool = False,
+    allow_pi_execution: bool = False,
+    allow_millforge_harness_execution: bool = False,
+    created_at: str = EVAL_SUITE_DEFAULT_CAMPAIGN_CREATED_AT,
+) -> EvalOfflineDryCampaignRunResult:
+    """Run a deterministic offline fake campaign under a caller-selected root."""
+    dry_plan = configure_offline_fake_eval_campaign(
+        output_root=output_root,
+        budget_policy=budget_policy,
+        fixture_pack_id=fixture_pack_id,
+        fixture_ids=fixture_ids,
+        deterministic_seed=deterministic_seed,
+        trial_count_per_fixture_per_arm=trial_count_per_fixture_per_arm,
+        fake_runner_script=fake_runner_script,
+        allow_live_execution=allow_live_execution,
+        allow_live_model_call=allow_live_model_call,
+        allow_pi_execution=allow_pi_execution,
+        allow_millforge_harness_execution=allow_millforge_harness_execution,
+        created_at=created_at,
+    )
+
+    from millforge.eval_reports import (
+        EvalReportBudgetPolicy,
+        build_eval_report_artifact_bytes,
+        build_eval_report_payload,
+    )
+    from millforge.eval_trials import (
+        append_eval_trial_record_to_campaign_store,
+        plan_paired_eval_trials,
+        resume_eval_trial_campaign_store,
+        run_offline_fake_eval_trial,
+    )
+
+    budget = EvalReportBudgetPolicy.model_validate(budget_policy)
+    fixtures_by_id = {
+        fixture.fixture_id: fixture for fixture in load_eval_task_fixtures()
+    }
+    selected_fixtures = tuple(
+        fixtures_by_id[fixture_id] for fixture_id in dry_plan.config.fixture_ids
+    )
+    expanded_fixtures = tuple(
+        fixture
+        for fixture in selected_fixtures
+        for _ in range(trial_count_per_fixture_per_arm)
+    )
+    plans = plan_paired_eval_trials(
+        fixtures=expanded_fixtures,
+        fake_runner_script=fake_runner_script or _default_offline_fake_runner_script(),
+        seed=deterministic_seed,
+        campaign_manifest=dry_plan.campaign_manifest,
+        trial_indexes=tuple(range(len(expanded_fixtures))),
+        created_at=created_at,
+    )
+    if tuple(plan.plan_hash for plan in plans) != dry_plan.trial_plan_hashes:
+        raise ValueError("dry-campaign plan hashes changed after preflight")
+
+    generated_records = {}
+    for plan in plans:
+        fixture = fixtures_by_id[plan.fixture_instance.fixture_id]
+        generated_records[plan.trial_id] = run_offline_fake_eval_trial(
+            plan,
+            fixture=fixture,
+        ).trial_record
+    existing_records = _read_offline_dry_campaign_record_summaries(
+        output_root,
+        plans[0],
+    )
+    _validate_offline_dry_record_summaries_match_plans(
+        records=existing_records,
+        plans=plans,
+        generated_records=generated_records,
+    )
+    completed_ids = {record["trial_id"] for record in existing_records}
+    appended_trial_ids: list[str] = []
+    for plan in plans:
+        if plan.trial_id in completed_ids:
+            continue
+        append_eval_trial_record_to_campaign_store(
+            output_root,
+            plan=plan,
+            record=generated_records[plan.trial_id],
+            plans=plans,
+        )
+        appended_trial_ids.append(plan.trial_id)
+        completed_ids.add(plan.trial_id)
+
+    if appended_trial_ids:
+        _offline_dry_output_path(
+            output_root,
+            f"{plans[0].campaign_store_root}/index.json",
+        ).unlink(missing_ok=True)
+    final_resume = resume_eval_trial_campaign_store(
+        output_root,
+        plan=plans[0],
+        plans=plans,
+    )
+    if final_resume.diagnostics:
+        raise ValueError(final_resume.diagnostics[0].summary)
+    if final_resume.resume_index is None:
+        raise ValueError("dry-campaign resume index was not written")
+
+    records = tuple(generated_records[plan.trial_id] for plan in plans)
+    payload = build_eval_report_payload(
+        report_id=report_id or f"{dry_plan.campaign_manifest.campaign_id}.report.v1",
+        campaign_manifest=dry_plan.campaign_manifest,
+        plans=plans,
+        records=records,
+        resume_index=final_resume.resume_index,
+        budget_policy=budget,
+        generated_at=created_at,
+    )
+    report_artifacts = build_eval_report_artifact_bytes(payload)
+    report_relative_paths = {
+        name: f"{dry_plan.campaign_store_root}/reports/{name}"
+        for name in sorted(report_artifacts)
+    }
+    for name, data in report_artifacts.items():
+        path = _offline_dry_output_path(output_root, report_relative_paths[name])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    closure_evidence = build_offline_dry_campaign_closure_evidence(
+        run_plan=dry_plan,
+        report_id=payload.report_id,
+        completed_trial_ids=final_resume.completed_trial_ids,
+        pending_trial_ids=final_resume.pending_trial_ids,
+        trial_record_hashes=tuple(record.record_hash for record in records),
+        resume_index_hash=final_resume.resume_index.resume_index_hash,
+        report_hash=payload.report_hash,
+        report_json_hash=hashlib.sha256(report_artifacts["report.json"]).hexdigest(),
+        report_markdown_hash=hashlib.sha256(report_artifacts["report.md"]).hexdigest(),
+        report_artifact_count=len(report_artifacts),
+        treatment_compiled_harness_hashes=records[0].compiled_harness_hashes,
+    )
+    closure_evidence_relative_path = (
+        f"{dry_plan.campaign_store_root}/closure_evidence.json"
+    )
+    _offline_dry_output_path(output_root, closure_evidence_relative_path).write_bytes(
+        canonical_offline_dry_campaign_closure_evidence_bytes(closure_evidence)
+    )
+
+    return EvalOfflineDryCampaignRunResult(
+        dry_campaign_plan=dry_plan,
+        report_id=payload.report_id,
+        campaign_store_root=dry_plan.campaign_store_root,
+        manifest_relative_path=dry_plan.manifest_relative_path,
+        plan_relative_path=f"{dry_plan.campaign_store_root}/plan.json",
+        trials_relative_path=f"{dry_plan.campaign_store_root}/trials.jsonl",
+        index_relative_path=f"{dry_plan.campaign_store_root}/index.json",
+        artifact_root_relative_path=f"{dry_plan.campaign_store_root}/artifacts",
+        report_relative_paths=report_relative_paths,
+        completed_trial_ids=final_resume.completed_trial_ids,
+        pending_trial_ids=final_resume.pending_trial_ids,
+        appended_trial_ids=tuple(appended_trial_ids),
+        trial_plan_hashes=tuple(plan.plan_hash for plan in plans),
+        trial_record_hashes=tuple(record.record_hash for record in records),
+        resume_index_hash=final_resume.resume_index.resume_index_hash,
+        report_hash=payload.report_hash,
+        report_json_hash=hashlib.sha256(report_artifacts["report.json"]).hexdigest(),
+        report_markdown_hash=hashlib.sha256(report_artifacts["report.md"]).hexdigest(),
+        closure_evidence_relative_path=closure_evidence_relative_path,
+        closure_evidence_hash=closure_evidence.closure_evidence_hash,
+        live_execution_admitted=False,
+    )
+
+
+def build_offline_dry_campaign_closure_evidence(
+    *,
+    run_plan: EvalOfflineDryCampaignPlan,
+    report_id: str,
+    completed_trial_ids: tuple[str, ...],
+    pending_trial_ids: tuple[str, ...],
+    trial_record_hashes: tuple[str, ...],
+    resume_index_hash: str,
+    report_hash: str,
+    report_json_hash: str,
+    report_markdown_hash: str,
+    report_artifact_count: int,
+    treatment_compiled_harness_hashes: Mapping[str, str],
+) -> EvalOfflineDryCampaignClosureEvidence:
+    """Return compact public closure evidence for a dry-campaign result."""
+    evidence = EvalOfflineDryCampaignClosureEvidence.model_construct(
+        schema_version=EVAL_SUITE_SCHEMA_VERSION,
+        campaign_id=run_plan.campaign_manifest.campaign_id,
+        report_id=report_id,
+        fixture_pack_hash=run_plan.fixture_pack_summary.fixture_pack_hash,
+        campaign_manifest_hash=run_plan.campaign_manifest.campaign_manifest_hash,
+        model_manifest_hash=run_plan.campaign_manifest.model_manifest_hash,
+        workflow_graph_hash=run_plan.campaign_manifest.workflow_graph_hash,
+        trial_plan_hashes=run_plan.trial_plan_hashes,
+        trial_record_hashes=trial_record_hashes,
+        resume_index_hash=resume_index_hash,
+        report_hash=report_hash,
+        report_json_hash=report_json_hash,
+        report_markdown_hash=report_markdown_hash,
+        counts={
+            "fixture_count": len(run_plan.config.fixture_ids),
+            "paired_plan_count": run_plan.paired_plan_count,
+            "arm_trial_count": run_plan.planned_arm_trial_count,
+            "completed_trial_count": len(completed_trial_ids),
+            "pending_trial_count": len(pending_trial_ids),
+            "stored_trial_count": len(completed_trial_ids),
+            "report_artifact_count": report_artifact_count,
+        },
+        unresolved_live_dependencies=(
+            "pi_runtime",
+            "millforge_live_harness_execution",
+            "shared_model_backend_configuration",
+            "fixture_workspace_lifecycle_reset",
+            "resource_enforcement",
+        ),
+        live_denial_diagnostic_codes=(
+            "pi_runtime_unavailable",
+            "millforge_live_harness_unavailable",
+            "shared_backend_configuration_missing",
+            "fixture_workspace_lifecycle_unavailable",
+            "resource_enforcement_unavailable",
+        ),
+        live_denial_test_coverage=(
+            "tests/test_eval_reports.py::test_live_admission_returns_all_unresolved_dependency_diagnostics",
+            "tests/test_eval_modes.py::test_live_admission_fails_closed_with_structured_deferred_dependencies",
+            "tests/test_eval_trials.py::test_execution_result_rejects_live_admission",
+        ),
+        treatment_compiled_harness_hashes=dict(
+            sorted(treatment_compiled_harness_hashes.items())
+        ),
+        public_hygiene_checks={
+            "absolute_paths_absent": True,
+            "home_paths_absent": True,
+            "urls_absent": True,
+            "auth_material_absent": True,
+            "runtime_state_absent": True,
+            "hidden_material_absent": True,
+            "raw_logs_absent": True,
+        },
+        claim_boundary=(
+            "Offline fake closure evidence proves deterministic public contract "
+            "outputs only; live Pi-vs-Millforge remains denied."
+        ),
+        closure_evidence_hash_kind=EVAL_SUITE_CLOSURE_EVIDENCE_HASH_KIND,
+        closure_evidence_hash="0" * 64,
+    )
+    payload = evidence.model_dump(mode="json")
+    payload["closure_evidence_hash"] = (
+        calculate_offline_dry_campaign_closure_evidence_hash(evidence)
+    )
+    return EvalOfflineDryCampaignClosureEvidence.model_validate(payload)
+
+
 def eval_runner_task_projection(fixture: EvalTaskFixture) -> EvalRunnerTaskProjection:
     """Return a runner-visible projection with scorer-only fields omitted."""
     return EvalRunnerTaskProjection(
@@ -1096,6 +1790,22 @@ def canonical_eval_suite_bytes(value: BaseModel | Mapping[str, Any]) -> bytes:
     ).encode("ascii")
 
 
+def canonical_offline_dry_campaign_closure_evidence_bytes(
+    evidence: EvalOfflineDryCampaignClosureEvidence,
+) -> bytes:
+    """Return canonical ASCII JSON bytes for offline closure evidence."""
+    return canonical_eval_suite_bytes(evidence)
+
+
+def calculate_offline_dry_campaign_closure_evidence_hash(
+    evidence: EvalOfflineDryCampaignClosureEvidence,
+) -> str:
+    """Return the closure evidence hash with the self-hash field omitted."""
+    payload = evidence.model_dump(mode="json")
+    payload.pop("closure_evidence_hash", None)
+    return hashlib.sha256(canonical_eval_suite_bytes(payload)).hexdigest()
+
+
 def calculate_eval_model_manifest_hash(manifest: EvalModelManifest) -> str:
     payload = manifest.model_dump(mode="json")
     payload.pop("model_manifest_hash", None)
@@ -1312,11 +2022,211 @@ def _validate_relative_path(value: str) -> None:
     _reject_forbidden_material(value)
 
 
+def _validate_relative_artifact_root(value: str) -> None:
+    if (
+        not value
+        or value.startswith(".")
+        or value.startswith("/")
+        or "\\" in value
+        or "//" in value
+        or ".." in value.split("/")
+    ):
+        raise ValueError("eval-suite artifact roots must be stable relative paths")
+    _reject_forbidden_material(value)
+
+
 def _validate_public_artifact_ids(values: tuple[str, ...]) -> None:
     for value in values:
         if not value or "/" in value or "\\" in value or value.startswith("."):
             raise ValueError("public artifact IDs must be stable bare identifiers")
         _reject_forbidden_material(value)
+
+
+def _reject_offline_dry_live_flags(
+    *,
+    allow_live_execution: bool,
+    allow_live_model_call: bool,
+    allow_pi_execution: bool,
+    allow_millforge_harness_execution: bool,
+) -> None:
+    if any(
+        (
+            allow_live_execution,
+            allow_live_model_call,
+            allow_pi_execution,
+            allow_millforge_harness_execution,
+        )
+    ):
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.LIVE_EXECUTION_UNAVAILABLE,
+                "eval_suite.dry_campaign.live_execution",
+                "Offline dry-campaign preflight rejects live execution flags.",
+            ).summary
+        )
+
+
+def _validate_offline_dry_output_root(output_root: str | Path) -> None:
+    root_text = str(output_root)
+    if not root_text.strip():
+        raise ValueError("output root is required")
+    parts = tuple(part.lower() for part in Path(root_text).parts)
+    unsafe_parts = {
+        ".claude",
+        ".codex",
+        ".eval-scratch",
+        ".millrace",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "ideas",
+        "millrace-agents",
+        "ref-forge",
+    }
+    if any(part in unsafe_parts for part in parts):
+        raise ValueError(
+            _offline_dry_diagnostic(
+                EvalOfflineDryCampaignDiagnosticCode.UNSAFE_OUTPUT_ROOT,
+                "eval_suite.dry_campaign.output_root",
+                "Output root is under ignored control state.",
+            ).summary
+        )
+
+
+def _offline_dry_output_path(output_root: str | Path, relative_path: str) -> Path:
+    _validate_relative_artifact_root(relative_path)
+    return Path(output_root).joinpath(*relative_path.split("/"))
+
+
+def _read_offline_dry_campaign_record_summaries(
+    output_root: str | Path,
+    plan: Any,
+) -> tuple[dict[str, str], ...]:
+    trials_path = _offline_dry_output_path(
+        output_root,
+        f"{plan.campaign_store_root}/trials.jsonl",
+    )
+    if not trials_path.exists():
+        return ()
+    records: list[dict[str, str]] = []
+    for line in trials_path.read_bytes().splitlines():
+        if not line:
+            continue
+        payload = json.loads(line.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("existing trial record must be a JSON object")
+        for field_name in ("trial_id", "trial_plan_hash", "record_hash"):
+            if not isinstance(payload.get(field_name), str):
+                raise ValueError("existing trial record is missing public hash fields")
+        record_hash = payload["record_hash"]
+        hash_payload = dict(payload)
+        hash_payload.pop("record_hash")
+        expected = hashlib.sha256(canonical_eval_suite_bytes(hash_payload)).hexdigest()
+        if record_hash != expected:
+            raise ValueError("existing trial record hash does not match public payload")
+        records.append(
+            {
+                "trial_id": payload["trial_id"],
+                "trial_plan_hash": payload["trial_plan_hash"],
+                "record_hash": record_hash,
+            }
+        )
+    return tuple(records)
+
+
+def _validate_offline_dry_record_summaries_match_plans(
+    *,
+    records: tuple[dict[str, str], ...],
+    plans: tuple[Any, ...],
+    generated_records: Mapping[str, Any],
+) -> None:
+    plans_by_trial_id = {plan.trial_id: plan for plan in plans}
+    if len(plans_by_trial_id) != len(plans):
+        raise ValueError("dry-campaign plans must have unique trial IDs")
+    seen_trial_ids: set[str] = set()
+    for record in records:
+        trial_id = record["trial_id"]
+        if trial_id in seen_trial_ids:
+            raise ValueError("duplicate trial IDs are rejected by append-only stores")
+        seen_trial_ids.add(trial_id)
+        plan = plans_by_trial_id.get(trial_id)
+        if plan is None:
+            raise ValueError(
+                "existing trial record is not present in dry-campaign plan"
+            )
+        if record["trial_plan_hash"] != plan.plan_hash:
+            raise ValueError("existing trial record plan hash does not match plan")
+        generated_record = generated_records.get(trial_id)
+        if generated_record is None or record["record_hash"] != (
+            generated_record.record_hash
+        ):
+            raise ValueError("existing trial record hash does not match dry run")
+
+
+def _default_offline_fake_runner_script() -> Any:
+    from millforge.eval_trials import (
+        EvalFakeOutcomeScriptKind,
+        EvalTrialFakeRunnerScript,
+    )
+    from millforge.eval_workflow import EvalTerminalResult
+
+    return EvalTrialFakeRunnerScript(
+        script_id="fake.valid_completion.v1",
+        script_kind=EvalFakeOutcomeScriptKind.VALID_COMPLETION,
+        terminal_results=(
+            EvalTerminalResult.PLAN_READY,
+            EvalTerminalResult.BUILDER_COMPLETE,
+            EvalTerminalResult.CHECKER_APPROVED,
+            EvalTerminalResult.ARBITER_CLOSED,
+        ),
+        expected_outcome=EvalTrialOutcome.VALID_COMPLETION,
+        stage_result_summaries={
+            "eval_planner": "plan ready",
+            "eval_builder": "builder complete",
+            "eval_checker": "checker approved",
+            "eval_arbiter": "arbiter closed",
+        },
+    )
+
+
+def _offline_dry_store_manifest(plan: Any) -> Any:
+    from millforge.eval_trials import (
+        EVAL_TRIAL_SCHEMA_VERSION,
+        EVAL_TRIAL_STORE_MANIFEST_HASH_KIND,
+        EvalTrialStoreManifest,
+        calculate_eval_trial_store_manifest_hash,
+    )
+
+    manifest = EvalTrialStoreManifest.model_construct(
+        schema_version=EVAL_TRIAL_SCHEMA_VERSION,
+        store_manifest_id=f"{plan.campaign_manifest.campaign_id}.store.v1",
+        campaign_manifest_hash=plan.campaign_manifest.campaign_manifest_hash,
+        record_hashes=(),
+        append_only=True,
+        store_manifest_hash_kind=EVAL_TRIAL_STORE_MANIFEST_HASH_KIND,
+        store_manifest_hash="0" * 64,
+    )
+    return EvalTrialStoreManifest.model_validate(
+        manifest.model_copy(
+            update={
+                "store_manifest_hash": calculate_eval_trial_store_manifest_hash(
+                    manifest
+                )
+            }
+        )
+    )
+
+
+def _offline_dry_diagnostic(
+    code: EvalOfflineDryCampaignDiagnosticCode,
+    rule_id: str,
+    summary: str,
+) -> EvalOfflineDryCampaignDiagnostic:
+    return EvalOfflineDryCampaignDiagnostic(
+        diagnostic_code=code,
+        rule_id=rule_id,
+        summary=summary,
+    )
 
 
 def _validate_public_command(command: str) -> None:
@@ -1447,6 +2357,7 @@ def _calculate_eval_suite_payload_hash(
 
 __all__ = [
     "EVAL_SUITE_CAMPAIGN_MANIFEST_HASH_KIND",
+    "EVAL_SUITE_CLOSURE_EVIDENCE_HASH_KIND",
     "EVAL_SUITE_DEFAULT_CAMPAIGN_CREATED_AT",
     "EVAL_SUITE_DEFAULT_CAMPAIGN_ID",
     "EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID",
@@ -1454,6 +2365,7 @@ __all__ = [
     "EVAL_SUITE_FIXTURE_HASH_KIND",
     "EVAL_SUITE_FIXTURE_PACK_HASH_KIND",
     "EVAL_SUITE_MODEL_MANIFEST_HASH_KIND",
+    "EVAL_SUITE_OUTPUT_ROOT_HASH_KIND",
     "EVAL_SUITE_SCHEMA_VERSION",
     "EVAL_SUITE_SCORER_INPUT_HASH_KIND",
     "EVAL_SUITE_SCORER_RESULT_HASH_KIND",
@@ -1474,6 +2386,12 @@ __all__ = [
     "EvalModelPricingMetadata",
     "EvalModelRateLimitMetadata",
     "EvalModelManifest",
+    "EvalOfflineDryCampaignConfig",
+    "EvalOfflineDryCampaignClosureEvidence",
+    "EvalOfflineDryCampaignDiagnostic",
+    "EvalOfflineDryCampaignDiagnosticCode",
+    "EvalOfflineDryCampaignPlan",
+    "EvalOfflineDryCampaignRunResult",
     "EvalPublicArtifactProjection",
     "EvalRunnerAcceptanceProjection",
     "EvalRunnerContextProjection",
@@ -1489,11 +2407,15 @@ __all__ = [
     "calculate_eval_campaign_manifest_hash",
     "calculate_eval_fixture_pack_hash",
     "calculate_eval_model_manifest_hash",
+    "calculate_offline_dry_campaign_closure_evidence_hash",
     "calculate_eval_scorer_input_hash",
     "calculate_eval_scorer_result_hash",
     "calculate_eval_task_fixture_hash",
     "canonical_eval_suite_bytes",
+    "canonical_offline_dry_campaign_closure_evidence_bytes",
+    "configure_offline_fake_eval_campaign",
     "default_eval_suite_campaign_manifest",
+    "build_offline_dry_campaign_closure_evidence",
     "eval_public_artifact_projection",
     "eval_model_manifest_from_profile",
     "eval_runner_acceptance_projection",
@@ -1502,5 +2424,6 @@ __all__ = [
     "load_eval_fixture_pack_summary",
     "load_eval_task_fixture",
     "load_eval_task_fixtures",
+    "run_offline_fake_eval_campaign",
     "score_eval_trial",
 ]

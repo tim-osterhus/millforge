@@ -258,12 +258,22 @@ cost, latency, and runner overhead.
 
 Key outcomes:
 
+- the offline dry-campaign API preflights packaged fixtures, paired plans,
+  append-only trial records, deterministic reports, and compact closure
+  evidence without touching live Pi or Millforge runners
 - false closure is reported separately from generic failure
 - deterministic scoring decides primary success
 - hidden checks remain hidden from runners
 - trial records are append-only and reproducible
 - invalid trials remain visible rather than silently excluded
-- public claims stay bounded to the evaluated workflow and model
+- public claims stay bounded to the evaluated workflow and model, with offline
+  dry runs proving only contract wiring, record hygiene, and denial boundaries
+  rather than live runner behavior or Pi-vs-Millforge performance
+- live campaigns reuse the fixture-pack, trial-plan, budget/admission, report,
+  and closure-evidence contracts after admitted live runners, shared backend
+  configuration, workspace lifecycle reset, and resource enforcement exist
+- command-line campaign UX remains deferred until live orchestration needs it;
+  current dry-campaign readiness is exposed through the public Python API
 
 ### 7. Connector And Custom-Tool Closure
 

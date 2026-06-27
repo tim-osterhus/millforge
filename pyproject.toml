@@ -47,6 +47,15 @@ packages = ["src/millforge"]
 "src/millforge/_forge/LICENSE" = "millforge/_forge/LICENSE"
 "src/millforge/_forge/PROVENANCE.json" = "millforge/_forge/PROVENANCE.json"
 "src/millforge/_forge/UPDATE_POLICY.md" = "millforge/_forge/UPDATE_POLICY.md"
+"src/millforge/eval_fixtures/__init__.py" = "millforge/eval_fixtures/__init__.py"
+"src/millforge/eval_fixtures/default_pack/__init__.py" = "millforge/eval_fixtures/default_pack/__init__.py"
+"src/millforge/eval_fixtures/default_pack/manifest.json" = "millforge/eval_fixtures/default_pack/manifest.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.bug_diagnosis.traceback.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.bug_diagnosis.traceback.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.direct_edit.import_sort.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.direct_edit.import_sort.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.evidence_discipline.no_source_change.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.evidence_discipline.no_source_change.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.false_closure.visible_green.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.false_closure.visible_green.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.multi_file.api_contract.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.multi_file.api_contract.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.recovery.malformed_artifact.v1.json" = "millforge/eval_fixtures/default_pack/fixtures/fixture.08a.recovery.malformed_artifact.v1.json"
 
 [tool.hatch.build.targets.sdist]
 only-include = [
@@ -60,6 +69,15 @@ only-include = [
 "src/millforge/_forge/LICENSE" = "src/millforge/_forge/LICENSE"
 "src/millforge/_forge/PROVENANCE.json" = "src/millforge/_forge/PROVENANCE.json"
 "src/millforge/_forge/UPDATE_POLICY.md" = "src/millforge/_forge/UPDATE_POLICY.md"
+"src/millforge/eval_fixtures/__init__.py" = "src/millforge/eval_fixtures/__init__.py"
+"src/millforge/eval_fixtures/default_pack/__init__.py" = "src/millforge/eval_fixtures/default_pack/__init__.py"
+"src/millforge/eval_fixtures/default_pack/manifest.json" = "src/millforge/eval_fixtures/default_pack/manifest.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.bug_diagnosis.traceback.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.bug_diagnosis.traceback.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.direct_edit.import_sort.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.direct_edit.import_sort.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.evidence_discipline.no_source_change.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.evidence_discipline.no_source_change.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.false_closure.visible_green.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.false_closure.visible_green.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.multi_file.api_contract.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.multi_file.api_contract.v1.json"
+"src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.recovery.malformed_artifact.v1.json" = "src/millforge/eval_fixtures/default_pack/fixtures/fixture.08a.recovery.malformed_artifact.v1.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

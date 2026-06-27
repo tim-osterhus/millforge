@@ -282,7 +282,22 @@ deferred to the owning workstream. The 08C `report.json`, `report.md`, and
 report-hash artifacts are deterministic offline evidence only: they document
 campaign contracts, budget/admission state, metrics, confounds, decision rules,
 and reproducibility hashes, and they explicitly do not support Pi-vs-Millforge
-model-performance conclusions from offline fake execution.
+model-performance conclusions from offline fake execution. The public offline
+`millforge.eval_suite` layer also offers `configure_offline_fake_eval_campaign()`
+for preflight and `run_offline_fake_eval_campaign()` for the full
+deterministic dry-campaign flow, which composes packaged fixtures, paired
+trial planning, offline fake execution, append-only campaign-store writes,
+resume indexing, and deterministic report generation under a caller-selected
+root. The same dry-campaign result now carries compact public closure evidence
+with deterministic hashes, counts, unresolved live dependencies, live-denial
+coverage references, Spec 07E treatment harness hash evidence, public hygiene
+flags, and an explicit offline-only claim boundary. No CLI is added for this
+slice: the public Python entry points keep the dry-run contract importable and
+testable while command UX, live runner orchestration, and operator-facing
+campaign controls remain deferred to the live-campaign workstream. Future live
+campaigns should reuse the same fixture-pack, trial-plan, append-only record,
+budget/admission, report, and closure-evidence contracts, replacing only the
+offline fake runner with admitted live Pi and Millforge runner execution.
 
 03C R2 closure evidence maps the latest Arbiter gaps to completed work:
 canonical lowering/internal diagnostic meanings, three representative YAML/JSON

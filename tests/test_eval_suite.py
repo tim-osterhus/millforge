@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 import tarfile
@@ -13,7 +14,13 @@ import pytest
 from pydantic import ValidationError
 
 import millforge
+import millforge.eval_reports as eval_reports
 import millforge.eval_suite as eval_suite
+from millforge.eval_trials import (
+    EvalTrialStoreManifest,
+    calculate_eval_trial_store_manifest_hash,
+    canonical_eval_trial_store_manifest_bytes,
+)
 from millforge.eval_modes import (
     EVAL_DEFAULT_MODEL_PROFILE_ID,
     calculate_eval_mode_fairness_fingerprint,
@@ -41,6 +48,8 @@ from millforge.eval_suite import (
     EvalModelManifest,
     EvalModelPricingMetadata,
     EvalModelRateLimitMetadata,
+    EvalOfflineDryCampaignClosureEvidence,
+    EvalOfflineDryCampaignRunResult,
     EvalPublicArtifactProjection,
     EvalRunnerAcceptanceProjection,
     EvalRunnerContextProjection,
@@ -55,10 +64,12 @@ from millforge.eval_suite import (
     calculate_eval_campaign_manifest_hash,
     calculate_eval_fixture_pack_hash,
     calculate_eval_model_manifest_hash,
+    calculate_offline_dry_campaign_closure_evidence_hash,
     calculate_eval_scorer_input_hash,
     calculate_eval_scorer_result_hash,
     calculate_eval_task_fixture_hash,
     canonical_eval_suite_bytes,
+    canonical_offline_dry_campaign_closure_evidence_bytes,
     default_eval_suite_campaign_manifest,
     eval_model_manifest_from_profile,
     eval_public_artifact_projection,
@@ -68,6 +79,7 @@ from millforge.eval_suite import (
     load_eval_fixture_pack_summary,
     load_eval_task_fixture,
     load_eval_task_fixtures,
+    run_offline_fake_eval_campaign,
     score_eval_trial,
 )
 
@@ -115,7 +127,9 @@ def test_default_campaign_canonical_bytes_and_hash_are_stable_by_default() -> No
     assert first.created_at == EVAL_SUITE_DEFAULT_CAMPAIGN_CREATED_AT
 
 
-def test_default_campaign_accepts_fixed_timestamp_and_fixture_pack_hash_override() -> None:
+def test_default_campaign_accepts_fixed_timestamp_and_fixture_pack_hash_override() -> (
+    None
+):
     campaign = default_eval_suite_campaign_manifest(
         created_at="2026-06-24T00:00:00Z",
         fixture_pack_hash="1" * 64,
@@ -126,6 +140,275 @@ def test_default_campaign_accepts_fixed_timestamp_and_fixture_pack_hash_override
     assert campaign.campaign_manifest_hash == calculate_eval_campaign_manifest_hash(
         campaign
     )
+
+
+def test_offline_dry_campaign_entry_point_preflights_two_fixtures_and_arms(
+    tmp_path: Path,
+) -> None:
+    fixtures = load_eval_task_fixtures()[:2]
+    plan = eval_suite.configure_offline_fake_eval_campaign(
+        output_root=tmp_path,
+        budget_policy=eval_reports.default_eval_report_budget_policy(),
+        fixture_ids=tuple(fixture.fixture_id for fixture in fixtures),
+        deterministic_seed=42,
+        trial_count_per_fixture_per_arm=1,
+    )
+
+    assert isinstance(plan, eval_suite.EvalOfflineDryCampaignPlan)
+    assert plan.config.fixture_pack_id == EVAL_SUITE_DEFAULT_FIXTURE_PACK_ID
+    assert plan.config.deterministic_seed == 42
+    assert plan.config.trial_count_per_fixture_per_arm == 1
+    assert plan.config.fixture_ids == tuple(fixture.fixture_id for fixture in fixtures)
+    assert plan.campaign_manifest.execution_mode is EvalSuiteExecutionMode.OFFLINE_FAKE
+    assert plan.live_execution_admitted is False
+    assert plan.admitted_arm_ids == ("eval_small_pi", "eval_small_millforge")
+    assert plan.paired_plan_count == 2
+    assert plan.planned_arm_trial_count == 4
+    assert len(plan.trial_plan_hashes) == 2
+    assert plan.fixture_pack_summary.fixture_pack_hash == (
+        plan.campaign_manifest.fixture_pack_hash
+    )
+    assert plan.budget_policy_ref.policy_id == (
+        eval_reports.default_eval_report_budget_policy().policy_id
+    )
+    assert plan.manifest_relative_path == f"{plan.campaign_store_root}/manifest.json"
+    assert canonical_eval_suite_bytes(plan).decode("ascii").endswith("\n")
+    assert getattr(millforge, "configure_offline_fake_eval_campaign") is (
+        eval_suite.configure_offline_fake_eval_campaign
+    )
+
+
+def test_offline_dry_campaign_validation_rejects_missing_budget_live_flags_and_roots(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="Budget policy"):
+        eval_suite.configure_offline_fake_eval_campaign(
+            output_root=tmp_path,
+            budget_policy=None,
+        )
+
+    with pytest.raises(ValueError, match="live execution flags"):
+        eval_suite.configure_offline_fake_eval_campaign(
+            output_root=tmp_path,
+            budget_policy=eval_reports.default_eval_report_budget_policy(),
+            allow_live_execution=True,
+        )
+
+    with pytest.raises(ValueError, match="Output root"):
+        eval_suite.configure_offline_fake_eval_campaign(
+            output_root=Path("millrace-agents") / "runs",
+            budget_policy=eval_reports.default_eval_report_budget_policy(),
+        )
+
+    bad_policy = eval_reports.default_eval_report_budget_policy().model_copy(
+        update={"max_trials_per_campaign": None}
+    )
+    with pytest.raises(ValueError, match="trial-count ceiling"):
+        eval_suite.configure_offline_fake_eval_campaign(
+            output_root=tmp_path,
+            budget_policy=bad_policy,
+        )
+
+
+def test_offline_dry_campaign_rejects_existing_manifest_conflicts(
+    tmp_path: Path,
+) -> None:
+    first = eval_suite.configure_offline_fake_eval_campaign(
+        output_root=tmp_path,
+        budget_policy=eval_reports.default_eval_report_budget_policy(),
+        fixture_ids=(load_eval_task_fixtures()[0].fixture_id,),
+    )
+    campaign_dir = tmp_path / first.campaign_store_root
+    campaign_dir.mkdir(parents=True)
+    manifest_path = campaign_dir / "manifest.json"
+    conflicting = EvalTrialStoreManifest.model_construct(
+        store_manifest_id="different.store.v1",
+        campaign_manifest_hash="f" * 64,
+        record_hashes=(),
+        append_only=True,
+        store_manifest_hash="0" * 64,
+    )
+    conflicting = EvalTrialStoreManifest.model_validate(
+        conflicting.model_copy(
+            update={
+                "store_manifest_hash": calculate_eval_trial_store_manifest_hash(
+                    conflicting
+                )
+            }
+        )
+    )
+    manifest_path.write_bytes(canonical_eval_trial_store_manifest_bytes(conflicting))
+
+    with pytest.raises(ValueError, match="Existing campaign manifest"):
+        eval_suite.configure_offline_fake_eval_campaign(
+            output_root=tmp_path,
+            budget_policy=eval_reports.default_eval_report_budget_policy(),
+            fixture_ids=(load_eval_task_fixtures()[0].fixture_id,),
+        )
+
+
+def test_offline_dry_campaign_runs_filesystem_flow_and_resumes_stably(
+    tmp_path: Path,
+) -> None:
+    fixtures = load_eval_task_fixtures()[:2]
+    result = run_offline_fake_eval_campaign(
+        output_root=tmp_path,
+        budget_policy=eval_reports.default_eval_report_budget_policy(),
+        fixture_ids=tuple(fixture.fixture_id for fixture in fixtures),
+        deterministic_seed=77,
+        trial_count_per_fixture_per_arm=1,
+    )
+
+    assert isinstance(result, EvalOfflineDryCampaignRunResult)
+    assert result.pending_trial_ids == ()
+    assert len(result.completed_trial_ids) == 2
+    assert result.appended_trial_ids == result.completed_trial_ids
+    assert result.campaign_store_root.startswith("eval/campaigns/")
+    assert result.live_execution_admitted is False
+    assert set(result.report_relative_paths) == {
+        "report.json",
+        "report.md",
+        "report.sha256",
+    }
+    for relative_path in (
+        result.manifest_relative_path,
+        result.plan_relative_path,
+        result.trials_relative_path,
+        result.index_relative_path,
+        result.artifact_root_relative_path,
+        *result.report_relative_paths.values(),
+    ):
+        assert relative_path.startswith(f"{result.campaign_store_root}/")
+        assert not relative_path.startswith("/")
+
+    campaign_dir = tmp_path / result.campaign_store_root
+    trials_path = tmp_path / result.trials_relative_path
+    report_json_path = tmp_path / result.report_relative_paths["report.json"]
+    report_md_path = tmp_path / result.report_relative_paths["report.md"]
+    closure_evidence_path = tmp_path / result.closure_evidence_relative_path
+
+    assert (tmp_path / result.manifest_relative_path).is_file()
+    assert (tmp_path / result.plan_relative_path).is_file()
+    assert (tmp_path / result.index_relative_path).is_file()
+    assert (tmp_path / result.artifact_root_relative_path).is_dir()
+    assert closure_evidence_path.is_file()
+    assert trials_path.read_bytes().count(b"\n") == 2
+    assert report_json_path.read_bytes().endswith(b"\n")
+    assert b"offline fake" in report_md_path.read_bytes().lower()
+    assert closure_evidence_path.read_bytes().endswith(b"\n")
+    assert (
+        result.report_json_hash
+        == hashlib.sha256(report_json_path.read_bytes()).hexdigest()
+    )
+    assert (
+        result.report_markdown_hash
+        == hashlib.sha256(report_md_path.read_bytes()).hexdigest()
+    )
+
+    closure_evidence = EvalOfflineDryCampaignClosureEvidence.model_validate_json(
+        closure_evidence_path.read_text(encoding="ascii")
+    )
+    assert closure_evidence.closure_evidence_hash == result.closure_evidence_hash
+    assert (
+        calculate_offline_dry_campaign_closure_evidence_hash(closure_evidence)
+        == result.closure_evidence_hash
+    )
+    assert (
+        canonical_offline_dry_campaign_closure_evidence_bytes(closure_evidence)
+        == closure_evidence_path.read_bytes()
+    )
+    assert closure_evidence.counts == {
+        "fixture_count": 2,
+        "paired_plan_count": 2,
+        "arm_trial_count": 4,
+        "completed_trial_count": 2,
+        "pending_trial_count": 0,
+        "stored_trial_count": 2,
+        "report_artifact_count": 3,
+    }
+    assert set(closure_evidence.unresolved_live_dependencies) == {
+        "pi_runtime",
+        "millforge_live_harness_execution",
+        "shared_model_backend_configuration",
+        "fixture_workspace_lifecycle_reset",
+        "resource_enforcement",
+    }
+    assert set(closure_evidence.live_denial_diagnostic_codes) == {
+        "pi_runtime_unavailable",
+        "millforge_live_harness_unavailable",
+        "shared_backend_configuration_missing",
+        "fixture_workspace_lifecycle_unavailable",
+        "resource_enforcement_unavailable",
+    }
+    assert all(closure_evidence.public_hygiene_checks.values())
+    assert set(closure_evidence.treatment_compiled_harness_hashes) == {
+        "eval_planner",
+        "eval_builder",
+        "eval_checker",
+        "eval_arbiter",
+    }
+    assert "live Pi-vs-Millforge remains denied" in closure_evidence.claim_boundary
+
+    serialized_public = json.dumps(result.model_dump(mode="json"), sort_keys=True)
+    assert str(tmp_path) not in serialized_public
+    assert "/mnt/" not in serialized_public
+    assert "millrace-agents" not in serialized_public
+    assert "hidden_checks" not in serialized_public
+    serialized_public_bytes = b"\n".join(
+        (
+            report_json_path.read_bytes(),
+            report_md_path.read_bytes(),
+            closure_evidence_path.read_bytes(),
+        )
+    )
+    forbidden_byte_fragments = (
+        str(tmp_path).encode("utf-8"),
+        b"/mnt/",
+        b"F:\\",
+        b"~",
+        b"http://",
+        b"https://",
+        b"localhost",
+        b"127.0.0.1",
+        b"api_key",
+        b"authorization:",
+        b"bearer ",
+        b"password",
+        b"millrace-agents",
+        b".millrace",
+        b"daemon state",
+        b"hidden_checks",
+        b"hidden answer",
+        b"scorer_rubric",
+        b"trials.jsonl",
+    )
+    lowered_public_bytes = serialized_public_bytes.lower()
+    assert not any(
+        fragment.lower() in lowered_public_bytes
+        for fragment in forbidden_byte_fragments
+        if fragment
+    )
+
+    first_trial_bytes = trials_path.read_bytes()
+    first_report_json = report_json_path.read_bytes()
+    first_closure_evidence = closure_evidence_path.read_bytes()
+    second = run_offline_fake_eval_campaign(
+        output_root=tmp_path,
+        budget_policy=eval_reports.default_eval_report_budget_policy(),
+        fixture_ids=tuple(fixture.fixture_id for fixture in fixtures),
+        deterministic_seed=77,
+        trial_count_per_fixture_per_arm=1,
+    )
+
+    assert second.appended_trial_ids == ()
+    assert second.completed_trial_ids == result.completed_trial_ids
+    assert second.trial_record_hashes == result.trial_record_hashes
+    assert second.report_hash == result.report_hash
+    assert second.closure_evidence_hash == result.closure_evidence_hash
+    assert trials_path.read_bytes() == first_trial_bytes
+    assert report_json_path.read_bytes() == first_report_json
+    assert closure_evidence_path.read_bytes() == first_closure_evidence
+    assert campaign_dir.joinpath("reports", "report.sha256").is_file()
 
 
 def test_default_campaign_validates_explicit_fixture_pack_hash_override() -> None:
@@ -179,10 +462,11 @@ def test_model_manifest_exposes_numeric_public_model_metadata() -> None:
         "token_rate_per_window": 0,
         "window_seconds": 0,
     }
-    assert all(isinstance(value, str) for value in manifest.public_pricing_snapshot.values())
     assert all(
-        isinstance(value, str)
-        for value in manifest.public_rate_limit_snapshot.values()
+        isinstance(value, str) for value in manifest.public_pricing_snapshot.values()
+    )
+    assert all(
+        isinstance(value, str) for value in manifest.public_rate_limit_snapshot.values()
     )
     assert manifest.model_manifest_hash == calculate_eval_model_manifest_hash(manifest)
 
