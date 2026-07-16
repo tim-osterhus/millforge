@@ -528,8 +528,39 @@ from millforge.eval_reports import (
     validate_eval_budget_policy,
     wilson_score_interval,
 )
+from millforge.base import (
+    MillforgeBaseComponents,
+    MillforgeBaseContextFile,
+    MillforgeBaseContextSnapshot,
+    MillforgeBaseMetadata,
+    MillforgeBaseOptions,
+    MillforgeBasePromptBudgetError,
+    MillforgeBasePromptSnapshot,
+    build_millforge_base_system_prompt,
+    create_millforge_base_components,
+    load_millforge_base_context,
+    millforge_base_harness_source,
+)
+from millforge.compiler import (
+    InMemoryHarnessCompileError,
+    compile_harness_source_in_memory,
+)
 
 __all__: list[str] = [
+    # Millforge base composition
+    "MillforgeBaseOptions",
+    "MillforgeBaseContextFile",
+    "MillforgeBaseContextSnapshot",
+    "MillforgeBasePromptSnapshot",
+    "MillforgeBasePromptBudgetError",
+    "MillforgeBaseMetadata",
+    "MillforgeBaseComponents",
+    "load_millforge_base_context",
+    "build_millforge_base_system_prompt",
+    "millforge_base_harness_source",
+    "create_millforge_base_components",
+    "compile_harness_source_in_memory",
+    "InMemoryHarnessCompileError",
     # Compiled plan types
     "ArgumentMatch",
     "CompilerIdentity",

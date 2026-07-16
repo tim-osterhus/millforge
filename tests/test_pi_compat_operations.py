@@ -67,6 +67,10 @@ _EXPECTED_CLASSIFICATIONS = {
     "packages/coding-agent/test/suite/regressions/3303-find-nested-gitignore.test.ts": "test-derived",
     "packages/coding-agent/test/suite/regressions/5208-late-bash-output.test.ts": "test-derived",
     "packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts": "test-derived",
+    "packages/coding-agent/src/core/system-prompt.ts": "adapted",
+    "packages/coding-agent/src/core/resource-loader.ts": "adapted",
+    "packages/coding-agent/test/system-prompt.test.ts": "test-derived",
+    "packages/coding-agent/test/resource-loader.test.ts": "test-derived",
 }
 
 
@@ -365,7 +369,7 @@ def test_pi_license_and_provenance_match_the_pinned_11a_packet() -> None:
     ).read_bytes()
     assert manifest["adaptations"] == _EXPECTED_ADAPTATIONS
     pinned_paths = manifest["pinned_paths"]
-    assert len(pinned_paths) == 27
+    assert len(pinned_paths) == 31
     assert {
         entry["path"]: entry["classification"] for entry in pinned_paths
     } == _EXPECTED_CLASSIFICATIONS

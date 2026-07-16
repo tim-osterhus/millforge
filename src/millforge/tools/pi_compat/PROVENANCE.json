@@ -46,6 +46,10 @@
     {"path": "packages/coding-agent/test/suite/regressions/3302-find-path-glob.test.ts", "sha256": "d8816a5ed1f3033439e7866dc9c7b87b7e7a265caf186bae3817443b597e1d02", "classification": "test-derived"},
     {"path": "packages/coding-agent/test/suite/regressions/3303-find-nested-gitignore.test.ts", "sha256": "bcc7517366d11bf9cc3b8dade9d54bfbe6cd482a23deb9d6d966d1b2e09c6982", "classification": "test-derived"},
     {"path": "packages/coding-agent/test/suite/regressions/5208-late-bash-output.test.ts", "sha256": "9d6fc0d457e6d7470246d821deec9937d428e86fdad6858d05e7d5c956802f8c", "classification": "test-derived"},
-    {"path": "packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts", "sha256": "d690fdad5de2bd82f016892972395d49d3b83570d5223f4f473626d34af10136", "classification": "test-derived"}
+    {"path": "packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts", "sha256": "d690fdad5de2bd82f016892972395d49d3b83570d5223f4f473626d34af10136", "classification": "test-derived"},
+    {"path": "packages/coding-agent/src/core/system-prompt.ts", "sha256": "49cd7166a7f1eb8d088b7d8b8f2c38642de827ac2ff7a327ec4b7549b543d8d1", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/resource-loader.ts", "sha256": "9e339467f3c5997ec363ad96ff18e1850cff71e2ab37dfeca7b4e8782926a2ff", "classification": "adapted"},
+    {"path": "packages/coding-agent/test/system-prompt.test.ts", "sha256": "6443dbc77ee1c39ca14c89652079e0907f47a4efae2bf9ce08323442983e2981", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/resource-loader.test.ts", "sha256": "98b343646e389f87743ef548f9c23e329ccf1eb0bb6945a66016884ec515b45e", "classification": "test-derived"}
   ]
 }

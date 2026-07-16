@@ -59,6 +59,48 @@ only.
 - Lint: `ruff check .`
 - Format: `ruff format --check .`
 
+## Millforge Base
+
+`millforge-base` is an unrestricted compatibility preset based on
+`@earendil-works/pi-coding-agent` 0.79.6.
+
+> A Python behavioral port of Pi 0.79.6's complete built-in coding tool pack, adapted to Millforge's compiler and runtime contracts.
+
+It exposes Pi-derived `read`, `bash`, `edit`, `write`, `grep`, `find`, and
+`ls` tools, plus `submit`, `block`, and `reject` terminal controls.
+
+**Security warning:** `millforge-base` is unrestricted and unsandboxed.
+
+> millforge-base runs with the permissions of the Millforge process. It can read, write, delete, execute commands, access the network, and access credentials available to that process. Use only in trusted environments.
+
+Deliberate adaptations replace Pi's Node filesystem and process APIs with
+Python APIs, use the documented Python search behavior instead of `fd`/`rg`,
+return text-only supported-image reads, translate cancellation to Millforge's
+poll/wait protocol, and resolve the host shell through the Pi-compatible
+platform policy. The machine-readable source records and adaptations are in
+`src/millforge/tools/pi_compat/PROVENANCE.json`.
+
+The Python composition API creates the validated source, compiled plan,
+Pi-compatible executor, and sanitized metadata without a provider call:
+
+```python
+from pathlib import Path
+
+from millforge import create_millforge_base_components
+
+components = create_millforge_base_components(
+    model_profile=profile,
+    cwd=Path("/absolute/workspace"),
+    cancellation_resolver=cancellation_resolver,
+)
+```
+
+For a custom subset, define an ordinary harness DSL graph with the desired
+Pi-compatible descriptor references and compile it through the normal
+Millforge compiler; `MillforgeBaseOptions` deliberately has no tool-selection
+setting. Millrace default selection and live efficacy evaluation remain
+explicitly deferred.
+
 ## Millforge 03A Closure Evidence
 
 Closure evidence for 03A was refreshed on `2026-06-14T09:11:34Z` for

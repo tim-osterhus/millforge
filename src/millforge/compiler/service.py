@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Protocol
 
 from millforge import canonical_json_serialize, verify_compiled_plan_sha256
+from millforge.compiled_plan import CompiledHarnessPlan
 from millforge.compiled_plan import calculate_compiled_plan_sha256
 from millforge.compiler.catalogs import (
     ModelProfileCatalogSnapshot,
@@ -26,6 +27,7 @@ from millforge.compiler.lowering import (
     lower_resolved_harness,
 )
 from millforge.compiler.output import persist_compile_outputs
+from millforge.compiler.parsing import ParsedHarnessSource
 from millforge.compiler.requests import (
     CompileStatus,
     DefaultHarnessCompileRequestAdmission,
@@ -34,8 +36,11 @@ from millforge.compiler.requests import (
     HarnessCompileResult,
     HarnessRequestAdmissionResult,
     PlanCommitCertainty,
+    _post_parse_source_diagnostics,
 )
+from millforge.compiler.source import HarnessSource
 from millforge.compiler.semantic import ResolvedHarness, compile_semantic_from_admission
+from millforge.contracts import CapabilityEnvelope
 
 
 class HarnessCompiler(Protocol):
@@ -52,6 +57,23 @@ class HarnessCompiler(Protocol):
         ...
 
 
+class InMemoryHarnessCompileError(Exception):
+    """Raised when a validated in-memory harness source cannot compile."""
+
+    diagnostics: tuple[CompilerDiagnostic, ...]
+
+    def __init__(self, diagnostics: tuple[CompilerDiagnostic, ...]) -> None:
+        self.diagnostics = tuple(
+            diagnostic.model_copy(update={"source_reference": None})
+            for diagnostic in bound_diagnostics(diagnostics)
+        )
+        super().__init__(
+            self.diagnostics[0].message
+            if self.diagnostics
+            else "in-memory harness compilation failed"
+        )
+
+
 def compile(
     request: HarnessCompileRequest,
     *,
@@ -64,6 +86,65 @@ def compile(
         tool_catalog=tool_catalog,
         model_profile_catalog=model_profile_catalog,
     )
+
+
+def compile_harness_source_in_memory(
+    *,
+    request_id: str,
+    source: HarnessSource,
+    stage_kind_id: str,
+    legal_terminal_results: tuple[str, ...],
+    capability_envelope: CapabilityEnvelope,
+    tool_catalog: ToolCatalogSnapshot,
+    model_profile_catalog: ModelProfileCatalogSnapshot,
+) -> CompiledHarnessPlan:
+    """Compile a validated harness source without filesystem admission or publication."""
+    request = HarnessCompileRequest(
+        request_id=request_id,
+        source_path="in-memory",
+        source_root="/",
+        source_format="json",
+        output_dir="in-memory",
+        output_root="/",
+        expected_harness_id=source.harness_id,
+        stage_kind_id=stage_kind_id,
+        legal_terminal_results=legal_terminal_results,
+        capability_envelope=capability_envelope,
+    )
+    parsed_source = ParsedHarnessSource(
+        source=source,
+        source_document_sha256="0" * 64,
+    )
+    diagnostics = _post_parse_source_diagnostics(
+        request=request,
+        parsed=parsed_source,
+    )
+    if diagnostics:
+        raise InMemoryHarnessCompileError(diagnostics)
+
+    try:
+        outcome = _compile_post_parse(
+            HarnessRequestAdmissionResult(
+                request=request,
+                parsed_source=parsed_source,
+            ),
+            tool_catalog=tool_catalog,
+            model_profile_catalog=model_profile_catalog,
+        )
+    except Exception as exc:
+        raise InMemoryHarnessCompileError(
+            (
+                _diagnostic(
+                    "MF-I001",
+                    CompilerPhase.INTERNAL,
+                    "Compiler service failed internally.",
+                    fields={"error_type": type(exc).__name__},
+                ),
+            )
+        ) from exc
+    if isinstance(outcome, HarnessCompileResult):
+        raise InMemoryHarnessCompileError(outcome.diagnostics)
+    return outcome
 
 
 def _compile_validated(
@@ -152,6 +233,29 @@ def _compile_admitted(
         return admission.result
     assert admission.request is not None
     assert admission.parsed_source is not None
+    outcome = _compile_post_parse(
+        admission,
+        tool_catalog=tool_catalog,
+        model_profile_catalog=model_profile_catalog,
+    )
+    if isinstance(outcome, HarnessCompileResult):
+        return outcome
+    return persist_compile_outputs(
+        request=admission.request,
+        plan=outcome,
+        source_document_sha256=admission.parsed_source.source_document_sha256,
+    )
+
+
+def _compile_post_parse(
+    admission: HarnessRequestAdmissionResult,
+    *,
+    tool_catalog: ToolCatalogSnapshot,
+    model_profile_catalog: ModelProfileCatalogSnapshot,
+) -> CompiledHarnessPlan | HarnessCompileResult:
+    """Run the shared semantic, lowering, and compiled-hash phases."""
+    assert admission.request is not None
+    assert admission.parsed_source is not None
     source = admission.parsed_source.source
     semantic = compile_semantic_from_admission(
         admission,
@@ -222,11 +326,7 @@ def _compile_admitted(
             harness_id=plan.harness_id,
         )
 
-    return persist_compile_outputs(
-        request=admission.request,
-        plan=plan,
-        source_document_sha256=admission.parsed_source.source_document_sha256,
-    )
+    return plan
 
 
 def _compiled_hash_failure(plan: object) -> CompilerDiagnostic | None:

@@ -172,7 +172,9 @@ Key outcomes:
 - a model cannot call an uncompiled tool
 - schema-valid but unauthorized calls are denied
 - workspace paths cannot escape their approved root
-- general shell access is avoided in early milestones
+- general shell access remains avoided for governed early-stage presets;
+  `millforge-base` is a separate unrestricted and unsandboxed compatibility
+  preset
 - non-idempotent ambiguous failures are not retried automatically
 - tool traces record capability and prerequisite decisions at decision time
 
@@ -199,7 +201,8 @@ Key outcomes:
 - Builder cannot submit before diff, tests, and summary artifacts exist
 - Checker cannot approve before reading required evidence and rerunning checks
 - Arbiter cannot close without an approved checker verdict and valid artifacts
-- no preset contains provider credentials or unrestricted tool authority
+- governed stage presets contain no provider credentials or unrestricted tool
+  authority; `millforge-base` is intentionally unrestricted and unsandboxed
 
 ### 5. Millrace Runner Integration
 

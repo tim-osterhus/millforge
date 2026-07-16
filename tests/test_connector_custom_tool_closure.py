@@ -121,7 +121,9 @@ FORBIDDEN_IMPLEMENTED_CLAIMS = (
 PRIVATE_PREFIXES = ("millrace-agents/", "ideas/", "ref-forge/")
 ALLOWED_ROOT_EXPORT_MODULES = {
     "millforge.artifacts",
+    "millforge.base",
     "millforge.compiled_plan",
+    "millforge.compiler",
     "millforge.contracts",
     "millforge.custom_tools",
     "millforge.eval_artifacts",

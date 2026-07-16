@@ -75,7 +75,13 @@ from millforge.compiler.requests import (
     HarnessRequestAdmissionResult,
     PlanCommitCertainty,
 )
-from millforge.compiler.service import HarnessCompiler, compile, compile_raw
+from millforge.compiler.service import (
+    HarnessCompiler,
+    InMemoryHarnessCompileError,
+    compile,
+    compile_harness_source_in_memory,
+    compile_raw,
+)
 from millforge.compiler.semantic import (
     ResolvedHarness,
     ResolvedToolBinding,
@@ -150,6 +156,7 @@ __all__ = [
     "HarnessCompileRequestAdmission",
     "HarnessCompileResult",
     "HarnessCompiler",
+    "InMemoryHarnessCompileError",
     "HarnessGraphSource",
     "HarnessNodeSource",
     "HarnessRequestAdmissionResult",
@@ -192,6 +199,7 @@ __all__ = [
     "compiler_identity",
     "compiled_plan_output_path",
     "compile",
+    "compile_harness_source_in_memory",
     "compile_raw",
     "compile_semantic",
     "compile_semantic_from_admission",
