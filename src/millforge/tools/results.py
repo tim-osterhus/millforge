@@ -44,6 +44,10 @@ class ToolExecutionErrorCode(str, Enum):
     PREREQUISITE_DENIED = "prerequisite_denied"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
+    PERMISSION_DENIED = "permission_denied"
+    IO_ERROR = "io_error"
+    PROCESS_EXIT_NONZERO = "process_exit_nonzero"
+    PROCESS_LAUNCH_ERROR = "process_launch_error"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
     IMPLEMENTATION_ERROR = "implementation_error"
@@ -127,29 +131,27 @@ def make_tool_result(
     side_effect_record: SideEffectRecord | None = None,
     output_policy: ToolOutputPolicy | None = None,
 ) -> ToolExecutionResult:
-    """Build a bounded, redacted ``ToolExecutionResult``."""
-    safe_output_policy = _output_redaction_policy(output_policy)
+    """Build a bounded ``ToolExecutionResult`` for model-visible return."""
     summary_limit = (
         output_policy.max_summary_utf8
         if output_policy is not None
         else MAX_MODEL_SUMMARY_UTF8
     )
-    summary_policy = _summary_redaction_policy(summary_limit)
-    safe_data = redact_tool_value(structured_data, policy=safe_output_policy)
-    safe_summary = bounded_summary(
+    safe_data = _model_visible_value(structured_data, output_policy=output_policy)
+    safe_summary = _model_visible_summary(
         summary,
         max_utf8=summary_limit,
-        policy=summary_policy,
+        output_policy=output_policy,
     )
     safe_side_effect_record = (
         None
         if side_effect_record is None
         else side_effect_record.model_copy(
             update={
-                "summary": bounded_summary(
+                "summary": _model_visible_summary(
                     side_effect_record.summary,
                     max_utf8=summary_limit,
-                    policy=summary_policy,
+                    output_policy=output_policy,
                 )
             }
         )
@@ -181,28 +183,26 @@ def sanitize_tool_execution_result(
     input_sha256: str | None = None,
 ) -> ToolExecutionResult:
     """Sanitize an implementation-produced result for model-visible return."""
-    safe_output_policy = _output_redaction_policy(output_policy)
     summary_limit = (
         output_policy.max_summary_utf8
         if output_policy is not None
         else MAX_MODEL_SUMMARY_UTF8
     )
-    summary_policy = _summary_redaction_policy(summary_limit)
-    safe_data = redact_tool_value(result.structured_data, policy=safe_output_policy)
-    safe_summary = bounded_summary(
+    safe_data = _model_visible_value(result.structured_data, output_policy=output_policy)
+    safe_summary = _model_visible_summary(
         result.summary,
         max_utf8=summary_limit,
-        policy=summary_policy,
+        output_policy=output_policy,
     )
     safe_side_effect_record = (
         None
         if result.side_effect_record is None
         else result.side_effect_record.model_copy(
             update={
-                "summary": bounded_summary(
+                "summary": _model_visible_summary(
                     result.side_effect_record.summary,
                     max_utf8=summary_limit,
-                    policy=summary_policy,
+                    output_policy=output_policy,
                 )
             }
         )
@@ -354,6 +354,105 @@ def _output_redaction_policy(
         ),
         max_total_bytes=output_policy.max_output_bytes,
     )
+
+
+def _model_visible_value(value: Any, *, output_policy: ToolOutputPolicy | None) -> Any:
+    if output_policy is not None and not output_policy.redact_secrets:
+        return _bound_unredacted_value(value, max_total_bytes=output_policy.max_output_bytes)
+    return redact_tool_value(value, policy=_output_redaction_policy(output_policy))
+
+
+def _model_visible_summary(
+    value: Any,
+    *,
+    max_utf8: int,
+    output_policy: ToolOutputPolicy | None,
+) -> str:
+    if output_policy is not None and not output_policy.redact_secrets:
+        if isinstance(value, str):
+            return _bound_unredacted_text(value, max_utf8=max_utf8) or "[empty]"
+        return _bound_unredacted_text(
+            canonical_json_serialize(
+                _bound_unredacted_value(value, max_total_bytes=max_utf8)
+            ).strip(),
+            max_utf8=max_utf8,
+        ) or "[empty]"
+    return bounded_summary(
+        value,
+        max_utf8=max_utf8,
+        policy=_summary_redaction_policy(max_utf8),
+    )
+
+
+def _bound_unredacted_value(value: Any, *, max_total_bytes: int) -> Any:
+    """Bound JSON-compatible model output without redacting its content."""
+    bounded = _copy_json_value(value)
+    if isinstance(bounded, str):
+        return _bound_unredacted_text(bounded, max_utf8=max_total_bytes)
+    while len(canonical_json_serialize(bounded).encode("utf-8")) > max_total_bytes:
+        path, text = _longest_string_value(bounded)
+        if path is None:
+            break
+        current_size = len(canonical_json_serialize(bounded).encode("utf-8"))
+        target_size = max(0, len(text.encode("utf-8")) - (current_size - max_total_bytes))
+        replacement = _bound_unredacted_text(text, max_utf8=target_size)
+        if replacement == text:
+            break
+        _replace_json_value(bounded, path, replacement)
+    return bounded
+
+
+def _copy_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _copy_json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_copy_json_value(item) for item in value]
+    return value
+
+
+def _longest_string_value(
+    value: Any,
+    path: tuple[str | int, ...] = (),
+) -> tuple[tuple[str | int, ...] | None, str]:
+    if isinstance(value, str):
+        return path, value
+    candidates: list[tuple[tuple[str | int, ...] | None, str]] = []
+    if isinstance(value, Mapping):
+        candidates.extend(
+            _longest_string_value(item, (*path, str(key)))
+            for key, item in value.items()
+        )
+    elif isinstance(value, list):
+        candidates.extend(
+            _longest_string_value(item, (*path, index))
+            for index, item in enumerate(value)
+        )
+    candidates = [candidate for candidate in candidates if candidate[0] is not None]
+    if not candidates:
+        return None, ""
+    return max(candidates, key=lambda candidate: len(candidate[1].encode("utf-8")))
+
+
+def _replace_json_value(
+    value: Any,
+    path: tuple[str | int, ...],
+    replacement: str,
+) -> None:
+    target = value
+    for segment in path[:-1]:
+        target = target[segment]
+    target[path[-1]] = replacement
+
+
+def _bound_unredacted_text(value: str, *, max_utf8: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_utf8:
+        return value
+    marker = "[truncated]"
+    if max_utf8 <= len(marker):
+        return marker[:max_utf8]
+    prefix = encoded[: max_utf8 - len(marker)].decode("utf-8", errors="ignore")
+    return f"{prefix}{marker}"
 
 
 def _summary_redaction_policy(summary_limit: int) -> RedactionPolicy:

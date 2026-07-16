@@ -12,6 +12,12 @@ from millforge.tools.builtin_runtime import (
     create_builtin_runtime_registry,
     create_builtin_tool_executor,
 )
+from millforge.tools.pi_compat_catalog import (
+    PI_COMPAT_TOOL_DESCRIPTORS,
+    create_pi_compat_tool_registry,
+    create_pi_compat_tool_snapshot,
+)
+from millforge.tools.pi_compat_runtime import create_pi_compat_tool_executor
 from millforge.tools.execution import (
     CompiledToolBindingExecutor,
     RuntimeToolRegistry,
@@ -43,6 +49,7 @@ __all__ = [
     "BUILTIN_CAPABILITY_IDS",
     "BUILTIN_TOOL_DESCRIPTORS",
     "BUILTIN_TOOL_VERSION",
+    "PI_COMPAT_TOOL_DESCRIPTORS",
     "DESCRIPTOR_HASH_KIND",
     "DESCRIPTOR_SCHEMA_VERSION",
     "MAX_CANCELLATION_GRACE_SECONDS",
@@ -67,6 +74,9 @@ __all__ = [
     "create_builtin_tool_executor",
     "create_builtin_tool_registry",
     "create_builtin_tool_snapshot",
+    "create_pi_compat_tool_executor",
+    "create_pi_compat_tool_registry",
+    "create_pi_compat_tool_snapshot",
     "create_tool_executor",
     "descriptor_hash_payload",
     "iter_builtin_tool_descriptors",

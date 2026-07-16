@@ -104,7 +104,7 @@ from millforge.protocols import (
     RuntimeClock,
     ToolExecutor,
 )
-from millforge.tools.results import canonical_sha256
+from millforge.tools.results import bounded_summary, canonical_sha256
 
 
 class ModelClientLike(Protocol):
@@ -301,7 +301,7 @@ class ForgeGuardrailBackend:
                 raise ForgeBridgeError("Workflow completed without terminal intent")
             status = (
                 GuardedSessionStatus.REJECTED
-                if tool_bridge.terminal_intent.disposition == "blocked"
+                if tool_bridge.terminal_intent.disposition in {"blocked", "rejected"}
                 else GuardedSessionStatus.TERMINAL
             )
             return self._result(
@@ -1510,9 +1510,7 @@ class ForgeToolBridge:
                 "Terminal candidate failed owned-history validation"
             )
         request = self._session_request.execution_request
-        disposition: Literal["success", "blocked"] = (
-            "blocked" if node.terminal_result.endswith("_BLOCKED") else "success"
-        )
+        disposition = _terminal_disposition(node.terminal_result)
         self._terminal_intent = TerminalIntent(
             request_id=request.request_id,
             run_id=request.run_id,
@@ -1605,11 +1603,13 @@ class ForgeToolBridge:
                 idempotency=_trace_idempotency(idempotency or node.idempotency),
                 side_effect_certainty=side_effect_certainty,
                 side_effect_detail_code=side_effect_detail_code,
-                side_effect_detail_summary=side_effect_detail_summary,
+                side_effect_detail_summary=None
+                if side_effect_detail_summary is None
+                else bounded_summary(side_effect_detail_summary, max_utf8=2048),
                 side_effect_retry_allowed=side_effect_retry_allowed,
                 output_sha256=output_sha256,
                 duration_ms=duration_ms,
-                summary=summary[:2048] or "tool trace",
+                summary=bounded_summary(summary, max_utf8=2048),
             )
         )
 
@@ -1863,6 +1863,18 @@ def _trace_idempotency(value: IdempotencyClass) -> ToolTraceIdempotency:
 
 def _has_denial(records: tuple[ToolTraceDecisionRecord, ...]) -> bool:
     return any(record.decision == ToolTraceDecision.DENIED for record in records)
+
+
+def _terminal_disposition(
+    terminal_result: str,
+) -> Literal["success", "blocked", "rejected"]:
+    if terminal_result == "COMPLETE":
+        return "success"
+    if terminal_result == "BLOCKED":
+        return "blocked"
+    if terminal_result == "REJECTED":
+        return "rejected"
+    return "blocked" if terminal_result.endswith("_BLOCKED") else "success"
 
 
 def _model_visible_tool_content(result: ToolExecutionResult) -> str:

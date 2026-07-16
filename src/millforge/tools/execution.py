@@ -23,7 +23,6 @@ from millforge.contracts import (
     ValidatedToolCall,
 )
 from millforge.compiler.catalogs import ToolCatalogSnapshot
-from millforge.tools.builtins import iter_builtin_tool_descriptors
 from millforge.tools.registry import ToolOutputPolicy
 from millforge.tools.results import (
     MAX_MODEL_SUMMARY_UTF8,
@@ -889,13 +888,15 @@ class CompiledToolBindingExecutor:
     def _output_policy_for_node(
         self, node: CompiledHarnessNode
     ) -> ToolOutputPolicy | None:
-        for descriptor in iter_builtin_tool_descriptors():
-            if (
-                descriptor.tool_id == node.binding.tool_id
-                and descriptor.tool_version == node.binding.tool_version
-            ):
-                return descriptor.output_policy
-        return None
+        lookup = self._descriptor_snapshot.resolve_exact(
+            node.binding.tool_id,
+            node.binding.tool_version,
+        )
+        if lookup.entry is None or lookup.entry.output_policy is None:
+            return None
+        if not isinstance(lookup.entry.output_policy, ToolOutputPolicy):
+            raise ValueError("descriptor snapshot output_policy must be ToolOutputPolicy")
+        return lookup.entry.output_policy
 
 
 def _builtin_pre_entry_policy_result(
@@ -1371,6 +1372,15 @@ def _node_binding_defect(
             False,
         )
     entry = lookup.entry
+    if entry.output_policy is not None and not isinstance(
+        entry.output_policy, ToolOutputPolicy
+    ):
+        return (
+            ToolBindingDenialCode.BINDING_MISMATCH,
+            "descriptor snapshot output policy is malformed",
+            {"binding_field": "output_policy"},
+            True,
+        )
     expected: dict[str, Any] = {
         "descriptor_sha256": entry.descriptor_sha256,
         "implementation_id": entry.implementation_id,
