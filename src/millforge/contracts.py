@@ -7,6 +7,7 @@ mutable working models are explicitly noted in their docstrings.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from enum import Enum
@@ -392,6 +393,46 @@ class ArtifactRef(BaseModel):
         return None if value is None else _nonblank(value, "content_type")
 
 
+class HarnessTaskInput(BaseModel):
+    """Exact bounded instruction supplied to an executable harness request."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
+
+    schema_version: Literal["1.0"] = "1.0"
+    instruction: str
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction_is_bounded(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError(
+                "instruction must be non-empty after whitespace inspection"
+            )
+        if "\x00" in value:
+            raise ValueError("instruction must not contain NUL")
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("instruction must be valid UTF-8 text") from exc
+        if len(encoded) > 65_536:
+            raise ValueError("instruction must not exceed 65,536 UTF-8 bytes")
+        return value
+
+    @property
+    def utf8_byte_count(self) -> int:
+        """Return the exact UTF-8 encoded instruction size."""
+        return len(self.instruction.encode("utf-8"))
+
+    @property
+    def sha256(self) -> str:
+        """Return the lowercase SHA-256 of the exact UTF-8 instruction bytes."""
+        return hashlib.sha256(self.instruction.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Stage identity
 # ---------------------------------------------------------------------------
@@ -619,11 +660,16 @@ class HarnessExecutionRequest(BaseModel):
     rejected at construction time.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
     request_id: str = Field(description="Unique request identifier")
     run_id: str = Field(description="Run this request belongs to")
     work_item_id: str = Field(description="Active work item identifier")
+    task: HarnessTaskInput = Field(description="Exact bounded task instruction")
     stage: StageIdentity = Field(description="Stage identity")
     compiled_harness: CompiledHarnessRef = Field(
         description="Reference to the compiled harness"

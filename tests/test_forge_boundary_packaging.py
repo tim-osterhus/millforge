@@ -387,29 +387,9 @@ def test_prompt_assembly_excludes_secrets_and_artifact_contents_and_preserves_br
     session_request = make_test_guarded_session_request()
 
     messages = ForgeSessionInputBuilder().build(plan, session_request)
-    payload = json.loads(messages[1].content)
 
     assert messages[0].content == "Keep literal braces: {request_id}"
-    assert payload == {
-        "kind": "millforge_stage_request",
-        "request_id": "req-test-001",
-        "run_id": "run-test-001",
-        "schema_version": "1.0",
-        "stage": {
-            "node_id": "builder",
-            "plane": "execution",
-            "stage_kind_id": "builder",
-        },
-    }
-    assert "work_item_id" not in payload
-    assert "input_artifacts" not in payload
-    assert "prompt_policy" not in payload
-    assert "context_policy" not in payload
-    assert "compiled_harness" not in payload
-    assert "run_directory" not in payload
-    assert "timeout" not in payload
-    assert "cancellation" not in payload
-    assert "secret_refs" not in payload
+    assert messages[1].content == session_request.execution_request.task.instruction
     assert "DATABASE_PASSWORD" not in messages[1].content
     assert '{"schema_version":"test"}' not in messages[1].content
 

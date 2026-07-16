@@ -68,6 +68,7 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    HarnessTaskInput,
     ModelCompletionResponse,
     ModelToolCall,
     ModelProfileRef,
@@ -359,6 +360,7 @@ def _build_test_request(
         request_id=TEST_REQUEST_ID,
         run_id=TEST_RUN_ID,
         work_item_id=TEST_WORK_ITEM_ID,
+        task=HarnessTaskInput(instruction="Complete the integration test task."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",

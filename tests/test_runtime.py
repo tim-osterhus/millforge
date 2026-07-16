@@ -57,6 +57,7 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    HarnessTaskInput,
     InvalidToolArguments,
     ModelCompletionResponse,
     ModelProfileRef,
@@ -3280,6 +3281,7 @@ async def test_failure_missing_capability() -> None:
         request_id="req-runtime-001",
         run_id="run-runtime-001",
         work_item_id="task-runtime-001",
+        task=HarnessTaskInput(instruction="Complete the runtime test task."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",

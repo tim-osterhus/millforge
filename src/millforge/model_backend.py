@@ -7,6 +7,7 @@ public ``ModelClient`` protocol must not expose.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import math
@@ -169,6 +170,19 @@ class ModelProviderError(ModelTransportError):
             "ModelProviderError("
             f"category={self.category.value!r}, retryable={self.retryable!r}, "
             f"provider_request_id={self.provider_request_id!r}, fields={dict(self.fields)!r})"
+        )
+
+
+class ModelRequestDeadlineExceededError(ModelProviderError):
+    """The client-owned effective request deadline expired."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__(
+            category=ProviderErrorCategory.TIMEOUT,
+            message="model request deadline expired",
+            retryable=False,
         )
 
 
@@ -1035,9 +1049,7 @@ class DefaultModelClient:
 
         token = self._resolve_cancellation(request)
         self._check_cancelled(token)
-        timeout_seconds = min(
-            profile.timeout_seconds, self._remaining_timeout_seconds(request)
-        )
+        timeout_seconds, call_deadline = self._effective_timeout(profile, request)
         self._validate_secret_refs(profile.authentication, request.secret_refs)
         resolved_secret = resolve_authentication_secret(
             profile.authentication,
@@ -1055,10 +1067,81 @@ class DefaultModelClient:
             body=body,
             timeout_seconds=timeout_seconds,
         )
-        transport_response = await self._transport.send(transport_request)
-        self._check_cancelled(token)
-        self._remaining_timeout_seconds(request)
+        transport_response = await self._send_with_cancellation(
+            transport_request,
+            token=token,
+            timeout_seconds=timeout_seconds,
+            call_deadline=call_deadline,
+        )
         return normalize_transport_response(profile, transport_response)
+
+    async def _send_with_cancellation(
+        self,
+        request: TransportRequest,
+        *,
+        token: ModelCancellationToken | None,
+        timeout_seconds: float,
+        call_deadline: float,
+    ) -> TransportResponse:
+        transport_task = asyncio.create_task(
+            self._transport.send(request),
+            name=f"millforge-model-transport:{request.request_id}",
+        )
+        cancellation_task = (
+            asyncio.create_task(
+                token.wait(),
+                name=f"millforge-model-cancellation:{request.request_id}",
+            )
+            if token is not None
+            else None
+        )
+        owned_tasks = tuple(
+            task for task in (transport_task, cancellation_task) if task is not None
+        )
+
+        try:
+            done, _ = await asyncio.wait(
+                owned_tasks,
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            self._check_cancelled(token)
+            if not done or self._clock.monotonic() >= call_deadline:
+                self._raise_deadline_expired()
+
+            if transport_task not in done:
+                # A conforming waiter returns only after cancellation. Keep the
+                # state check authoritative if an implementation wakes early.
+                done, _ = await asyncio.wait(
+                    (transport_task,),
+                    timeout=max(0.0, call_deadline - self._clock.monotonic()),
+                )
+                self._check_cancelled(token)
+                if (
+                    transport_task not in done
+                    or self._clock.monotonic() >= call_deadline
+                ):
+                    self._raise_deadline_expired()
+
+            if cancellation_task is not None:
+                await self._cancel_and_await(cancellation_task)
+            self._check_cancelled(token)
+            if self._clock.monotonic() >= call_deadline:
+                self._raise_deadline_expired()
+            return transport_task.result()
+        except asyncio.CancelledError:
+            await self._cancel_and_await(*owned_tasks)
+            raise
+        finally:
+            await self._cancel_and_await(*owned_tasks)
+
+    @staticmethod
+    async def _cancel_and_await(*tasks: asyncio.Task[Any]) -> None:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _resolve_cancellation(
         self, request: ModelCompletionRequest
@@ -1077,15 +1160,21 @@ class DefaultModelClient:
             retryable=False,
         )
 
-    def _remaining_timeout_seconds(self, request: ModelCompletionRequest) -> float:
-        remaining = request.deadline.remaining(self._clock)
+    def _effective_timeout(
+        self,
+        profile: ResolvedModelProfile,
+        request: ModelCompletionRequest,
+    ) -> tuple[float, float]:
+        now = self._clock.monotonic()
+        remaining = request.deadline.effective_deadline_monotonic - now
         if remaining <= 0:
-            raise ModelProviderError(
-                category=ProviderErrorCategory.TIMEOUT,
-                message="model request deadline expired",
-                retryable=False,
-            )
-        return remaining
+            self._raise_deadline_expired()
+        timeout_seconds = min(profile.timeout_seconds, remaining)
+        return timeout_seconds, now + timeout_seconds
+
+    @staticmethod
+    def _raise_deadline_expired() -> None:
+        raise ModelRequestDeadlineExceededError()
 
     def _headers(
         self,

@@ -46,6 +46,7 @@ from millforge.contracts import (
     ExecutionResultClass,
     ExecutionStatus,
     HarnessExecutionRequest,
+    HarnessTaskInput,
     ModelProfileRef,
     RunDirRef,
     StageIdentity,
@@ -676,6 +677,7 @@ async def test_emitted_compiled_bytes_load_and_pass_runtime_preflight_without_so
         request_id="request.runtime.compat",
         run_id="run-runtime-compat",
         work_item_id="task-runtime-compat",
+        task=HarnessTaskInput(instruction="Complete the compiler runtime task."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",
@@ -756,6 +758,7 @@ async def test_runtime_rejects_compiled_hash_mismatch_before_backend_activity(
             request_id="request.runtime.hash_mismatch",
             run_id="run-runtime-hash-mismatch",
             work_item_id="task-runtime-compat",
+            task=HarnessTaskInput(instruction="Complete the compiler runtime task."),
             stage=StageIdentity(
                 plane="execution",
                 node_id="builder",

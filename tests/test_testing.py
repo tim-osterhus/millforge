@@ -24,6 +24,7 @@ from millforge.contracts import (
     GuardedSessionResult,
     GuardedSessionStatus,
     HarnessExecutionRequest,
+    HarnessTaskInput,
     IdempotencyClass,
     ModelCompletionRequest,
     ModelCompletionResponse,
@@ -72,6 +73,7 @@ def _make_harness_request() -> HarnessExecutionRequest:
         request_id="req-1",
         run_id="run-1",
         work_item_id="task-1",
+        task=HarnessTaskInput(instruction="Complete the fake-backed test task."),
         stage=StageIdentity(
             plane="execution", node_id="builder", stage_kind_id="builder"
         ),

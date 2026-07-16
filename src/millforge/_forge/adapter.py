@@ -97,6 +97,11 @@ from millforge.exceptions import (
     OperationCancelledError,
     ToolInvokeError,
 )
+from millforge.model_backend import (
+    ModelProviderError,
+    ModelRequestDeadlineExceededError,
+    ProviderErrorCategory,
+)
 from millforge.protocols import (
     CancellationResolver,
     CompiledHarnessLoader,
@@ -122,7 +127,12 @@ class ToolExecutorLike(Protocol):
 
 
 class CancellationTokenLike(Protocol):
+    @property
+    def cancellation_id(self) -> str: ...
+
     def is_cancelled(self) -> bool: ...
+
+    async def wait(self) -> None: ...
 
     @property
     def reason(self) -> str | None: ...
@@ -148,6 +158,20 @@ class ForgeBridgeError(ValueError):
     """Bridge-owned validation rejected a private Forge interaction."""
 
     code = "bridge_rejected"
+
+
+class _WorkflowOperationCancelledError(
+    OperationCancelledError,
+    NonRetryableToolError,
+):
+    pass
+
+
+class _WorkflowDeadlineExceededError(
+    DeadlineExceededError,
+    NonRetryableToolError,
+):
+    pass
 
 
 DiagnosticCategory = Literal[
@@ -238,6 +262,7 @@ class ForgeGuardrailBackend:
         )
         tool_bridge: ForgeToolBridge | None = None
         model_bridge: ForgeModelBridge | None = None
+        cancellation_watcher: asyncio.Task[None] | None = None
 
         try:
             self._validate_request(request)
@@ -247,9 +272,15 @@ class ForgeGuardrailBackend:
             self._check_deadline(request)
             self._check_cancelled(token)
             self._check_remaining_deadline(request)
+            cancel_event = asyncio.Event()
+            cancellation_watcher = asyncio.create_task(
+                _watch_cancellation(token, cancel_event),
+                name=f"millforge-cancellation-watcher:{request.session_id}",
+            )
 
             plan = await self._load_verified_plan(request)
             self._recheck_plan_against_request(plan, request)
+            self._check_cancelled(token)
             event_translator.emit(SessionEventType.SESSION_STARTED)
 
             model_bridge = ForgeModelBridge(
@@ -290,13 +321,13 @@ class ForgeGuardrailBackend:
                 on_message=_runner_message_observer(event_translator),
             )
             initial_messages = ForgeSessionInputBuilder().build(plan, request)
-            cancel_event = cancellation_event_from_ref(token.is_cancelled())
             await runner.run(
                 workflow_input.workflow,
                 user_message="",
                 initial_messages=initial_messages,
                 cancel_event=cancel_event,
             )
+            self._check_cancelled(token)
             if tool_bridge.terminal_intent is None:
                 raise ForgeBridgeError("Workflow completed without terminal intent")
             status = (
@@ -462,7 +493,46 @@ class ForgeGuardrailBackend:
                 events=_ordered_events(event_translator.events),
                 usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
-        except ModelTransportError:
+        except ModelTransportError as exc:
+            if (
+                isinstance(exc, ModelProviderError)
+                and exc.category is ProviderErrorCategory.CANCELLED
+            ):
+                return self._failure_result(
+                    request,
+                    status=GuardedSessionStatus.CANCELLED,
+                    code="workflow_cancelled",
+                    category="cancellation",
+                    message="Workflow cancelled",
+                    started_at=started_at,
+                    events=_ordered_events(
+                        event_translator.events,
+                        tool_bridge.events if tool_bridge is not None else (),
+                        _single_event(event_translator, SessionEventType.CANCELLED),
+                    ),
+                    tool_trace=tool_bridge.tool_trace
+                    if tool_bridge is not None
+                    else (),
+                    usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
+                )
+            if isinstance(exc, ModelRequestDeadlineExceededError):
+                return self._failure_result(
+                    request,
+                    status=GuardedSessionStatus.TIMED_OUT,
+                    code="deadline_expired",
+                    category="timeout",
+                    message="Workflow deadline expired",
+                    started_at=started_at,
+                    events=_ordered_events(
+                        event_translator.events,
+                        tool_bridge.events if tool_bridge is not None else (),
+                        _single_event(event_translator, SessionEventType.TIMED_OUT),
+                    ),
+                    tool_trace=tool_bridge.tool_trace
+                    if tool_bridge is not None
+                    else (),
+                    usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
+                )
             return self._failure_result(
                 request,
                 status=GuardedSessionStatus.MODEL_FAILED,
@@ -512,6 +582,8 @@ class ForgeGuardrailBackend:
                 usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
                 cause=exc,
             )
+        finally:
+            await _cancel_and_await_watcher(cancellation_watcher)
 
     def _validate_request(self, request: GuardedSessionRequest) -> None:
         if not request.session_id.strip():
@@ -828,13 +900,15 @@ class ForgeSessionInputBuilder:
         session_request: GuardedSessionRequest,
     ) -> list[Message]:
         request = session_request.execution_request
-        payload = _session_payload(plan, session_request, request)
-        content = json.dumps(
-            payload,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
+        content = request.task.instruction
+        if plan.prompt_policy.include_request_context:
+            context = json.dumps(
+                _request_context_payload(request),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            content = f"{content}{_REQUEST_CONTEXT_SEPARATOR}{context}"
         return [
             Message(
                 MessageRole.SYSTEM,
@@ -1204,7 +1278,9 @@ class ForgeToolBridge:
                 node_id=node.node_id,
                 tool_call_id=call_id,
             )
-            raise NonRetryableToolError(token.reason or "tool call cancelled")
+            raise _WorkflowOperationCancelledError(
+                token.reason or "tool call cancelled"
+            )
         if self._session_request.deadline.remaining(self._clock) <= 0:
             self._append_trace(
                 node=node,
@@ -1222,7 +1298,7 @@ class ForgeToolBridge:
                 node_id=node.node_id,
                 tool_call_id=call_id,
             )
-            raise NonRetryableToolError("tool call deadline expired")
+            raise _WorkflowDeadlineExceededError("tool call deadline expired")
 
         validated_call = ValidatedToolCall(
             call_id=call_id,
@@ -1359,6 +1435,22 @@ class ForgeToolBridge:
             duration_ms=result.duration_ms,
             summary=result.summary,
         )
+        if result.status is ToolExecutionStatus.CANCELLED:
+            self._append_event(
+                SessionEventType.CANCELLED,
+                node_id=node.node_id,
+                tool_call_id=call_id,
+                code=result.error_code,
+            )
+            raise _WorkflowOperationCancelledError(_failure_message(result))
+        if result.status is ToolExecutionStatus.TIMED_OUT:
+            self._append_event(
+                SessionEventType.TIMED_OUT,
+                node_id=node.node_id,
+                tool_call_id=call_id,
+                code=result.error_code,
+            )
+            raise _WorkflowDeadlineExceededError(_failure_message(result))
         if result.status != ToolExecutionStatus.SUCCESS:
             self._append_event(
                 SessionEventType.TOOL_FAILED,
@@ -1614,15 +1706,22 @@ class ForgeToolBridge:
         )
 
 
-def cancellation_event_from_ref(
-    cancel_requested: bool,
-) -> asyncio.Event:
-    """Create a private Forge cancellation event from resolved cancellation state."""
+async def _watch_cancellation(
+    token: CancellationTokenLike,
+    cancel_event: asyncio.Event,
+) -> None:
+    await token.wait()
+    cancel_event.set()
 
-    event = asyncio.Event()
-    if cancel_requested:
-        event.set()
-    return event
+
+async def _cancel_and_await_watcher(
+    watcher: asyncio.Task[None] | None,
+) -> None:
+    if watcher is None:
+        return
+    if not watcher.done():
+        watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
 
 
 def _reject(message: str) -> None:
@@ -1694,33 +1793,28 @@ def _unique_or_reject(values: Any, label: str) -> None:
         _reject(f"Duplicate {label} values are unsupported")
 
 
-def _session_payload(
-    plan: CompiledHarnessPlan,
-    session_request: GuardedSessionRequest,
-    request: HarnessExecutionRequest,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "kind": "millforge_stage_request",
-        "request_id": request.request_id,
-        "run_id": request.run_id,
-        "schema_version": "1.0",
-        "stage": {
-            "node_id": request.stage.node_id,
-            "plane": request.stage.plane,
-            "stage_kind_id": request.stage.stage_kind_id,
-        },
-    }
-    if plan.prompt_policy.include_request_context:
-        payload["work_item_id"] = request.work_item_id
-        payload["input_artifacts"] = [
+_REQUEST_CONTEXT_SEPARATOR = "\n\n--- millforge request context ---\n"
+
+
+def _request_context_payload(request: HarnessExecutionRequest) -> dict[str, Any]:
+    return {
+        "input_artifacts": [
             {
                 "artifact_id": artifact.artifact_id,
                 "content_type": artifact.content_type,
                 "path": _path_text(artifact.path),
             }
             for artifact in request.input_artifacts
-        ]
-    return payload
+        ],
+        "request_id": request.request_id,
+        "run_id": request.run_id,
+        "stage": {
+            "node_id": request.stage.node_id,
+            "plane": request.stage.plane,
+            "stage_kind_id": request.stage.stage_kind_id,
+        },
+        "work_item_id": request.work_item_id,
+    }
 
 
 def _context_compaction_callback(_event: Any) -> None:
@@ -1965,5 +2059,4 @@ __all__ = [
     "ForgeWorkflowFactory",
     "ForgeWorkflowInput",
     "TerminalCandidate",
-    "cancellation_event_from_ref",
 ]

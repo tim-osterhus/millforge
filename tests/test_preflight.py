@@ -30,6 +30,7 @@ from millforge.contracts import (
     ExecutionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    HarnessTaskInput,
     ModelProfileRef,
     RunDirRef,
     StageIdentity,
@@ -434,6 +435,7 @@ async def test_preflight_missing_capability() -> None:
         request_id="req-preflight-001",
         run_id="run-preflight-001",
         work_item_id="task-preflight-001",
+        task=HarnessTaskInput(instruction="Complete the preflight test task."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",
@@ -633,8 +635,8 @@ async def test_preflight_stage_kind_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preflight_missing_required_input_artifacts() -> None:
-    """Request must admit input artifacts before backend work."""
+async def test_preflight_accepts_empty_input_artifacts_with_valid_task() -> None:
+    """A valid task is executable without input artifact references."""
     backend = FakeGuardrailBackend()
     plan = make_test_compiled_plan(
         plan_id=VALID_PLAN_ID,
@@ -647,6 +649,7 @@ async def test_preflight_missing_required_input_artifacts() -> None:
         request_id="req-preflight-input",
         run_id="run-preflight-input",
         work_item_id="task-preflight-001",
+        task=HarnessTaskInput(instruction="Complete the preflight test task."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",
@@ -678,11 +681,7 @@ async def test_preflight_missing_required_input_artifacts() -> None:
         model_profile=ModelProfileRef(profile_id=VALID_PROFILE_ID),
     )
 
-    result = await runtime.execute(request)
-
-    _assert_zero_calls(backend)
-    _assert_failure_result(result)
-    assert result.status == ExecutionStatus.FAILED
+    await runtime._check_input_artifacts(request)
 
 
 @pytest.mark.asyncio

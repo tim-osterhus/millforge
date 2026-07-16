@@ -54,6 +54,7 @@ from millforge.contracts import (
     ExecutionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    HarnessTaskInput,
     AssistantMessage,
     InvalidToolArguments,
     ModelCapabilityRequirements,
@@ -92,6 +93,87 @@ from tests.conftest import (
     make_canonical_builder_compiled_plan,
     make_canonical_builder_execution_request,
 )
+
+
+def test_harness_task_input_preserves_utf8_bytes_and_exposes_stable_metadata() -> None:
+    instruction = "  first line\r\nsecond line: caf\N{LATIN SMALL LETTER E WITH ACUTE} \N{ROCKET}  "
+    encoded = instruction.encode("utf-8")
+
+    task = HarnessTaskInput(instruction=instruction)
+
+    assert task.instruction.encode("utf-8") == encoded
+    assert task.utf8_byte_count == len(encoded)
+    assert task.sha256 == hashlib.sha256(encoded).hexdigest()
+    assert task.model_dump() == {
+        "schema_version": "1.0",
+        "instruction": instruction,
+    }
+
+
+@pytest.mark.parametrize(
+    "instruction", ["", " \t\r\n", "before\x00after", "unpaired \ud800"]
+)
+def test_harness_task_input_rejects_invalid_instruction(instruction: str) -> None:
+    with pytest.raises(ValidationError):
+        HarnessTaskInput(instruction=instruction)
+
+
+def test_harness_task_input_enforces_exact_utf8_byte_limit() -> None:
+    exact_multibyte = "a" * 65_532 + "\N{ROCKET}"
+
+    task = HarnessTaskInput(instruction=exact_multibyte)
+
+    assert task.utf8_byte_count == 65_536
+    with pytest.raises(ValidationError, match="65,536 UTF-8 bytes"):
+        HarnessTaskInput(instruction=exact_multibyte + "a")
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "packet03-secret-sentinel\x00tail",
+        "packet03-secret-sentinel" + "x" * 65_536,
+    ],
+)
+def test_harness_task_input_validation_errors_hide_raw_instruction(
+    instruction: str,
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        HarnessTaskInput(instruction=instruction)
+
+    assert "packet03-secret-sentinel" not in str(caught.value)
+
+
+def test_nested_harness_request_validation_error_hides_raw_instruction(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    payload = request.model_dump(mode="python")
+    payload["task"] = {
+        "schema_version": "1.0",
+        "instruction": "packet03-nested-secret-sentinel\x00tail",
+    }
+
+    with pytest.raises(ValidationError) as caught:
+        HarnessExecutionRequest.model_validate(payload)
+
+    assert "packet03-nested-secret-sentinel" not in str(caught.value)
+
+
+def test_harness_execution_request_requires_task_and_accepts_no_artifacts(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    payload = request.model_dump(mode="python")
+    payload["input_artifacts"] = ()
+
+    restored = HarnessExecutionRequest.model_validate(payload)
+
+    assert restored.input_artifacts == ()
+    payload.pop("task")
+    with pytest.raises(ValidationError):
+        HarnessExecutionRequest.model_validate(payload)
+
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64

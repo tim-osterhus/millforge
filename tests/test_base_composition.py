@@ -12,13 +12,14 @@ from millforge.base import composition, context, prompt
 from millforge.base.composition import create_millforge_base_components
 from millforge.contracts import (
     AssistantMessage,
-    ArtifactRef,
     CancellationRef,
     CompiledHarnessHash,
     CompiledHarnessIdentity,
     CompiledHarnessRef,
     HarnessExecutionRequest,
+    HarnessTaskInput,
     ModelCompletionResponse,
+    ModelCompletionRequest,
     ModelProfileRef,
     ModelToolCall,
     ParsedToolArguments,
@@ -194,9 +195,6 @@ async def test_composition_plan_and_executor_complete_offline_runtime(
     tmp_path,
 ) -> None:
     (tmp_path / "note.txt").write_text("offline proof\n", encoding="utf-8")
-    input_target = tmp_path / "millforge" / "input.txt"
-    input_target.parent.mkdir()
-    input_target.write_text("runtime input\n", encoding="utf-8")
     components, _shell_config, _resolutions, _executor_configs = _components(
         monkeypatch, tmp_path
     )
@@ -205,6 +203,7 @@ async def test_composition_plan_and_executor_complete_offline_runtime(
         request_id="request-base-runtime",
         run_id="run-base-runtime",
         work_item_id="work-base-runtime",
+        task=HarnessTaskInput(instruction="Read note.txt and complete the task."),
         stage=StageIdentity(
             plane="execution",
             node_id="millforge-base",
@@ -222,20 +221,30 @@ async def test_composition_plan_and_executor_complete_offline_runtime(
             ),
         ),
         capability_envelope=components.capability_envelope,
-        input_artifacts=(
-            ArtifactRef(
-                artifact_id="input",
-                path=input_target.relative_to(tmp_path),
-                content_type="text/plain",
-            ),
-        ),
+        input_artifacts=(),
         run_directory=RunDirRef(run_id="run-base-runtime", path=tmp_path),
         timeout=TimeoutRef(timeout_seconds=60),
         cancellation=CancellationRef(cancellation_id="cancel-base-runtime"),
         secret_refs=(),
         model_profile=ModelProfileRef(profile_id=plan.model_profile.profile_id),
     )
-    model_client = FakeModelClient(
+
+    class InstructionGatedModelClient(FakeModelClient):
+        async def complete(
+            self, model_request: ModelCompletionRequest
+        ) -> ModelCompletionResponse:
+            user_messages = [
+                message.content
+                for message in model_request.messages
+                if message.role == "user"
+            ]
+            if not user_messages or not user_messages[0].startswith(
+                request.task.instruction
+            ):
+                raise AssertionError("task instruction was not model-visible")
+            return await super().complete(model_request)
+
+    model_client = InstructionGatedModelClient(
         responses=[
             ModelCompletionResponse(
                 provider_request_id="provider-read",
@@ -303,3 +312,15 @@ async def test_composition_plan_and_executor_complete_offline_runtime(
         "submit",
     ]
     assert len(artifact_writer.terminal_result_calls) == 1
+    persisted = repr(
+        (
+            artifact_writer.execution_summary_calls,
+            artifact_writer.events_calls,
+            artifact_writer.tool_trace_calls,
+            artifact_writer.metrics_calls,
+            artifact_writer.diagnostic_calls,
+            result,
+            components.metadata,
+        )
+    )
+    assert request.task.instruction not in persisted

@@ -24,10 +24,12 @@ from millforge import (
     ExecutionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    HarnessTaskInput,
     MillforgeBaseBindingError,
     MillforgeBaseComponents,
     MillforgeBaseRuntimeServices,
     ModelCompletionResponse,
+    ModelCompletionRequest,
     ModelProfileRef,
     ModelToolCall,
     ParsedToolArguments,
@@ -74,6 +76,7 @@ def _request(
         request_id=f"request-{suffix}",
         run_id=f"run-{suffix}",
         work_item_id=f"work-{suffix}",
+        task=HarnessTaskInput(instruction="Read note.txt and complete the task."),
         stage=StageIdentity(
             plane="execution",
             node_id="millforge-base",
@@ -92,13 +95,7 @@ def _request(
             ),
         ),
         capability_envelope=components.capability_envelope,
-        input_artifacts=(
-            ArtifactRef(
-                artifact_id="input",
-                path=Path("millforge/input.txt"),
-                content_type="text/plain",
-            ),
-        ),
+        input_artifacts=(),
         run_directory=RunDirRef(run_id=f"run-{suffix}", path=run_root),
         timeout=TimeoutRef(timeout_seconds=60),
         cancellation=CancellationRef(cancellation_id=f"cancel-{suffix}"),
@@ -108,9 +105,32 @@ def _request(
 
 
 def _prepare_input(request: HarnessExecutionRequest) -> None:
-    input_path = request.run_directory.path / request.input_artifacts[0].path
-    input_path.parent.mkdir(parents=True, exist_ok=True)
-    input_path.write_text("runtime input\n", encoding="utf-8")
+    assert request.input_artifacts == ()
+
+
+class _TaskGatedModelClient(FakeModelClient):
+    def __init__(
+        self,
+        *,
+        expected_instruction: str,
+        responses: list[ModelCompletionResponse],
+    ) -> None:
+        super().__init__(responses=responses)
+        self._expected_instruction = expected_instruction
+
+    async def complete(
+        self, request: ModelCompletionRequest
+    ) -> ModelCompletionResponse:
+        if (
+            len(request.messages) < 2
+            or request.messages[0].role != "system"
+            or request.messages[1].role != "user"
+            or not request.messages[1].content.startswith(self._expected_instruction)
+        ):
+            raise AssertionError(
+                "exact task instruction was not the primary user input"
+            )
+        return await super().complete(request)
 
 
 def _tool_response(model_id: str, *, terminal: str | None = None):
@@ -145,11 +165,13 @@ async def test_public_facade_runs_tool_then_terminal(
     (tmp_path / "note.txt").write_text("offline proof\n", encoding="utf-8")
     components = _components(monkeypatch, tmp_path)
     plan = components.compiled_plan
-    model = FakeModelClient(
+    request = _request(components, tmp_path)
+    model = _TaskGatedModelClient(
+        expected_instruction=request.task.instruction,
         responses=[
             _tool_response(plan.model_profile.profile_id),
             _tool_response(plan.model_profile.profile_id, terminal="COMPLETE"),
-        ]
+        ],
     )
     writers: list[FakeArtifactWriter] = []
 
@@ -167,7 +189,6 @@ async def test_public_facade_runs_tool_then_terminal(
             artifact_writer_factory=cast(RuntimeArtifactWriterFactory, writer_factory),
         ),
     )
-    request = _request(components, tmp_path)
     _prepare_input(request)
 
     result = await runner.execute(request)
@@ -176,6 +197,7 @@ async def test_public_facade_runs_tool_then_terminal(
     assert result.status is ExecutionStatus.COMPLETED
     assert result.terminal_intent is not None
     assert result.terminal_intent.terminal_result == "COMPLETE"
+    assert request.input_artifacts == ()
     assert model.call_count == 2
     assert [record["node_id"] for record in writers[0].tool_trace_calls[0][1]] == [
         "read",

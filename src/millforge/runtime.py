@@ -890,11 +890,6 @@ class DefaultHarnessRuntime:
 
     async def _check_input_artifacts(self, request: HarnessExecutionRequest) -> None:
         """Validate admitted input artifact refs before backend work."""
-        if not request.input_artifacts:
-            raise MillforgeConfigError(
-                "No input artifact references present in request"
-            )
-
         resolved_base = (request.run_directory.path / "millforge").resolve()
         resolved_paths: set[Path] = set()
 

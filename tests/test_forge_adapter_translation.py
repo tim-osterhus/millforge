@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -20,7 +21,6 @@ from millforge._forge.adapter import (
     ForgeSessionInputBuilder,
     ForgeToolBridge,
     ForgeWorkflowFactory,
-    cancellation_event_from_ref,
 )
 from millforge._forge.errors import NonRetryableToolError, ToolResolutionError
 from millforge._forge.context.strategies import TieredCompact
@@ -47,6 +47,7 @@ from millforge.contracts import (
     GuardedSessionRequest,
     GuardedSessionStatus,
     InvalidToolArguments,
+    ModelCompletionRequest,
     ModelCompletionResponse,
     ModelToolCall,
     ParsedToolArguments,
@@ -57,6 +58,12 @@ from millforge.contracts import (
     ToolResultMessage,
     TokenUsage,
 )
+from millforge.model_backend import (
+    ModelProviderError,
+    ModelRequestDeadlineExceededError,
+    ProviderErrorCategory,
+)
+from millforge.exceptions import DeadlineExceededError, OperationCancelledError
 from millforge.testing import (
     BUILDER_WORKSPACE_FIXED,
     BUILDER_WORKSPACE_INITIAL,
@@ -269,6 +276,92 @@ def _tool_result(
     )
 
 
+class _ControlledCancellationToken:
+    def __init__(self) -> None:
+        self._cancelled = False
+        self._reason: str | None = None
+        self._event = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_finished = asyncio.Event()
+
+    @property
+    def cancellation_id(self) -> str:
+        return "cancel-001"
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    async def wait(self) -> None:
+        self.wait_started.set()
+        try:
+            await self._event.wait()
+        finally:
+            self.wait_finished.set()
+
+    @property
+    def reason(self) -> str | None:
+        return self._reason
+
+    def cancel(self, reason: str = "workflow cancelled") -> None:
+        self._cancelled = True
+        self._reason = reason
+        self._event.set()
+
+
+class _ControlledCancellationResolver:
+    def __init__(self, token: _ControlledCancellationToken) -> None:
+        self.token = token
+
+    def resolve(self, ref: Any) -> _ControlledCancellationToken:
+        assert ref.cancellation_id == self.token.cancellation_id
+        return self.token
+
+
+def _backend(
+    *,
+    model_client: Any,
+    tool_executor: Any,
+    token: _ControlledCancellationToken,
+) -> ForgeGuardrailBackend:
+    return ForgeGuardrailBackend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        plan_loader=FakePlanLoader(plan=_plan()),
+        context_factory=ForgeContextFactory(),
+        clock=FakeClock(monotonic_value=1.0),
+        cancellation_resolver=_ControlledCancellationResolver(token),
+    )
+
+
+def _guarded_request() -> GuardedSessionRequest:
+    request = make_test_guarded_session_request()
+    execution = request.execution_request
+    compiled_harness = execution.compiled_harness.model_copy(
+        update={
+            "expected_hash": execution.compiled_harness.expected_hash.model_copy(
+                update={"digest": _plan().compiled_sha256}
+            )
+        }
+    )
+    return request.model_copy(
+        update={
+            "execution_request": execution.model_copy(
+                update={"compiled_harness": compiled_harness}
+            )
+        }
+    )
+
+
+async def _assert_no_cancellation_watcher() -> None:
+    await asyncio.sleep(0)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and task.get_name().startswith("millforge-cancellation-watcher:")
+    ]
+
+
 def test_forge_tool_bridge_source_uses_canonical_result_boundary() -> None:
     source = inspect.getsource(forge_adapter)
     assert re.search(r"\bToolDefinition\b", source) is None
@@ -352,45 +445,15 @@ def test_session_input_builder_emits_two_deterministic_private_messages() -> Non
     assert messages[0].content == plan.prompt_policy.system_instructions
     assert messages[1].role == MessageRole.USER
     assert messages[1].metadata.type == MessageType.USER_INPUT
-    assert messages[1].content == json.dumps(
-        json.loads(messages[1].content),
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
+    assert messages[1].content == (
+        "Complete the test harness task.\n\n"
+        "--- millforge request context ---\n"
+        '{"input_artifacts":[{"artifact_id":"art-input-001",'
+        '"content_type":"application/json","path":"millforge/input.json"}],'
+        '"request_id":"req-test-001","run_id":"run-test-001",'
+        '"stage":{"node_id":"builder","plane":"execution",'
+        '"stage_kind_id":"builder"},"work_item_id":"task-test-001"}'
     )
-    payload = json.loads(messages[1].content)
-    assert payload == {
-        "input_artifacts": [
-            {
-                "artifact_id": "art-input-001",
-                "content_type": "application/json",
-                "path": "millforge/input.json",
-            }
-        ],
-        "kind": "millforge_stage_request",
-        "request_id": "req-test-001",
-        "run_id": "run-test-001",
-        "schema_version": "1.0",
-        "stage": {
-            "node_id": "builder",
-            "plane": "execution",
-            "stage_kind_id": "builder",
-        },
-        "work_item_id": "task-test-001",
-    }
-    forbidden_fields = {
-        "cancellation",
-        "compiled_harness",
-        "context_policy",
-        "prompt_policy",
-        "run_directory",
-        "timeout",
-        "secret_refs",
-        "capability_envelope",
-        "model_profile",
-        "session_id",
-    }
-    assert forbidden_fields.isdisjoint(payload)
     forbidden_fragments = (
         "DATABASE_PASSWORD",
         '{"schema_version":"test"}',
@@ -418,21 +481,8 @@ def test_session_input_builder_omits_request_context_when_policy_disables_it() -
     session_request = make_test_guarded_session_request()
 
     messages = ForgeSessionInputBuilder().build(plan, session_request)
-    payload = json.loads(messages[1].content)
 
-    assert payload == {
-        "kind": "millforge_stage_request",
-        "request_id": "req-test-001",
-        "run_id": "run-test-001",
-        "schema_version": "1.0",
-        "stage": {
-            "node_id": "builder",
-            "plane": "execution",
-            "stage_kind_id": "builder",
-        },
-    }
-    assert "work_item_id" not in payload
-    assert "input_artifacts" not in payload
+    assert messages[1].content == session_request.execution_request.task.instruction
 
 
 def test_context_factory_uses_only_supported_tiered_policy_values() -> None:
@@ -649,6 +699,341 @@ async def test_forge_backend_rejects_tampered_plan_before_model_or_tool_calls() 
     assert result.diagnostic.error_code == "binding_rejected"
     model_client.assert_not_called()
     tool_executor.assert_not_called()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_propagates_live_cancellation_to_blocked_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner_started = asyncio.Event()
+
+    class _EventBlockingRunner:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def run(self, *_args: Any, **kwargs: Any) -> None:
+            cancel_event = kwargs["cancel_event"]
+            runner_started.set()
+            await cancel_event.wait()
+
+    monkeypatch.setattr(forge_adapter, "WorkflowRunner", _EventBlockingRunner)
+    token = _ControlledCancellationToken()
+    model_client = FakeModelClient()
+    tool_executor = FakeToolExecutor(supported_tools={"prepare", "submit"})
+    backend = _backend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        token=token,
+    )
+    completion = asyncio.create_task(backend.run_session(_guarded_request()))
+    await runner_started.wait()
+    await token.wait_started.wait()
+
+    token.cancel()
+    result = await completion
+
+    assert result.status is GuardedSessionStatus.CANCELLED
+    assert result.terminal_intent is None
+    model_client.assert_not_called()
+    tool_executor.assert_not_called()
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_classifies_cancellation_while_model_is_blocked() -> None:
+    token = _ControlledCancellationToken()
+    model_started = asyncio.Event()
+
+    class _CancellationBlockingModelClient:
+        def __init__(self) -> None:
+            self.requests: list[ModelCompletionRequest] = []
+
+        async def complete(
+            self, request: ModelCompletionRequest
+        ) -> ModelCompletionResponse:
+            self.requests.append(request)
+            model_started.set()
+            await token.wait()
+            raise ModelProviderError(
+                category=ProviderErrorCategory.CANCELLED,
+                message="Authorization: Bearer sk-model-cancel-secret",
+                retryable=False,
+            )
+
+    model_client = _CancellationBlockingModelClient()
+    tool_executor = FakeToolExecutor(supported_tools={"prepare", "submit"})
+    backend = _backend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        token=token,
+    )
+    completion = asyncio.create_task(backend.run_session(_guarded_request()))
+    await model_started.wait()
+
+    token.cancel("Authorization: Bearer sk-token-cancel-secret")
+    result = await completion
+
+    assert result.status is GuardedSessionStatus.CANCELLED
+    assert result.terminal_intent is None
+    assert result.diagnostic is not None
+    assert result.diagnostic.category == "cancellation"
+    assert "sk-model-cancel-secret" not in result.diagnostic.message
+    assert "sk-token-cancel-secret" not in result.diagnostic.message
+    assert model_client.requests[0].cancellation.cancellation_id == "cancel-001"
+    tool_executor.assert_not_called()
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_classifies_effective_deadline_while_model_is_blocked() -> (
+    None
+):
+    token = _ControlledCancellationToken()
+    transport_started = asyncio.Event()
+    release_transport = asyncio.Event()
+
+    class _DeadlineBlockingModelClient:
+        async def complete(
+            self, _request: ModelCompletionRequest
+        ) -> ModelCompletionResponse:
+            transport_started.set()
+            await release_transport.wait()
+            raise ModelRequestDeadlineExceededError()
+
+    tool_executor = FakeToolExecutor(supported_tools={"prepare", "submit"})
+    backend = _backend(
+        model_client=_DeadlineBlockingModelClient(),
+        tool_executor=tool_executor,
+        token=token,
+    )
+    completion = asyncio.create_task(backend.run_session(_guarded_request()))
+    await transport_started.wait()
+
+    release_transport.set()
+    result = await completion
+
+    assert result.status is GuardedSessionStatus.TIMED_OUT
+    assert result.terminal_intent is None
+    assert result.diagnostic is not None
+    assert result.diagnostic.category == "timeout"
+    assert result.diagnostic.error_code == "deadline_expired"
+    assert result.diagnostic.retryable is False
+    tool_executor.assert_not_called()
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_keeps_retryable_provider_timeout_as_model_failure() -> (
+    None
+):
+    token = _ControlledCancellationToken()
+    transport_started = asyncio.Event()
+    release_transport = asyncio.Event()
+
+    class _ProviderTimeoutBlockingModelClient:
+        async def complete(
+            self, _request: ModelCompletionRequest
+        ) -> ModelCompletionResponse:
+            transport_started.set()
+            await release_transport.wait()
+            raise ModelProviderError(
+                category=ProviderErrorCategory.TIMEOUT,
+                message="provider read timed out",
+            )
+
+    tool_executor = FakeToolExecutor(supported_tools={"prepare", "submit"})
+    backend = _backend(
+        model_client=_ProviderTimeoutBlockingModelClient(),
+        tool_executor=tool_executor,
+        token=token,
+    )
+    completion = asyncio.create_task(backend.run_session(_guarded_request()))
+    await transport_started.wait()
+
+    release_transport.set()
+    result = await completion
+
+    assert result.status is GuardedSessionStatus.MODEL_FAILED
+    assert result.terminal_intent is None
+    assert result.diagnostic is not None
+    assert result.diagnostic.category == "model"
+    assert result.diagnostic.error_code == "model_transport_failed"
+    assert result.diagnostic.retryable is True
+    tool_executor.assert_not_called()
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_status", "expected_status", "expected_event"),
+    [
+        (
+            ToolExecutionStatus.CANCELLED,
+            GuardedSessionStatus.CANCELLED,
+            SessionEventType.CANCELLED,
+        ),
+        (
+            ToolExecutionStatus.TIMED_OUT,
+            GuardedSessionStatus.TIMED_OUT,
+            SessionEventType.TIMED_OUT,
+        ),
+    ],
+)
+async def test_forge_backend_preserves_interrupted_tool_evidence_and_status(
+    tool_status: ToolExecutionStatus,
+    expected_status: GuardedSessionStatus,
+    expected_event: SessionEventType,
+) -> None:
+    token = _ControlledCancellationToken()
+    model_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="prepare",
+                call_id="call-prepare",
+                arguments={"path": "input.txt"},
+            )
+        ]
+    )
+    tool_executor = FakeToolExecutor(
+        supported_tools={"prepare", "submit"},
+        results={
+            "prepare": [
+                _tool_result(
+                    "call-prepare",
+                    tool_status.value,
+                    status=tool_status,
+                    error_code=tool_status.value,
+                )
+            ]
+        },
+    )
+    backend = _backend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        token=token,
+    )
+
+    result = await backend.run_session(_guarded_request())
+
+    assert result.status is expected_status
+    assert result.terminal_intent is None
+    assert result.tool_trace[0].execution_status is tool_status
+    assert any(event.event_type is expected_event for event in result.events)
+    assert tool_executor.call_count == 1
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_real_workflow_runner_stops_before_next_model_call_on_cancellation() -> (
+    None
+):
+    token = _ControlledCancellationToken()
+
+    class _BetweenIterationsExecutor:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        def supports_tool(self, name: str) -> bool:
+            return name in {"prepare", "submit"}
+
+        async def execute(
+            self, call: Any, _context: ToolExecutionContext
+        ) -> ToolExecutionResult:
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return _tool_result(call.call_id, "prepared")
+
+    model_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="prepare",
+                call_id="call-prepare",
+                arguments={"path": "input.txt"},
+            ),
+            _model_response(content="must not be called"),
+        ]
+    )
+    tool_executor = _BetweenIterationsExecutor()
+    backend = _backend(
+        model_client=model_client,
+        tool_executor=tool_executor,
+        token=token,
+    )
+    completion = asyncio.create_task(backend.run_session(_guarded_request()))
+    await tool_executor.started.wait()
+
+    token.cancel("cancel between workflow iterations")
+    await token.wait_finished.wait()
+    tool_executor.release.set()
+    result = await completion
+
+    assert result.status is GuardedSessionStatus.CANCELLED
+    assert result.terminal_intent is None
+    assert model_client.call_count == 1
+    assert tool_executor.calls == 1
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
+
+
+@pytest.mark.asyncio
+async def test_forge_backend_cancellation_wins_at_terminal_commit_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = _ControlledCancellationToken()
+
+    class _TerminalBoundaryRunner:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def run(self, workflow: Any, *_args: Any, **_kwargs: Any) -> None:
+            await token.wait_started.wait()
+            await workflow.get_callable("prepare")(path="input.txt")
+            await workflow.get_callable("submit")(path="input.txt")
+            token.cancel("cancelled before terminal commitment")
+
+    monkeypatch.setattr(forge_adapter, "WorkflowRunner", _TerminalBoundaryRunner)
+    prepare_call_id = "bridge_call_000000000"
+    submit_call_id = "bridge_call_000000001"
+    submit_result = _tool_result(
+        submit_call_id,
+        _artifact_output(),
+        artifact_refs=(
+            ArtifactRef(
+                artifact_id="art-output-001",
+                path=Path("millforge/output.json"),
+                content_type="application/json",
+            ),
+        ),
+    ).model_copy(update={"side_effect_class": SideEffectClass.TERMINAL})
+    tool_executor = FakeToolExecutor(
+        supported_tools={"prepare", "submit"},
+        results={
+            "prepare": [_tool_result(prepare_call_id, "prepared")],
+            "submit": [submit_result],
+        },
+    )
+    backend = _backend(
+        model_client=FakeModelClient(),
+        tool_executor=tool_executor,
+        token=token,
+    )
+
+    result = await backend.run_session(_guarded_request())
+
+    assert tool_executor.call_count == 2
+    assert result.status is GuardedSessionStatus.CANCELLED
+    assert result.terminal_intent is None
+    assert result.artifact_refs == ()
+    assert token.wait_finished.is_set()
+    await _assert_no_cancellation_watcher()
 
 
 def test_duplicate_identity_rejects_even_if_model_copy_bypasses_plan_validation() -> (
@@ -667,11 +1052,6 @@ def test_duplicate_identity_rejects_even_if_model_copy_bypasses_plan_validation(
                 "impl-submit-v1": _callable,
             }
         ).build(invalid)
-
-
-def test_cancellation_ref_can_seed_private_forge_cancel_event() -> None:
-    assert cancellation_event_from_ref(cancel_requested=False).is_set() is False
-    assert cancellation_event_from_ref(cancel_requested=True).is_set() is True
 
 
 @pytest.mark.asyncio
@@ -1233,7 +1613,7 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
         call_id_resolver=lambda _name, _args: "call-prepare",
     )
 
-    with pytest.raises(NonRetryableToolError):
+    with pytest.raises(OperationCancelledError):
         await bridge.invoke("prepare", {"path": "input.txt"})
 
     assert executor.call_count == 0
@@ -1242,7 +1622,13 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("result", "expected_status", "expected_exception", "expected_code"),
+    (
+        "result",
+        "expected_status",
+        "expected_exception",
+        "expected_code",
+        "expected_event",
+    ),
     [
         (
             _tool_result(
@@ -1255,6 +1641,7 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
             ToolExecutionStatus.SOFT_FAILURE,
             ToolResolutionError,
             "soft",
+            SessionEventType.TOOL_FAILED,
         ),
         (
             _tool_result(
@@ -1266,6 +1653,7 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
             ToolExecutionStatus.HARD_FAILURE,
             NonRetryableToolError,
             "hard",
+            SessionEventType.TOOL_FAILED,
         ),
         (
             _tool_result(
@@ -1275,8 +1663,21 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
                 error_code="timeout",
             ),
             ToolExecutionStatus.TIMED_OUT,
-            NonRetryableToolError,
+            DeadlineExceededError,
             "timeout",
+            SessionEventType.TIMED_OUT,
+        ),
+        (
+            _tool_result(
+                "call-prepare",
+                "cancelled",
+                status=ToolExecutionStatus.CANCELLED,
+                error_code="cancelled",
+            ),
+            ToolExecutionStatus.CANCELLED,
+            OperationCancelledError,
+            "cancelled",
+            SessionEventType.CANCELLED,
         ),
         (
             _tool_result(
@@ -1288,6 +1689,7 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
             ToolExecutionStatus.AMBIGUOUS,
             NonRetryableToolError,
             "ambiguous",
+            SessionEventType.TOOL_FAILED,
         ),
     ],
 )
@@ -1296,6 +1698,7 @@ async def test_tool_bridge_records_failed_executor_outcomes_without_terminal_acc
     expected_status: ToolExecutionStatus,
     expected_exception: type[Exception],
     expected_code: str,
+    expected_event: SessionEventType,
 ) -> None:
     executor = FakeToolExecutor(
         supported_tools={"prepare"},
@@ -1308,7 +1711,7 @@ async def test_tool_bridge_records_failed_executor_outcomes_without_terminal_acc
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == expected_status
-    assert bridge.events[-1].event_type == SessionEventType.TOOL_FAILED
+    assert bridge.events[-1].event_type == expected_event
     assert bridge.events[-1].code == expected_code
     assert bridge.terminal_intent is None
 

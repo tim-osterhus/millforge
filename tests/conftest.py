@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from datetime import datetime, timezone
@@ -48,6 +49,7 @@ from millforge.contracts import (
     GuardedSessionResult,
     GuardedSessionStatus,
     HarnessExecutionRequest,
+    HarnessTaskInput,
     ModelProfileRef,
     RunDirRef,
     SecretRef,
@@ -546,6 +548,7 @@ def make_canonical_builder_execution_request(
         request_id="request-builder-001",
         run_id="run-builder-001",
         work_item_id="work-builder-001",
+        task=HarnessTaskInput(instruction="Build the requested workspace change."),
         stage=StageIdentity(
             plane="execution",
             node_id="builder",
@@ -848,6 +851,7 @@ def make_test_harness_execution_request(
         request_id=request_id,
         run_id=run_id,
         work_item_id=work_item_id,
+        task=HarnessTaskInput(instruction="Complete the test harness task."),
         stage=StageIdentity(
             plane=stage_plane,
             node_id=stage_node_id,
@@ -964,7 +968,7 @@ def make_test_guarded_session_result(
 
 
 class FakeCancellationToken:
-    """Synchronous invocation-scoped cancellation token test double."""
+    """Invocation-scoped cancellation token test double."""
 
     def __init__(
         self,
@@ -975,6 +979,9 @@ class FakeCancellationToken:
         self._cancellation_id = cancellation_id
         self._is_cancelled_return = is_cancelled_return
         self._reason = reason
+        self._event = asyncio.Event()
+        if is_cancelled_return:
+            self._event.set()
 
     @property
     def cancellation_id(self) -> str:
@@ -984,7 +991,7 @@ class FakeCancellationToken:
         return self._is_cancelled_return
 
     async def wait(self) -> None:
-        return None
+        await self._event.wait()
 
     @property
     def reason(self) -> str | None:

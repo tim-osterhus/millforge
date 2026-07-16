@@ -43,6 +43,7 @@ from millforge.model_backend import (
     HeaderValuePolicy,
     ModelBackendConfigError,
     ModelProviderError,
+    ModelRequestDeadlineExceededError,
     OpenAIChatCompletionsTransport,
     ProviderErrorCategory,
     RequestOptionAllowlist,
@@ -246,6 +247,39 @@ class _RecordingTransport:
         self.close_count += 1
 
 
+class _ControlledTransport:
+    def __init__(
+        self,
+        *,
+        response: TransportResponse | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        self.response = response or TransportResponse(
+            status_code=200,
+            normalized_response=_response(),
+        )
+        self.error = error
+        self.requests: list[TransportRequest] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def send(self, request: TransportRequest) -> TransportResponse:
+        self.requests.append(request)
+        self.started.set()
+        try:
+            await self.release.wait()
+            if self.error is not None:
+                raise self.error
+            return self.response
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        finally:
+            self.finished.set()
+
+
 class _RecordingSecretResolver:
     def __init__(self, values: dict[str, str]) -> None:
         self._resolver = StaticSecretResolver(values)
@@ -260,6 +294,11 @@ class _Token:
     def __init__(self, *, cancelled: bool = False, reason: str | None = None) -> None:
         self._cancelled = cancelled
         self._reason = reason
+        self._event = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_finished = asyncio.Event()
+        if cancelled:
+            self._event.set()
 
     @property
     def cancellation_id(self) -> str:
@@ -269,11 +308,38 @@ class _Token:
         return self._cancelled
 
     async def wait(self) -> None:
-        return None
+        self.wait_started.set()
+        try:
+            await self._event.wait()
+        finally:
+            self.wait_finished.set()
+
+    def cancel(self, reason: str | None = None) -> None:
+        self._cancelled = True
+        self._reason = reason
+        self._event.set()
 
     @property
     def reason(self) -> str | None:
         return self._reason
+
+
+class _HandoffToken(_Token):
+    def __init__(self) -> None:
+        super().__init__()
+        self.handoff_started = asyncio.Event()
+        self.release_handoff = asyncio.Event()
+
+    async def wait(self) -> None:
+        self.wait_started.set()
+        try:
+            await self._event.wait()
+        except asyncio.CancelledError:
+            self.handoff_started.set()
+            await self.release_handoff.wait()
+            raise
+        finally:
+            self.wait_finished.set()
 
 
 class _CancellationResolver:
@@ -320,6 +386,35 @@ def _client(
         clock=clock or _Clock([0.0, 0.0, 0.0]),
     )
     return client, transport
+
+
+def _controlled_client(
+    transport: _ControlledTransport,
+    token: _Token,
+    *,
+    profile: ResolvedModelProfile | None = None,
+    clock: _Clock | None = None,
+) -> DefaultModelClient:
+    resolved_profile = profile or _profile()
+    return DefaultModelClient(
+        profile_resolver=StaticModelProfileResolver(
+            {resolved_profile.profile_id: resolved_profile}
+        ),
+        secret_resolver=StaticSecretResolver({"openai-key": "sk-real-secret"}),
+        transport=transport,
+        cancellation_resolver=_CancellationResolver(token),
+        clock=clock or _Clock([0.0, 0.0, 0.0]),
+    )
+
+
+async def _assert_no_model_request_tasks() -> None:
+    await asyncio.sleep(0)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and task.get_name().startswith("millforge-model-")
+    ]
 
 
 @pytest.mark.asyncio
@@ -1127,6 +1222,154 @@ async def test_default_model_client_checks_cancellation_and_deadline_around_tran
     assert post_error.value.category is ProviderErrorCategory.TIMEOUT
     assert post_error.value.retryable is False
     assert len(post_transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_cancels_blocked_transport_when_token_wins() -> None:
+    token = _Token()
+    transport = _ControlledTransport()
+    client = _controlled_client(transport, token)
+    completion = asyncio.create_task(
+        client.complete(_request(secret_refs=(_secret(),)))
+    )
+    await transport.started.wait()
+    await token.wait_started.wait()
+
+    token.cancel("Authorization: Bearer sk-in-flight-secret")
+
+    with pytest.raises(ModelProviderError) as exc_info:
+        await completion
+    assert exc_info.value.category is ProviderErrorCategory.CANCELLED
+    assert exc_info.value.retryable is False
+    assert "sk-in-flight-secret" not in str(exc_info.value)
+    assert transport.cancelled.is_set()
+    assert transport.finished.is_set()
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_cancels_blocked_transport_at_deadline() -> None:
+    token = _Token()
+    transport = _ControlledTransport()
+    profile = _profile().model_copy(update={"timeout_seconds": 0.01})
+    client = _controlled_client(transport, token, profile=profile)
+
+    with pytest.raises(ModelProviderError, match="deadline expired") as exc_info:
+        await client.complete(_request(secret_refs=(_secret(),)))
+
+    assert exc_info.value.category is ProviderErrorCategory.TIMEOUT
+    assert isinstance(exc_info.value, ModelRequestDeadlineExceededError)
+    assert exc_info.value.retryable is False
+    assert transport.started.is_set()
+    assert transport.cancelled.is_set()
+    assert transport.finished.is_set()
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_prefers_cancellation_during_success_handoff() -> (
+    None
+):
+    token = _HandoffToken()
+    transport = _ControlledTransport()
+    client = _controlled_client(transport, token)
+    completion = asyncio.create_task(
+        client.complete(_request(secret_refs=(_secret(),)))
+    )
+    await transport.started.wait()
+    await token.wait_started.wait()
+    transport.release.set()
+    await token.handoff_started.wait()
+
+    assert transport.finished.is_set()
+    assert not completion.done()
+    token.cancel("cancel during success handoff")
+    token.release_handoff.set()
+
+    with pytest.raises(ModelProviderError) as exc_info:
+        await completion
+    assert exc_info.value.category is ProviderErrorCategory.CANCELLED
+    assert not transport.cancelled.is_set()
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_prefers_token_cancel_over_ready_transport() -> None:
+    token = _Token()
+    transport = _ControlledTransport()
+    client = _controlled_client(transport, token)
+    completion = asyncio.create_task(
+        client.complete(_request(secret_refs=(_secret(),)))
+    )
+    await transport.started.wait()
+    await token.wait_started.wait()
+
+    token.cancel("cancel wins")
+    transport.release.set()
+
+    with pytest.raises(ModelProviderError) as exc_info:
+        await completion
+    assert exc_info.value.category is ProviderErrorCategory.CANCELLED
+    assert transport.finished.is_set()
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_prefers_cancellation_during_failure_handoff() -> (
+    None
+):
+    provider_error = ModelProviderError(
+        category=ProviderErrorCategory.SERVER_ERROR,
+        message="provider failed",
+    )
+    token = _HandoffToken()
+    transport = _ControlledTransport(error=provider_error)
+    client = _controlled_client(transport, token)
+    completion = asyncio.create_task(
+        client.complete(_request(secret_refs=(_secret(),)))
+    )
+    await transport.started.wait()
+    await token.wait_started.wait()
+    transport.release.set()
+    await token.handoff_started.wait()
+
+    assert transport.finished.is_set()
+    assert not completion.done()
+    token.cancel("cancel during failure handoff")
+    token.release_handoff.set()
+
+    with pytest.raises(ModelProviderError) as exc_info:
+        await completion
+
+    assert exc_info.value is not provider_error
+    assert exc_info.value.category is ProviderErrorCategory.CANCELLED
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_joins_tasks_when_caller_cancels() -> None:
+    token = _Token()
+    transport = _ControlledTransport()
+    client = _controlled_client(transport, token)
+    completion = asyncio.create_task(
+        client.complete(_request(secret_refs=(_secret(),)))
+    )
+    await transport.started.wait()
+    await token.wait_started.wait()
+
+    completion.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+    assert transport.cancelled.is_set()
+    assert transport.finished.is_set()
+    assert token.wait_finished.is_set()
+    await _assert_no_model_request_tasks()
 
 
 @pytest.mark.asyncio
