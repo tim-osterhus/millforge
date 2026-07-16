@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/earendil-works/pi",
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.79.6",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2025 Mario Zechner"
+  },
+  "source_snapshot": "reference/pi/",
+  "source_history": "The approved reference copy is history-free. No upstream commit hash is recorded or inferred.",
+  "adaptations": [
+    "Python filesystem and process APIs replace Node APIs.",
+    "`pathspec` and the exact Section 7 ignore rules replace `fd`/`rg` discovery.",
+    "Python regex/glob, binary detection, decoding, traversal, and error rules are the exact Section 7 search adaptation.",
+    "supported image reads return the exact successful text-only result in Spec 11 Section 6 instead of multimodal image content; non-image bytes retain Pi's UTF-8 replacement-decoding behavior.",
+    "the poll/wait cancellation protocol replaces Pi's abort signal.",
+    "Windows uses COMSPEC/cmd.exe while POSIX preserves Pi's Bash-first order.",
+    "the inherited environment omits Pi's private bin-directory PATH mutation.",
+    "the 11A-owned async timer enforces the caller-supplied strictly positive finite timeout; expiry after spawn performs the specified process-tree cleanup and returns `process_timeout` with `completion_unknown`."
+  ],
+  "pinned_paths": [
+    {"path": "LICENSE", "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48", "classification": "ported"},
+    {"path": "packages/coding-agent/package.json", "sha256": "76919365cc55f94e79a27583ec2f36c917c0312e529f6b83f71c7817b6774f55", "classification": "excluded"},
+    {"path": "packages/coding-agent/src/core/tools/index.ts", "sha256": "afeb406e0f5edde143aaac51b9c928cb497bfb8216c04ac9242bfd0f9241ffe1", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/read.ts", "sha256": "954419870e12b9e82e45a37bd3f9e6dda5bd80aa44ea56fbcdac0f976676d03e", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/ls.ts", "sha256": "0cd36018b68f08c98e615c761d6c3af19842537cd500d7be9912f932cd2b1b22", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/grep.ts", "sha256": "9737dcfd27ae56a33fd934c0b336b9f1cb64eaab6b6378a91270dde4b505ba47", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/find.ts", "sha256": "f6f2d780df007af22d67101dc17ffae7c9d670893be168628eeebb01345b97df", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/write.ts", "sha256": "7f7f1425e2a7cdffe48b190033189fd03dffc5756708b12775dddb0acfe90c6c", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/edit.ts", "sha256": "373083e70b8f58dc49b213a4046e4095e1acc5fb0bea1925185e09e0d3c00618", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/edit-diff.ts", "sha256": "b76fab8a2868b1e65970286928e996e76918ba8b8dbfdefe9ab0fe34420f9c90", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/bash.ts", "sha256": "9d932837466dee1f8fd84cae3b180363aa523118ff8c84a992eeab18dcd3be29", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/truncate.ts", "sha256": "104e61ea602c7f7894097b2771dad8c68de75c5a10ea6222e615c4ad144451c7", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/output-accumulator.ts", "sha256": "c601ddd8e10934be6f3db30696eacba7b9544f2dd1648a5ec3c9935f0d4625c3", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/path-utils.ts", "sha256": "ab6f420d2388a41366113c17a25e356867820b87b02a169d044cfcf83e1997d3", "classification": "ported"},
+    {"path": "packages/coding-agent/src/core/tools/file-mutation-queue.ts", "sha256": "33cb06ac9bcdf32c8b84d9d12e33be44c503a7670f668e003a3262cd34294d11", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/core/tools/render-utils.ts", "sha256": "38913e15575b7c314687c1a7d53b2763eecb8e7a86b0b58d7b5532c900503cf3", "classification": "excluded"},
+    {"path": "packages/coding-agent/src/utils/shell.ts", "sha256": "7a74bb1f3809fa62771827a9c814636b9742760f6deddc517a84ae237dc4fbef", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/utils/child-process.ts", "sha256": "cd324f5b9a1abadd85ab5a331750d475c8bd51ec65cae091ad9b416245ec85d4", "classification": "adapted"},
+    {"path": "packages/coding-agent/src/utils/mime.ts", "sha256": "b562303ba7bbf27432bd310891fe656a8473995a4a1f8ba2e00a79b56400605c", "classification": "ported"},
+    {"path": "packages/coding-agent/src/utils/paths.ts", "sha256": "c433bd9f98744aa9a373282fd50ab3657b6e2a366feecbfb177fe648746d1944", "classification": "ported"},
+    {"path": "packages/coding-agent/test/tools.test.ts", "sha256": "0360d773cfef2e08f23490b9c83d4bb5b88ce070bf79c57d227c5fd2fcd121e9", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/path-utils.test.ts", "sha256": "08bb88574596a43e2364ee3b2655e071593822417ef8937693744174e9615f3e", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/bash-close-hang-windows.test.ts", "sha256": "1d2230b25129a365cbae417269b65c1724772104328f584ee521cb5c255b49fb", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/suite/regressions/3302-find-path-glob.test.ts", "sha256": "d8816a5ed1f3033439e7866dc9c7b87b7e7a265caf186bae3817443b597e1d02", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/suite/regressions/3303-find-nested-gitignore.test.ts", "sha256": "bcc7517366d11bf9cc3b8dade9d54bfbe6cd482a23deb9d6d966d1b2e09c6982", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/suite/regressions/5208-late-bash-output.test.ts", "sha256": "9d6fc0d457e6d7470246d821deec9937d428e86fdad6858d05e7d5c956802f8c", "classification": "test-derived"},
+    {"path": "packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts", "sha256": "d690fdad5de2bd82f016892972395d49d3b83570d5223f4f473626d34af10136", "classification": "test-derived"}
+  ]
+}

@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27",
+    "pathspec>=0.12,<1",
     "pydantic>=2.0",
 ]
 
@@ -47,6 +48,9 @@ packages = ["src/millforge"]
 "src/millforge/_forge/LICENSE" = "millforge/_forge/LICENSE"
 "src/millforge/_forge/PROVENANCE.json" = "millforge/_forge/PROVENANCE.json"
 "src/millforge/_forge/UPDATE_POLICY.md" = "millforge/_forge/UPDATE_POLICY.md"
+"src/millforge/tools/pi_compat/PI_LICENSE" = "millforge/tools/pi_compat/PI_LICENSE"
+"src/millforge/tools/pi_compat/PROVENANCE.json" = "millforge/tools/pi_compat/PROVENANCE.json"
+"src/millforge/tools/pi_compat/UPDATE_POLICY.md" = "millforge/tools/pi_compat/UPDATE_POLICY.md"
 "src/millforge/eval_fixtures/__init__.py" = "millforge/eval_fixtures/__init__.py"
 "src/millforge/eval_fixtures/default_pack/__init__.py" = "millforge/eval_fixtures/default_pack/__init__.py"
 "src/millforge/eval_fixtures/default_pack/manifest.json" = "millforge/eval_fixtures/default_pack/manifest.json"
@@ -69,6 +73,9 @@ only-include = [
 "src/millforge/_forge/LICENSE" = "src/millforge/_forge/LICENSE"
 "src/millforge/_forge/PROVENANCE.json" = "src/millforge/_forge/PROVENANCE.json"
 "src/millforge/_forge/UPDATE_POLICY.md" = "src/millforge/_forge/UPDATE_POLICY.md"
+"src/millforge/tools/pi_compat/PI_LICENSE" = "src/millforge/tools/pi_compat/PI_LICENSE"
+"src/millforge/tools/pi_compat/PROVENANCE.json" = "src/millforge/tools/pi_compat/PROVENANCE.json"
+"src/millforge/tools/pi_compat/UPDATE_POLICY.md" = "src/millforge/tools/pi_compat/UPDATE_POLICY.md"
 "src/millforge/eval_fixtures/__init__.py" = "src/millforge/eval_fixtures/__init__.py"
 "src/millforge/eval_fixtures/default_pack/__init__.py" = "src/millforge/eval_fixtures/default_pack/__init__.py"
 "src/millforge/eval_fixtures/default_pack/manifest.json" = "src/millforge/eval_fixtures/default_pack/manifest.json"

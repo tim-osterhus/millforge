@@ -1,0 +1,4 @@
+ignored.txt
+ignored-dir/
+*.tmp
+!kept.tmp
