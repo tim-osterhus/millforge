@@ -529,6 +529,7 @@ from millforge.eval_reports import (
     wilson_score_interval,
 )
 from millforge.base import (
+    MillforgeBaseBindingError,
     MillforgeBaseComponents,
     MillforgeBaseContextFile,
     MillforgeBaseContextSnapshot,
@@ -536,8 +537,13 @@ from millforge.base import (
     MillforgeBaseOptions,
     MillforgeBasePromptBudgetError,
     MillforgeBasePromptSnapshot,
+    MillforgeBaseRunner,
+    MillforgeBaseRuntimeServices,
+    RuntimeArtifactWriterFactory,
     build_millforge_base_system_prompt,
     create_millforge_base_components,
+    create_millforge_base_runner,
+    default_runtime_artifact_writer_factory,
     load_millforge_base_context,
     millforge_base_harness_source,
 )
@@ -559,6 +565,12 @@ __all__: list[str] = [
     "build_millforge_base_system_prompt",
     "millforge_base_harness_source",
     "create_millforge_base_components",
+    "RuntimeArtifactWriterFactory",
+    "default_runtime_artifact_writer_factory",
+    "MillforgeBaseRuntimeServices",
+    "MillforgeBaseBindingError",
+    "MillforgeBaseRunner",
+    "create_millforge_base_runner",
     "compile_harness_source_in_memory",
     "InMemoryHarnessCompileError",
     # Compiled plan types

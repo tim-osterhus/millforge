@@ -25,8 +25,13 @@ from millforge.tools.pi_compat.truncation import format_size
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PI_SOURCE = REPO_ROOT.parents[1] / "reference" / "pi"
 PI_COMPAT = REPO_ROOT / "src" / "millforge" / "tools" / "pi_compat"
+
+_EXPECTED_ATTRIBUTION_SHA256 = {
+    "PI_LICENSE": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+    "PROVENANCE.json": "590e01669f89f052bb7fdabe0aedc8d2df4b01c8d0bcdcb6745c6331475323ed",
+    "UPDATE_POLICY.md": "bff600af05515e69244c074779bd5ed5a0b8b1c1aeeee0b8d22bf1ba65e7ed7f",
+}
 
 _EXPECTED_ADAPTATIONS = [
     "Python filesystem and process APIs replace Node APIs.",
@@ -361,15 +366,39 @@ def test_format_size_uses_javascript_to_fixed_half_up_ties() -> None:
 
 
 def test_pi_license_and_provenance_match_the_pinned_11a_packet() -> None:
-    # Millforge 11A packet: retain the exact license and all pinned source hashes.
+    # Millforge 11A packet: retain exact attribution and pinned source records.
     manifest = json.loads((PI_COMPAT / "PROVENANCE.json").read_text(encoding="utf-8"))
 
-    assert (PI_COMPAT / "PI_LICENSE").read_bytes() == (
-        PI_SOURCE / "LICENSE"
-    ).read_bytes()
+    assert {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (
+            PI_COMPAT / "PI_LICENSE",
+            PI_COMPAT / "PROVENANCE.json",
+            PI_COMPAT / "UPDATE_POLICY.md",
+        )
+    } == _EXPECTED_ATTRIBUTION_SHA256
+    assert manifest["upstream"] == {
+        "repository": "https://github.com/earendil-works/pi",
+        "package": "@earendil-works/pi-coding-agent",
+        "version": "0.79.6",
+        "license": "MIT",
+        "copyright": "Copyright (c) 2025 Mario Zechner",
+    }
+    assert manifest["source_snapshot"] == "reference/pi/"
+    assert manifest["source_history"] == (
+        "The approved reference copy is history-free. "
+        "No upstream commit hash is recorded or inferred."
+    )
     assert manifest["adaptations"] == _EXPECTED_ADAPTATIONS
     pinned_paths = manifest["pinned_paths"]
     assert len(pinned_paths) == 31
+    assert len({entry["path"] for entry in pinned_paths}) == len(pinned_paths)
+    assert all(
+        len(entry["sha256"]) == 64
+        and entry["sha256"] == entry["sha256"].lower()
+        and all(character in "0123456789abcdef" for character in entry["sha256"])
+        for entry in pinned_paths
+    )
     assert {
         entry["path"]: entry["classification"] for entry in pinned_paths
     } == _EXPECTED_CLASSIFICATIONS
@@ -379,10 +408,10 @@ def test_pi_license_and_provenance_match_the_pinned_11a_packet() -> None:
         "excluded",
         "test-derived",
     }
-    for entry in pinned_paths:
-        source = PI_SOURCE / entry["path"]
-        assert source.is_file(), entry["path"]
-        assert hashlib.sha256(source.read_bytes()).hexdigest() == entry["sha256"]
+    assert (
+        next(entry for entry in pinned_paths if entry["path"] == "LICENSE")["sha256"]
+        == _EXPECTED_ATTRIBUTION_SHA256["PI_LICENSE"]
+    )
 
 
 def test_pi_compat_license_and_provenance_ship_in_wheel_and_sdist(

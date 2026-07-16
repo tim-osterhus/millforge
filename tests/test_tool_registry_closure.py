@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -14,6 +15,37 @@ ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "tests" / "fixtures" / "spec04_conformance_matrix.json"
 README_PATH = ROOT / "README.md"
 ROADMAP_PATH = ROOT / "ROADMAP.md"
+
+
+def _isolated_git_environment(root: Path) -> dict[str, str]:
+    home = root / "git-home"
+    xdg_config_home = root / "git-xdg-config"
+    gnupg_home = root / "git-gnupg"
+    template_directory = root / "git-template"
+    for directory in (home, xdg_config_home, gnupg_home, template_directory):
+        directory.mkdir()
+
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name in {"GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR"}:
+            environment.pop(name)
+        elif name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            environment.pop(name)
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_TEMPLATE_DIR": str(template_directory),
+            "GNUPGHOME": str(gnupg_home),
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(xdg_config_home),
+        }
+    )
+    return environment
+
 
 REQUIRED_FIELDS = {
     "requirement_id",
@@ -314,22 +346,43 @@ def test_built_archives_exclude_private_generated_cache_test_and_log_segments(
     _assert_archive_names_exclude_forbidden_segments(sdist_names)
 
 
-def test_private_state_roots_are_ignored_and_not_tracked_or_dirty() -> None:
+def test_private_state_roots_are_ignored_and_not_tracked_or_dirty(
+    tmp_path: Path,
+) -> None:
+    private_roots = ("millrace-agents", "ideas", "ref-forge")
+    git_env = _isolated_git_environment(tmp_path)
     tracked = subprocess.run(
-        ["git", "ls-files", "--", "millrace-agents", "ideas", "ref-forge"],
+        ["git", "ls-files", "--", *private_roots],
         cwd=ROOT,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=git_env,
     )
-    ignored = subprocess.run(
-        ["git", "check-ignore", "-v", "millrace-agents", "ideas", "ref-forge"],
-        cwd=ROOT,
+
+    policy_repo = tmp_path / "ignore-policy"
+    policy_repo.mkdir()
+    (policy_repo / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=policy_repo,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=git_env,
+    )
+    assert all(not (policy_repo / root).exists() for root in private_roots)
+    ignore_probes = tuple(f"{root}/.clean-clone-probe" for root in private_roots)
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--no-index", "-v", *ignore_probes],
+        cwd=policy_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
     )
     private_status = subprocess.run(
         [
@@ -338,15 +391,14 @@ def test_private_state_roots_are_ignored_and_not_tracked_or_dirty() -> None:
             "--short",
             "--untracked-files=all",
             "--",
-            "millrace-agents",
-            "ideas",
-            "ref-forge",
+            *private_roots,
         ],
         cwd=ROOT,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=git_env,
     )
 
     assert tracked.stdout == ""
@@ -354,6 +406,122 @@ def test_private_state_roots_are_ignored_and_not_tracked_or_dirty() -> None:
     assert "millrace-agents" in ignored.stdout
     assert "ideas" in ignored.stdout
     assert "ref-forge" in ignored.stdout
+    assert all(not (policy_repo / root).exists() for root in private_roots)
+
+
+def test_canonical_text_paths_force_lf_checkout_bytes(tmp_path: Path) -> None:
+    canonical_paths = (
+        "tests/fixtures/spec04_conformance_matrix.json",
+        "tests/fixtures/spec05_closure_report.md",
+        "tests/fixtures/eval_workflow/workspace/src/app/main.py",
+        "tests/fixtures/eval_workflow/workspace/tests/test_app.py",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/.gitignore",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/.hidden/hidden.txt",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/alpha.txt",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/kept.tmp",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/nested/.gitignore",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/nested/kept.txt",
+        "tests/fixtures/pi_compat/v0.79.6/search/tree/sibling/shadow.txt",
+        "tests/compiler/fixtures/golden_harness.yaml",
+        "src/millforge/_forge/LICENSE",
+        "src/millforge/_forge/PROVENANCE.json",
+        "src/millforge/_forge/UPDATE_POLICY.md",
+        "src/millforge/tools/pi_compat/PI_LICENSE",
+        "src/millforge/tools/pi_compat/PROVENANCE.json",
+        "src/millforge/tools/pi_compat/UPDATE_POLICY.md",
+    )
+    canonical_bytes = {path: (ROOT / path).read_bytes() for path in canonical_paths}
+    assert all(b"\r\n" not in content for content in canonical_bytes.values())
+    git_env = _isolated_git_environment(tmp_path)
+
+    source_repo = tmp_path / "canonical-source"
+    source_repo.mkdir()
+    (source_repo / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
+    for path, content in canonical_bytes.items():
+        destination = source_repo / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=source_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=source_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Millforge Test",
+            "-c",
+            "user.email=millforge-test@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "canonical fixture",
+        ],
+        cwd=source_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+
+    checkout = tmp_path / "autocrlf-checkout"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--no-local",
+            "-c",
+            "core.autocrlf=true",
+            str(source_repo),
+            str(checkout),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+    configured_autocrlf = subprocess.run(
+        ["git", "config", "--get", "core.autocrlf"],
+        cwd=checkout,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+    attributes = subprocess.run(
+        ["git", "check-attr", "text", "eol", "--", *canonical_paths],
+        cwd=checkout,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=git_env,
+    )
+
+    assert configured_autocrlf.stdout.strip() == "true"
+    for path in canonical_paths:
+        assert f"{path}: text: set" in attributes.stdout
+        assert f"{path}: eol: lf" in attributes.stdout
+        assert (checkout / path).read_bytes() == canonical_bytes[path]
 
 
 def test_readme_and_roadmap_keep_spec04_claims_conservative() -> None:

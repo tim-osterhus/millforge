@@ -25,6 +25,12 @@ BASE_EXPORTS = (
     "build_millforge_base_system_prompt",
     "millforge_base_harness_source",
     "create_millforge_base_components",
+    "RuntimeArtifactWriterFactory",
+    "default_runtime_artifact_writer_factory",
+    "MillforgeBaseRuntimeServices",
+    "MillforgeBaseBindingError",
+    "MillforgeBaseRunner",
+    "create_millforge_base_runner",
 )
 PUBLIC_EXPORTS = BASE_EXPORTS + (
     "compile_harness_source_in_memory",

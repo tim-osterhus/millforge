@@ -1,0 +1,14 @@
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+tests/fixtures/**/*.py text eol=lf
+tests/fixtures/**/*.md text eol=lf
+tests/fixtures/**/*.txt text eol=lf
+tests/fixtures/**/*.tmp text eol=lf
+tests/fixtures/**/.gitignore text eol=lf
+
+src/millforge/_forge/LICENSE text eol=lf
+src/millforge/**/UPDATE_POLICY.md text eol=lf
+src/millforge/tools/pi_compat/PI_LICENSE text eol=lf

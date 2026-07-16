@@ -119,6 +119,36 @@ FORBIDDEN_IMPLEMENTED_CLAIMS = (
     "live model",
 )
 PRIVATE_PREFIXES = ("millrace-agents/", "ideas/", "ref-forge/")
+RECORDED_EVIDENCE_BY_PACKET: dict[str, tuple[str, ...]] = {
+    "05A": (
+        "millrace-agents/arbiter/verdicts/"
+        "idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519fb.json",
+    ),
+    "05B": (
+        "millrace-agents/arbiter/verdicts/"
+        "idea-millforge-05b-connector-runtime-boundary-37768b1b48.json",
+    ),
+    "05C": (
+        "millrace-agents/arbiter/verdicts/"
+        "idea-millforge-05c-custom-tool-mini-compiler-1a69534890.json",
+    ),
+    "05D": (
+        "millrace-agents/specs/done/"
+        "idea-millforge-05d-connector-and-custom-tool-closure-readiness-edba822d78.md",
+    ),
+}
+RECORDED_EVIDENCE_OVERRIDES: dict[str, tuple[str, ...]] = {
+    "05B.retry_certainty": (
+        *RECORDED_EVIDENCE_BY_PACKET["05B"],
+        "millrace-agents/history-log/entries/2026-06-18.jsonl",
+    ),
+    "05D.no_authority_bleed": (
+        "millrace-agents/specs/done/"
+        "spec-05d-prerequisite-evidence-authority-revision.md",
+        "millrace-agents/runs/run-0d75507e7b014bbca1eca8a7cade7e39/"
+        "stage_results/request-5a173b3146324bf0a550a29f271c0c72.history_entry.json",
+    ),
+}
 ALLOWED_ROOT_EXPORT_MODULES = {
     "millforge.artifacts",
     "millforge.base",
@@ -609,6 +639,27 @@ def test_spec05_conformance_matrix_validator_rejects_drift() -> None:
     _assert_invalid_row(row)
 
 
+def test_private_closure_records_do_not_require_daemon_state(tmp_path: Path) -> None:
+    row = _matrix_row("05A.discovery_non_authoritative")
+
+    assert not (tmp_path / "millrace-agents").exists()
+    _assert_recorded_evidence_identity(
+        row["requirement_id"], row["accepted_evidence_paths"]
+    )
+
+    for invented_paths in (
+        [
+            "millrace-agents/arbiter/verdicts/"
+            "idea-millforge-05a-admitted-connector-descriptor-contracts-5d5f0519ff.json"
+        ],
+        list(RECORDED_EVIDENCE_BY_PACKET["05B"]),
+        [*row["accepted_evidence_paths"], "millrace-agents/arbiter/invented.json"],
+    ):
+        drifted = _copy_row(row)
+        drifted["accepted_evidence_paths"] = invented_paths
+        _assert_invalid_row(drifted)
+
+
 def test_public_package_exports_are_explicit_offline_contract_surfaces() -> None:
     root_exports = tuple(__import__("millforge").__all__)
     root_export_names = set(root_exports)
@@ -679,9 +730,11 @@ def _validate_row(row: dict[str, Any]) -> None:
         *row["implemented_by_files"],
         *row["covered_by_tests"],
         *row["fixture_paths"],
-        *row["accepted_evidence_paths"],
     ]:
         _assert_repo_path(path)
+    _assert_recorded_evidence_identity(
+        row["requirement_id"], row["accepted_evidence_paths"]
+    )
     for path in row["covered_by_tests"]:
         _assert_test_reference_path(path)
 
@@ -723,12 +776,31 @@ def _assert_string_list(
     )
 
 
-def _assert_repo_path(path_text: str) -> None:
+def _repo_relative_path(path_text: str) -> Path:
     assert isinstance(path_text, str)
     path = Path(path_text)
     assert not path.is_absolute()
     assert ".." not in path.parts
+    return path
+
+
+def _assert_repo_path(path_text: str) -> None:
+    path = _repo_relative_path(path_text)
     assert (ROOT / path).exists(), path_text
+
+
+def _assert_recorded_evidence_identity(
+    requirement_id: str, evidence_paths: list[str]
+) -> None:
+    packet_id = requirement_id.partition(".")[0]
+    expected = RECORDED_EVIDENCE_OVERRIDES.get(
+        requirement_id, RECORDED_EVIDENCE_BY_PACKET[packet_id]
+    )
+
+    assert tuple(evidence_paths) == expected, requirement_id
+    for path_text in evidence_paths:
+        path = _repo_relative_path(path_text)
+        assert path.as_posix().startswith(PRIVATE_PREFIXES), path_text
 
 
 def _assert_test_reference_path(path_text: str) -> None:

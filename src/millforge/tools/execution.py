@@ -86,6 +86,7 @@ class CompiledToolBindingExecutor:
         connector_admission_snapshot: Any | None = None,
         connector_broker: Any | None = None,
     ) -> None:
+        self._plan = plan
         self._nodes_by_id = {node.node_id: node for node in plan.nodes}
         self._node_by_model_name: dict[str, CompiledHarnessNode] = {}
         self._terminal_result_map = dict(plan.terminal_result_map)
@@ -114,6 +115,16 @@ class CompiledToolBindingExecutor:
         self._runtime_registry = runtime_registry
         self._trace_records: list[Any] = []
         self._next_sequence = 1
+
+    def fork_for_invocation(self) -> CompiledToolBindingExecutor:
+        """Create an executor with identical bindings and fresh trace state."""
+        return CompiledToolBindingExecutor(
+            plan=self._plan,
+            descriptor_snapshot=self._descriptor_snapshot,
+            runtime_registry=self._runtime_registry,
+            connector_admission_snapshot=self._connector_admission_snapshot,
+            connector_broker=self._connector_broker,
+        )
 
     def supports_tool(self, name: str) -> bool:
         node = self._node_by_model_name.get(name)

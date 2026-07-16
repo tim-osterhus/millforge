@@ -59,6 +59,34 @@ only.
 - Lint: `ruff check .`
 - Format: `ruff format --check .`
 
+To verify the committed checkout without inherited local state, run this from
+the source repository in a POSIX shell using the provisioned development
+environment:
+
+```bash
+source_repo=$(git rev-parse --show-toplevel)
+source_commit=$(git rev-parse HEAD)
+tmp_dir=$(mktemp -d)
+trap 'rm -rf "$tmp_dir"' EXIT
+
+git clone --no-hardlinks "$source_repo" "$tmp_dir/millforge"
+cd "$tmp_dir/millforge"
+test "$(git rev-parse HEAD)" = "$source_commit"
+test ! -e millrace-agents
+test ! -e ideas
+test ! -e ref-forge
+test ! -e reference
+test -z "$(git status --short --untracked-files=all)"
+
+python -m pytest \
+  tests/test_connector_custom_tool_closure.py \
+  tests/test_pi_compat_operations.py \
+  tests/test_tool_registry_closure.py \
+  tests/test_forge_provenance.py
+python -m pytest -m "not live_model_backend"
+test -z "$(git status --short)"
+```
+
 ## Millforge Base
 
 `millforge-base` is an unrestricted compatibility preset based on
