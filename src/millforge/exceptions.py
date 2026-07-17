@@ -8,7 +8,7 @@ targeted recovery.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from millforge.contracts import redact_diagnostic_text
 
@@ -41,6 +41,21 @@ class MillforgeConfigError(MillforgeError):
     Raised when millforge configuration values are invalid, missing, or
     inconsistent, or when a runtime contract validation fails.
     """
+
+
+class UnsupportedPlatformError(MillforgeConfigError):
+    """The base runner was invoked on an unsupported native platform."""
+
+    platform_id: str
+    supported_platforms: tuple[Literal["linux", "darwin"], ...]
+
+    def __init__(self, platform_id: str) -> None:
+        self.platform_id = platform_id
+        self.supported_platforms = ("linux", "darwin")
+        super().__init__(
+            "millforge-base requires Linux, macOS, or WSL; "
+            f"native platform {platform_id} is unsupported"
+        )
 
 
 class HarnessMismatchError(MillforgeError):

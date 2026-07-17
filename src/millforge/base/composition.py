@@ -50,6 +50,7 @@ from .harness import (
     millforge_base_harness_source,
 )
 from .options import MillforgeBaseOptions
+from .platform import _require_supported_platform
 from .prompt import (
     MillforgeBasePromptSnapshot,
     _build_millforge_base_system_prompt_resolved,
@@ -275,6 +276,8 @@ def create_millforge_base_components(
     home_directory: Path | None = None,
 ) -> MillforgeBaseComponents:
     """Compose the unrestricted preset without making a provider request."""
+
+    _require_supported_platform()
 
     if (
         model_profile.capabilities.state_for("tool_calls")

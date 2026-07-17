@@ -1,7 +1,17 @@
 # Millforge
 
-A reliability layer for self-hosted LLM tool-calling, inspired by the
-principles of [Forge guardrails](https://github.com/antoinezambelli/forge).
+A typed Python runner and harness compiler for guarded LLM tool execution.
+
+It is inspired by the principles of
+[Forge guardrails](https://github.com/antoinezambelli/forge).
+
+Millforge is currently pre-alpha. Its author and maintainer is
+Tim Osterhus <tim@millrace.ai>, and its canonical homepage and source repository
+are [github.com/tim-osterhus/millforge](https://github.com/tim-osterhus/millforge).
+
+Millforge is licensed under Apache-2.0; packaged upstream MIT notices and
+provenance records remain at `millforge/_forge/{LICENSE,PROVENANCE.json}` and
+`millforge/tools/pi_compat/{PI_LICENSE,PROVENANCE.json}`.
 
 ## Forge Provenance
 
@@ -53,11 +63,21 @@ only.
 
 ## Development
 
-- Python 3.12+
+- Python 3.11 or newer
 - Install for development: `pip install -e ".[dev]"`
 - Run tests: `pytest`
 - Lint: `ruff check .`
 - Format: `ruff format --check .`
+
+| Runtime | Support |
+|---------|---------|
+| Linux on Python 3.11-3.13 | Supported |
+| macOS on Python 3.11-3.12 | Supported |
+| WSL | Supported through Linux |
+| Native Windows | Deferred |
+
+CPython is the gated interpreter. PyPy and other alternative interpreters are
+not currently claimed as supported.
 
 To verify the committed checkout without inherited local state, run this from
 the source repository in a POSIX shell using the provisioned development
@@ -91,6 +111,15 @@ test -z "$(git status --short)"
 
 `millforge-base` is an unrestricted compatibility preset based on
 `@earendil-works/pi-coding-agent` 0.79.6.
+
+Runner execution is supported on Linux and macOS. WSL is supported through its
+Linux execution semantics (`sys.platform == "linux"`). Native Windows is
+unsupported and deferred: package import and argument-free
+`describe_millforge_base()` inspection remain available there, but composition,
+runner creation, and execution raise `UnsupportedPlatformError` before context
+discovery, artifact creation, model resolution, provider calls, process work,
+or tool side effects. Millforge does not claim native Windows path, shell,
+process-tree, or fixture parity.
 
 > A Python behavioral port of Pi 0.79.6's complete built-in coding tool pack, adapted to Millforge's compiler and runtime contracts.
 
@@ -126,8 +155,13 @@ components = create_millforge_base_components(
 For a custom subset, define an ordinary harness DSL graph with the desired
 Pi-compatible descriptor references and compile it through the normal
 Millforge compiler; `MillforgeBaseOptions` deliberately has no tool-selection
-setting. Millrace default selection and live efficacy evaluation remain
-explicitly deferred.
+setting. Millrace may select `millforge-base` as a compile-time default only
+when the pinned runner descriptor declares the current platform. On native
+Windows, default resolution must fail closed or select another explicitly
+configured supported runner; runtime fallback must never remap an already
+compiled Millforge binding.
+Millrace default selection and live efficacy evaluation remain explicitly
+deferred to Millrace integration work.
 
 ## Millforge 03A Closure Evidence
 

@@ -188,7 +188,9 @@ def sanitize_tool_execution_result(
         if output_policy is not None
         else MAX_MODEL_SUMMARY_UTF8
     )
-    safe_data = _model_visible_value(result.structured_data, output_policy=output_policy)
+    safe_data = _model_visible_value(
+        result.structured_data, output_policy=output_policy
+    )
     safe_summary = _model_visible_summary(
         result.summary,
         max_utf8=summary_limit,
@@ -358,7 +360,9 @@ def _output_redaction_policy(
 
 def _model_visible_value(value: Any, *, output_policy: ToolOutputPolicy | None) -> Any:
     if output_policy is not None and not output_policy.redact_secrets:
-        return _bound_unredacted_value(value, max_total_bytes=output_policy.max_output_bytes)
+        return _bound_unredacted_value(
+            value, max_total_bytes=output_policy.max_output_bytes
+        )
     return redact_tool_value(value, policy=_output_redaction_policy(output_policy))
 
 
@@ -371,12 +375,15 @@ def _model_visible_summary(
     if output_policy is not None and not output_policy.redact_secrets:
         if isinstance(value, str):
             return _bound_unredacted_text(value, max_utf8=max_utf8) or "[empty]"
-        return _bound_unredacted_text(
-            canonical_json_serialize(
-                _bound_unredacted_value(value, max_total_bytes=max_utf8)
-            ).strip(),
-            max_utf8=max_utf8,
-        ) or "[empty]"
+        return (
+            _bound_unredacted_text(
+                canonical_json_serialize(
+                    _bound_unredacted_value(value, max_total_bytes=max_utf8)
+                ).strip(),
+                max_utf8=max_utf8,
+            )
+            or "[empty]"
+        )
     return bounded_summary(
         value,
         max_utf8=max_utf8,
@@ -394,7 +401,9 @@ def _bound_unredacted_value(value: Any, *, max_total_bytes: int) -> Any:
         if path is None:
             break
         current_size = len(canonical_json_serialize(bounded).encode("utf-8"))
-        target_size = max(0, len(text.encode("utf-8")) - (current_size - max_total_bytes))
+        target_size = max(
+            0, len(text.encode("utf-8")) - (current_size - max_total_bytes)
+        )
         replacement = _bound_unredacted_text(text, max_utf8=target_size)
         if replacement == text:
             break

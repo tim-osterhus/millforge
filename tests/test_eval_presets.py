@@ -992,7 +992,6 @@ def test_checker_compile_case_accepts_fixed_bridge_readers_without_duplicate_bin
 
     assert result.diagnostics == ()
     assert result.resolved_harness is not None
-    assert "MF-R005" not in {diagnostic.code for diagnostic in result.diagnostics}
     assert result.resolved_harness.required_capability_ids == (
         "artifact.read",
         "artifact.write",
@@ -1067,7 +1066,7 @@ def test_spec_07_compile_cases_reject_generic_verdict_overproduction(
     extra_artifact_id: str,
 ) -> None:
     case = _compile_case(stage_id)
-    reader_node = (
+    reader_node: dict[str, dict[str, object]] = (
         {
             "read_checker_verdict": {
                 "tool_ref": "builtin.artifact.read_checker_verdict@1"

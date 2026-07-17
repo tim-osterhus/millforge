@@ -4,18 +4,23 @@ build-backend = "hatchling.build"
 
 [project]
 name = "millforge"
-version = "0.1.0"
-description = "Millforge — a reliability layer for self-hosted LLM tool-calling, derived from Forge guardrails principles."
-requires-python = ">=3.12"
-license = "MIT"
-authors = [{name = "Millforge Contributors"}]
+dynamic = ["version"]
+description = "A typed Python runner and harness compiler for guarded LLM tool execution."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "Tim Osterhus", email = "tim@millrace.ai"}]
+maintainers = [{name = "Tim Osterhus", email = "tim@millrace.ai"}]
 readme = "README.md"
 keywords = ["llm", "tool-calling", "agents", "guardrails", "millforge"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -40,6 +45,9 @@ dev = [
     "pytest-asyncio",
     "ruff",
 ]
+
+[tool.hatch.version]
+path = "src/millforge/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/millforge"]

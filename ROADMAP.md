@@ -234,6 +234,25 @@ Key outcomes:
 - runtime never re-resolves mutable harness source for an active plan
 - capability mismatch fails before model invocation
 - harness hash mismatch fails before model, tool, or HTTP work
+- `millforge-base` is selected as a compile-time default only when the pinned
+  runner descriptor declares the current platform
+- native Windows default resolution fails closed or selects another explicitly
+  configured supported runner; runtime never silently remaps an already-frozen
+  Millforge binding
+
+Native Windows runner support remains a later platform project. It must address
+all of the following before support is declared:
+
+- drive/UNC and absolute-root path admission
+- shell selection and command quoting
+- process-group/tree cancellation
+- atomic replace and reparse-point behavior
+- canonical fixture line endings
+- native Windows CI and process cleanup tests
+
+The initial runner contract supports Linux and macOS, with WSL operating under
+Linux semantics. It makes no native Windows process, shell, path, or fixture
+parity claim, and this milestone does not add an adapter fallback.
 
 ### 6. Controlled Evaluation
 

@@ -35,6 +35,7 @@ from millforge.tools.pi_compat_catalog import (
 
 from .composition import MillforgeBaseComponents
 from .harness import _TOOL_PACK_ID, millforge_base_harness_source
+from .platform import SUPPORTED_PLATFORMS, SupportedPlatform
 
 __all__ = [
     "MillforgeBaseRunnerDescriptor",
@@ -53,7 +54,7 @@ _REQUIRED_MODEL_CAPABILITY_IDS = ("tool_calls",)
 _ARTIFACT_CONTRACT_VERSION = "millforge.runtime-artifacts.v1"
 _PROMPT_CONTRACT_VERSION = "millforge-base.prompt.v1"
 _CONTEXT_CONTRACT_VERSION = "millforge-base.context.v1"
-_SUPPORTED_PLATFORMS = ("linux", "darwin")
+_SUPPORTED_PLATFORMS = SUPPORTED_PLATFORMS
 
 
 def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
@@ -106,7 +107,7 @@ class MillforgeBaseRunnerDescriptor(BaseModel):
     tool_catalog_sha256: StrictStr
     forge_provenance_sha256: StrictStr
     pi_provenance_sha256: StrictStr
-    supported_platforms: tuple[StrictStr, ...]
+    supported_platforms: tuple[SupportedPlatform, ...]
     descriptor_sha256: StrictStr
 
     @field_validator(

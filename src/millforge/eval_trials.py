@@ -907,7 +907,7 @@ class EvalTrialRecord(EvalTrialContractModel):
                 "invalid_trial_explanations must mirror public scorer explanations"
             )
         for arm_id, summary in self.scorer_public_summaries.items():
-            result = next(
+            matching_result = next(
                 (
                     candidate
                     for candidate in self.arm_results
@@ -916,8 +916,8 @@ class EvalTrialRecord(EvalTrialContractModel):
                 None,
             )
             if (
-                result is None
-                or summary.final_outcome != result.scorer_result.final_outcome
+                matching_result is None
+                or summary.final_outcome != matching_result.scorer_result.final_outcome
             ):
                 raise ValueError("scorer public summaries must mirror scorer results")
         expected_treatment_hashes = _compiled_harness_hashes_by_stage(

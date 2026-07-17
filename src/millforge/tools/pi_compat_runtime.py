@@ -118,7 +118,9 @@ def create_pi_compat_tool_executor(
     if _plan_uses_bash(plan) and shell_config is None:
         raise ValueError("Pi-compatible bash requires a resolved shell_config")
 
-    descriptors = {descriptor.tool_id: descriptor for descriptor in PI_COMPAT_TOOL_DESCRIPTORS}
+    descriptors = {
+        descriptor.tool_id: descriptor for descriptor in PI_COMPAT_TOOL_DESCRIPTORS
+    }
     read = descriptors["builtin.pi_compat.read"]
     bash = descriptors["builtin.pi_compat.bash"]
     edit = descriptors["builtin.pi_compat.edit"]
@@ -336,8 +338,7 @@ def _adapt_operation_result(
     if (
         operation_result.error_kind is None
         and operation_result.changed_path is not None
-        and descriptor.tool_id
-        in {"builtin.pi_compat.edit", "builtin.pi_compat.write"}
+        and descriptor.tool_id in {"builtin.pi_compat.edit", "builtin.pi_compat.write"}
     ):
         structured_data["changed_path"] = operation_result.changed_path.as_posix()
     return make_tool_result(

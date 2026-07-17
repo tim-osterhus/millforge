@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  posix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu Python 3.11
+            os: ubuntu-latest
+            python: "3.11"
+            gate: full
+          - name: Ubuntu Python 3.12
+            os: ubuntu-latest
+            python: "3.12"
+            gate: offline
+          - name: Ubuntu Python 3.13
+            os: ubuntu-latest
+            python: "3.13"
+            gate: offline
+          - name: macOS Python 3.11
+            os: macos-latest
+            python: "3.11"
+            gate: macos
+          - name: macOS Python 3.12
+            os: macos-latest
+            python: "3.12"
+            gate: macos
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen --extra dev
+
+      - name: Full offline tests
+        if: matrix.gate == 'full' || matrix.gate == 'offline'
+        run: uv run python -m pytest -m "not live_model_backend"
+
+      - name: Python 3.11 source and static gates
+        if: matrix.gate == 'full'
+        run: |
+          uv run python -m compileall -q src
+          uv run mypy .
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Python 3.11 build and install gates
+        if: matrix.gate == 'full'
+        shell: bash
+        run: |
+          uv build
+          uv run python scripts/ci_package_smoke.py dist
+
+      - name: Bounded macOS compatibility gates
+        if: matrix.gate == 'macos'
+        run: |
+          uv run python -m pytest -m "not live_model_backend" \
+            tests/test_python_compatibility.py \
+            tests/test_base_composition.py \
+            tests/test_base_public_api.py \
+            tests/test_base_runner.py \
+            tests/test_base_identity.py \
+            tests/test_model_backend.py \
+            tests/test_forge_adapter_translation.py \
+            tests/test_pi_compat_operations.py \
+            tests/test_pi_compat_process.py \
+            tests/test_pi_compat_tool_catalog.py \
+            tests/test_pi_compat_tool_execution.py \
+            tests/test_artifacts.py
+
+      - name: macOS package install smoke
+        if: matrix.gate == 'macos'
+        shell: bash
+        run: |
+          uv build
+          uv run python scripts/ci_package_smoke.py dist

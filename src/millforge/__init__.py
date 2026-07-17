@@ -1,6 +1,8 @@
 """Millforge — a reliability layer for self-hosted LLM tool-calling."""
 
-__version__ = "0.1.0"
+import millforge._version as _version
+
+__version__ = _version.__version__
 
 from millforge.compiled_plan import (
     ArgumentMatch,
@@ -102,6 +104,7 @@ from millforge.exceptions import (
     ModelTransportError,
     OperationCancelledError,
     ToolInvokeError,
+    UnsupportedPlatformError,
 )
 from millforge.artifacts import (
     JSON_MEDIA_TYPE,
@@ -684,6 +687,7 @@ __all__: list[str] = [
     "ModelTransportError",
     "OperationCancelledError",
     "ToolInvokeError",
+    "UnsupportedPlatformError",
     # Runtime
     "classify_failure",
     "DefaultHarnessRuntime",

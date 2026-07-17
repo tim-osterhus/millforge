@@ -55,7 +55,7 @@ from millforge.eval_trials import (
     resume_eval_trial_campaign_store,
     run_offline_fake_eval_trial,
 )
-from millforge.eval_workflow import EvalTerminalResult
+from millforge.eval_workflow import EvalStageId, EvalTerminalResult
 
 
 def test_eval_reports_public_contracts_are_root_exports() -> None:
@@ -446,8 +446,10 @@ def test_report_taxonomy_confounds_decision_rules_and_statistics_are_closed() ->
     record = run.trial_record.model_copy(
         update={
             "arm_results": (arm_result, run.trial_record.arm_results[1]),
-            "final_outcomes": run.trial_record.final_outcomes
-            | {arm_result.arm_id: EvalTrialOutcome.FALSE_CLOSURE},
+            "final_outcomes": {
+                **run.trial_record.final_outcomes,
+                arm_result.arm_id: EvalTrialOutcome.FALSE_CLOSURE,
+            },
         }
     )
     manual = {
@@ -904,9 +906,9 @@ def _fake_script() -> EvalTrialFakeRunnerScript:
         ),
         expected_outcome=EvalTrialOutcome.VALID_COMPLETION,
         stage_result_summaries={
-            "eval_planner": "plan ready",
-            "eval_builder": "builder complete",
-            "eval_checker": "checker approved",
-            "eval_arbiter": "arbiter closed",
+            EvalStageId.PLANNER: "plan ready",
+            EvalStageId.BUILDER: "builder complete",
+            EvalStageId.CHECKER: "checker approved",
+            EvalStageId.ARBITER: "arbiter closed",
         },
     )

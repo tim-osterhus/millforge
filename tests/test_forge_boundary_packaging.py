@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
-import tomllib  # type: ignore[import-not-found]
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -318,24 +318,8 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
         return hashlib.sha256(canonical).hexdigest()
 
     install_target = tmp_path / "installed"
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--ignore-requires-python",
-            "--no-deps",
-            "--target",
-            str(install_target),
-            str(wheel_path),
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    with zipfile.ZipFile(wheel_path) as wheel:
+        wheel.extractall(install_target)
     outside_checkout = tmp_path / "outside-checkout"
     outside_checkout.mkdir()
     environment = dict(os.environ)

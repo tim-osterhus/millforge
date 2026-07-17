@@ -1,0 +1,13 @@
+{
+  "artifact_json_sha256": "20d4678eb845a2150b5dbc6c6b6ab7eeeac7012ba7e0cad44070fc207cddb907",
+  "base_context_metadata_sha256": "b6dc80079a8b27bc9c2afe01a5100a5dc1f0445fce2e9490a602cd269eeec58e",
+  "base_prompt_metadata_sha256": "a46b0d0a57e6ec4dd6c4f968efd26fe89cf08fd035daf41c3c5e3c826ecb8c60",
+  "canonical_compiled_plan_sha256": "422d56e2040606af1cabf556b51fcb0a44810b19367627ccc89edac3dfef2beb",
+  "compiled_plan_embedded_sha256": "b9f2756481076088a47ef58ea312ab37bfbc7609a2830bc812448d0cc5c1966f",
+  "invocation_evidence_embedded_sha256": "e6f4b1a91b991ed28078fe753d1132ea5298ae6e191ee77f388d91e7a9a1490e",
+  "invocation_evidence_sha256": "083f025a476a9386c5625de8f33727304d693c6a32b04c87088d1bede83d5914",
+  "runner_descriptor_embedded_sha256": "ce4f77c4644ed22b01751abffe5960fe270ba5cbebe0d0c179c55454c347b530",
+  "runner_descriptor_sha256": "135cc8e4308fcf6b1b1410af355ad961201267d0657b451a1392ac88d83e60b0",
+  "terminal_json_sha256": "91766a4f2791e1a56820d12b5ffaf1342072b07c458ab211318e41fea64d2f25",
+  "tool_catalog_sha256": "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
+}

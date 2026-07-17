@@ -122,7 +122,9 @@ def _operation_result(
 def _plan(*descriptors: ToolDescriptor) -> CompiledHarnessPlan:
     if not any(descriptor.tool_id in _TERMINAL_RESULTS for descriptor in descriptors):
         descriptors = (*descriptors, _DESCRIPTORS["submit"])
-    nodes = tuple(_node(index, descriptor) for index, descriptor in enumerate(descriptors))
+    nodes = tuple(
+        _node(index, descriptor) for index, descriptor in enumerate(descriptors)
+    )
     plan = CompiledHarnessPlan(
         schema_version="1.0",
         kind="compiled_millforge_harness",
@@ -494,9 +496,7 @@ async def test_bash_pre_entry_denials_do_not_call_11a(
         model_tool_name="bash",
         call_id="call-expired",
         arguments={"command": "fake command"},
-        context=_context(
-            descriptor, effective_deadline=10, current_monotonic=10
-        ),
+        context=_context(descriptor, effective_deadline=10, current_monotonic=10),
     )
     cancelled = await executor.execute_model_tool(
         model_tool_name="bash",
@@ -665,7 +665,9 @@ async def test_operation_error_mapping_is_exhaustive(
         assert "exit_code" not in result.structured_data
     if expects_record:
         assert result.side_effect_record is not None
-        assert result.side_effect_record.certainty is SideEffectCertainty(certainty.value)
+        assert result.side_effect_record.certainty is SideEffectCertainty(
+            certainty.value
+        )
         assert result.side_effect_record.detail_code == error_code
         assert result.side_effect_record.summary == "fake operation result"
         assert result.side_effect_record.retry_allowed is False
@@ -675,7 +677,11 @@ async def test_operation_error_mapping_is_exhaustive(
 
 @pytest.mark.asyncio
 async def test_terminal_results_and_blank_summary_validation(tmp_path: Path) -> None:
-    descriptors = (_DESCRIPTORS["submit"], _DESCRIPTORS["block"], _DESCRIPTORS["reject"])
+    descriptors = (
+        _DESCRIPTORS["submit"],
+        _DESCRIPTORS["block"],
+        _DESCRIPTORS["reject"],
+    )
     executor, _ = _executor(tmp_path, *descriptors)
 
     for tool_name, terminal_result in (
@@ -837,7 +843,9 @@ async def test_unrestricted_output_preserves_model_content_while_trace_redacts(
     assert "SECRET_TOKEN=abc123" in result.structured_data["model_text"]
     assert secret_path in result.structured_data["model_text"]
     assert result.structured_data["changed_path"] == changed_path.as_posix()
-    assert len(result.summary.encode("utf-8")) <= descriptor.output_policy.max_summary_utf8
+    assert (
+        len(result.summary.encode("utf-8")) <= descriptor.output_policy.max_summary_utf8
+    )
     assert len(result.summary.encode("utf-8")) > 8_192
     assert (
         len(canonical_json_serialize(result.structured_data).encode("utf-8"))

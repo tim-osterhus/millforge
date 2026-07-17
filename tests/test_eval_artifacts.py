@@ -31,8 +31,7 @@ def test_eval_artifact_layout_is_complete_path_free_and_stable() -> None:
     layout = canonical_eval_artifact_layout()
 
     assert (
-        tuple(artifact.value for artifact in EvalArtifactId)
-        == EVAL_PUBLIC_ARTIFACT_IDS
+        tuple(artifact.value for artifact in EvalArtifactId) == EVAL_PUBLIC_ARTIFACT_IDS
     )
     assert tuple(layout) == tuple(EvalArtifactId)
     assert layout is canonical_eval_artifact_layout()
@@ -56,8 +55,8 @@ def test_eval_artifact_manifest_bytes_and_hash_are_deterministic() -> None:
         EvalArtifactId.TASK,
         EvalArtifactId.PLAN,
     )
-    assert canonical_eval_artifact_manifest_bytes(manifest).decode("ascii").endswith(
-        "\n"
+    assert (
+        canonical_eval_artifact_manifest_bytes(manifest).decode("ascii").endswith("\n")
     )
     assert canonical_eval_artifact_manifest_bytes(manifest) == (
         canonical_eval_artifact_manifest_bytes(reversed_manifest)

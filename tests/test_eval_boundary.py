@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
+from typing import TypeVar
 
 import millforge
 import pytest
@@ -91,6 +92,15 @@ from millforge.eval_workflow import (
 )
 
 FIXTURE_WORKSPACE = Path("tests/fixtures/eval_workflow/workspace")
+_ArtifactT = TypeVar("_ArtifactT")
+
+
+def _bundle_artifact(
+    bundle: dict[str, object], artifact_id: str, artifact_type: type[_ArtifactT]
+) -> _ArtifactT:
+    artifact = bundle[artifact_id]
+    assert isinstance(artifact, artifact_type)
+    return artifact
 
 
 def test_boundary_declares_06a_public_names_as_authoritative() -> None:
@@ -1787,9 +1797,9 @@ def test_checker_approval_validation_rejects_contradictory_test_evidence(
         expected_mutation_paths=("src/app/main.py",),
     )
     bundle = _closure_artifact_bundle(manifest)
-    bundle["test_results"] = bundle["test_results"].model_copy(
-        update=test_result_update
-    )
+    bundle["test_results"] = _bundle_artifact(
+        bundle, "test_results", EvalTestResultsArtifact
+    ).model_copy(update=test_result_update)
 
     result = validate_eval_checker_approval(bundle)
 
@@ -1807,7 +1817,9 @@ def test_checker_approval_validation_rejects_static_check_failure() -> None:
         expected_mutation_paths=("src/app/main.py",),
     )
     bundle = _closure_artifact_bundle(manifest)
-    bundle["checker_verdict"] = bundle["checker_verdict"].model_copy(
+    bundle["checker_verdict"] = _bundle_artifact(
+        bundle, "checker_verdict", EvalCheckerVerdictArtifact
+    ).model_copy(
         update={
             "evidence_references": (
                 _artifact_reference(EvalArtifactId.PATCH_SUMMARY),
@@ -1815,7 +1827,9 @@ def test_checker_approval_validation_rejects_static_check_failure() -> None:
             )
         }
     )
-    bundle["patch_summary"] = bundle["patch_summary"].model_copy(
+    bundle["patch_summary"] = _bundle_artifact(
+        bundle, "patch_summary", EvalPatchSummaryArtifact
+    ).model_copy(
         update={
             "command_outcomes": (
                 EvalCommandOutcome(
@@ -1879,7 +1893,9 @@ def test_eval_closure_validation_rejects_contradictory_success_evidence(
     )
 
     failed_tests = _closure_artifact_bundle(manifest)
-    failed_tests["test_results"] = failed_tests["test_results"].model_copy(
+    failed_tests["test_results"] = _bundle_artifact(
+        failed_tests, "test_results", EvalTestResultsArtifact
+    ).model_copy(
         update={
             "exit_code": 1,
             "failed_count": 1,
@@ -1898,7 +1914,9 @@ def test_eval_closure_validation_rejects_contradictory_success_evidence(
     )
 
     failed_static = _closure_artifact_bundle(manifest)
-    failed_static["patch_summary"] = failed_static["patch_summary"].model_copy(
+    failed_static["patch_summary"] = _bundle_artifact(
+        failed_static, "patch_summary", EvalPatchSummaryArtifact
+    ).model_copy(
         update={
             "command_outcomes": (
                 EvalCommandOutcome(
@@ -1935,9 +1953,9 @@ def test_eval_closure_validation_rejects_open_acceptance_mutation_and_terminal_d
     fixture_snapshot = eval_fixture_workspace_snapshot(manifest, workspace)
 
     missing_mutation = _closure_artifact_bundle(manifest)
-    missing_mutation["workspace_diff"] = missing_mutation["workspace_diff"].model_copy(
-        update={"modified_paths": ()}
-    )
+    missing_mutation["workspace_diff"] = _bundle_artifact(
+        missing_mutation, "workspace_diff", EvalWorkspaceDiffArtifact
+    ).model_copy(update={"modified_paths": ()})
     mutation_result = validate_eval_closure(
         missing_mutation,
         fixture_snapshot,
@@ -1949,7 +1967,9 @@ def test_eval_closure_validation_rejects_open_acceptance_mutation_and_terminal_d
     )
 
     open_acceptance = _closure_artifact_bundle(manifest)
-    arbiter_record = open_acceptance["arbiter_verdict"].model_dump(mode="json")
+    arbiter_record = _bundle_artifact(
+        open_acceptance, "arbiter_verdict", EvalArbiterVerdictArtifact
+    ).model_dump(mode="json")
     arbiter_record["open_acceptance_check_ids"] = ["check-public-tests"]
     open_acceptance["arbiter_verdict"] = arbiter_record
     acceptance_result = validate_eval_closure(
@@ -2122,7 +2142,9 @@ def test_eval_closure_validation_rejects_contradictory_shortened_blocked_path(
             _artifact_reference(EvalArtifactId.PLAN),
         ),
     )
-    arbiter_record = artifact_bundle["arbiter_verdict"].model_dump(mode="json")
+    arbiter_record = _bundle_artifact(
+        artifact_bundle, "arbiter_verdict", EvalArbiterVerdictArtifact
+    ).model_dump(mode="json")
     arbiter_record["candidate_disposition"] = EvalCandidateDisposition.APPROVED.value
     artifact_bundle["arbiter_verdict"] = arbiter_record
     for artifact_id in (

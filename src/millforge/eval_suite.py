@@ -2168,7 +2168,7 @@ def _default_offline_fake_runner_script() -> Any:
         EvalFakeOutcomeScriptKind,
         EvalTrialFakeRunnerScript,
     )
-    from millforge.eval_workflow import EvalTerminalResult
+    from millforge.eval_workflow import EvalStageId, EvalTerminalResult
 
     return EvalTrialFakeRunnerScript(
         script_id="fake.valid_completion.v1",
@@ -2181,10 +2181,10 @@ def _default_offline_fake_runner_script() -> Any:
         ),
         expected_outcome=EvalTrialOutcome.VALID_COMPLETION,
         stage_result_summaries={
-            "eval_planner": "plan ready",
-            "eval_builder": "builder complete",
-            "eval_checker": "checker approved",
-            "eval_arbiter": "arbiter closed",
+            EvalStageId.PLANNER: "plan ready",
+            EvalStageId.BUILDER: "builder complete",
+            EvalStageId.CHECKER: "checker approved",
+            EvalStageId.ARBITER: "arbiter closed",
         },
     )
 

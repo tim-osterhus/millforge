@@ -290,8 +290,12 @@ EXPECTED_OUTPUT_POLICY = {
     "max_summary_utf8": 65_536,
     "redact_secrets": False,
 }
-EXPECTED_SNAPSHOT_SHA256 = "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
-EXPECTED_SNAPSHOT_ID = "19eb2a742fa5c14def0c68284b314140a03ca955ca9e00dd7232038d58552bd6"
+EXPECTED_SNAPSHOT_SHA256 = (
+    "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
+)
+EXPECTED_SNAPSHOT_ID = (
+    "19eb2a742fa5c14def0c68284b314140a03ca955ca9e00dd7232038d58552bd6"
+)
 
 
 def test_pi_compat_descriptor_table_is_exact() -> None:
@@ -302,9 +306,9 @@ def test_pi_compat_descriptor_table_is_exact() -> None:
         "terminal.intent",
     )
     assert PI_COMPAT_TOOL_VERSION == 1
-    assert tuple(descriptor.tool_id for descriptor in PI_COMPAT_TOOL_DESCRIPTORS) == tuple(
-        EXPECTED_DESCRIPTORS
-    )
+    assert tuple(
+        descriptor.tool_id for descriptor in PI_COMPAT_TOOL_DESCRIPTORS
+    ) == tuple(EXPECTED_DESCRIPTORS)
 
     for descriptor in PI_COMPAT_TOOL_DESCRIPTORS:
         expected = EXPECTED_DESCRIPTORS[descriptor.tool_id]
@@ -318,7 +322,9 @@ def test_pi_compat_descriptor_table_is_exact() -> None:
         assert actual["description"] == expected["description"]
         assert actual["input_schema"] == expected["input_schema"]
         assert actual["output_schema"] == OUTPUT_SCHEMA
-        assert tuple(actual["required_capabilities"]) == expected["required_capabilities"]
+        assert (
+            tuple(actual["required_capabilities"]) == expected["required_capabilities"]
+        )
         assert tuple(actual["produced_artifact_ids"]) == ()
         assert actual["side_effect_class"] == expected["side_effect_class"]
         assert actual["idempotency"] == expected["idempotency"]
@@ -344,7 +350,9 @@ def test_pi_compat_registry_snapshot_is_exact_and_deterministic() -> None:
 
 
 def test_pi_compat_catalog_is_separate_from_governed_catalog() -> None:
-    pi_compat_tool_ids = {descriptor.tool_id for descriptor in PI_COMPAT_TOOL_DESCRIPTORS}
+    pi_compat_tool_ids = {
+        descriptor.tool_id for descriptor in PI_COMPAT_TOOL_DESCRIPTORS
+    }
     governed_tool_ids = {descriptor.tool_id for descriptor in BUILTIN_TOOL_DESCRIPTORS}
     governed_snapshot = create_builtin_tool_snapshot()
 

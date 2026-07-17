@@ -906,7 +906,9 @@ class CompiledToolBindingExecutor:
         if lookup.entry is None or lookup.entry.output_policy is None:
             return None
         if not isinstance(lookup.entry.output_policy, ToolOutputPolicy):
-            raise ValueError("descriptor snapshot output_policy must be ToolOutputPolicy")
+            raise ValueError(
+                "descriptor snapshot output_policy must be ToolOutputPolicy"
+            )
         return lookup.entry.output_policy
 
 

@@ -29,6 +29,7 @@ from .identity import (
     _has_valid_invocation_digest,
     describe_millforge_base,
 )
+from .platform import _require_supported_platform
 
 __all__ = [
     "RuntimeArtifactWriterFactory",
@@ -130,6 +131,7 @@ class MillforgeBaseRunner:
         components: MillforgeBaseComponents,
         services: MillforgeBaseRuntimeServices,
     ) -> None:
+        _require_supported_platform()
         self._components = components
         self._services = services
         self._descriptor = describe_millforge_base()
@@ -159,6 +161,7 @@ class MillforgeBaseRunner:
         request: HarnessExecutionRequest,
     ) -> HarnessExecutionResult:
         """Verify and execute one request with fresh mutable invocation state."""
+        _require_supported_platform()
         self._verify_component_composition()
         self._verify_identity_evidence()
         self._verify_request(request)
@@ -238,4 +241,5 @@ def create_millforge_base_runner(
     services: MillforgeBaseRuntimeServices,
 ) -> MillforgeBaseRunner:
     """Create the supported runner facade for composed base components."""
+    _require_supported_platform()
     return MillforgeBaseRunner(components=components, services=services)
