@@ -20,6 +20,15 @@ from millforge.protocols import (
     RuntimeClock,
 )
 from .composition import MillforgeBaseComponents
+from .identity import (
+    MillforgeBaseRunnerDescriptor,
+    MillforgeInvocationEvidence,
+    _build_invocation_evidence,
+    _descriptor_agrees_with_components,
+    _has_valid_descriptor_digest,
+    _has_valid_invocation_digest,
+    describe_millforge_base,
+)
 
 __all__ = [
     "RuntimeArtifactWriterFactory",
@@ -37,6 +46,10 @@ _BindingReason = Literal[
     "model_profile",
     "capability_envelope",
     "backend_composition",
+    "descriptor_hash",
+    "descriptor_composition",
+    "invocation_evidence_hash",
+    "invocation_evidence_composition",
 ]
 
 _BINDING_MESSAGES: dict[_BindingReason, str] = {
@@ -46,6 +59,10 @@ _BINDING_MESSAGES: dict[_BindingReason, str] = {
     "model_profile": "Execution request model profile does not match millforge-base components",
     "capability_envelope": "Execution request capabilities do not match millforge-base components",
     "backend_composition": "Millforge-base components are not internally consistent",
+    "descriptor_hash": "Millforge-base runner descriptor digest is invalid",
+    "descriptor_composition": "Millforge-base descriptor does not match its components",
+    "invocation_evidence_hash": "Millforge-base invocation evidence digest is invalid",
+    "invocation_evidence_composition": "Millforge-base invocation evidence does not match its components",
 }
 
 
@@ -105,7 +122,7 @@ def _load_invocation_executor() -> _BaseInvocationExecutor:
 class MillforgeBaseRunner:
     """Execute requests against one immutable Millforge base composition."""
 
-    __slots__ = ("_components", "_services")
+    __slots__ = ("_components", "_descriptor", "_invocation_evidence", "_services")
 
     def __init__(
         self,
@@ -115,17 +132,35 @@ class MillforgeBaseRunner:
     ) -> None:
         self._components = components
         self._services = services
+        self._descriptor = describe_millforge_base()
         self._verify_component_composition()
+        try:
+            self._invocation_evidence = _build_invocation_evidence(
+                components, self._descriptor
+            )
+        except (TypeError, ValueError):
+            raise MillforgeBaseBindingError("invocation_evidence_composition") from None
+        self._verify_identity_evidence()
 
     @property
     def components(self) -> MillforgeBaseComponents:
         return self._components
+
+    @property
+    def descriptor(self) -> MillforgeBaseRunnerDescriptor:
+        return self._descriptor
+
+    @property
+    def invocation_evidence(self) -> MillforgeInvocationEvidence:
+        return self._invocation_evidence
 
     async def execute(
         self,
         request: HarnessExecutionRequest,
     ) -> HarnessExecutionResult:
         """Verify and execute one request with fresh mutable invocation state."""
+        self._verify_component_composition()
+        self._verify_identity_evidence()
         self._verify_request(request)
 
         executor = _load_invocation_executor()
@@ -138,14 +173,41 @@ class MillforgeBaseRunner:
             artifact_writer_factory=self._services.artifact_writer_factory,
         )
 
+    def _verify_identity_evidence(self) -> None:
+        if not _has_valid_descriptor_digest(self._descriptor):
+            raise MillforgeBaseBindingError("descriptor_hash")
+        current_descriptor = describe_millforge_base()
+        if (
+            self._descriptor != current_descriptor
+            or not _descriptor_agrees_with_components(
+                self._descriptor, self._components
+            )
+        ):
+            raise MillforgeBaseBindingError("descriptor_composition")
+        if not _has_valid_invocation_digest(self._invocation_evidence):
+            raise MillforgeBaseBindingError("invocation_evidence_hash")
+        try:
+            current_evidence = _build_invocation_evidence(
+                self._components, self._descriptor
+            )
+        except (TypeError, ValueError):
+            raise MillforgeBaseBindingError("invocation_evidence_composition") from None
+        if self._invocation_evidence != current_evidence:
+            raise MillforgeBaseBindingError("invocation_evidence_composition")
+
     def _verify_component_composition(self) -> None:
         plan = self._components.compiled_plan
         metadata = self._components.metadata
         capabilities = self._components.capability_envelope
+        profile = self._components.model_profile
         if (
             metadata.harness_id != plan.harness_id
             or metadata.compiled_sha256 != plan.compiled_sha256
-            or metadata.model_profile_id != plan.model_profile.profile_id
+            or profile.profile_id != plan.model_profile.profile_id
+            or metadata.model_profile_id != profile.profile_id
+            or metadata.provider_id != profile.provider_id
+            or metadata.model_id != profile.model_id
+            or metadata.transport_id != profile.transport_id
             or tuple(grant.capability_id for grant in capabilities.grants)
             != plan.required_capabilities
             or any(grant.constraints is not None for grant in capabilities.grants)

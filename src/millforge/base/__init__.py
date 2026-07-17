@@ -9,6 +9,11 @@ from millforge.base.context import (
     load_millforge_base_context,
 )
 from millforge.base.harness import millforge_base_harness_source
+from millforge.base.identity import (
+    MillforgeBaseRunnerDescriptor,
+    MillforgeInvocationEvidence,
+    describe_millforge_base,
+)
 from millforge.base.options import MillforgeBaseOptions
 from millforge.base.prompt import (
     MillforgeBasePromptBudgetError,
@@ -32,10 +37,13 @@ __all__ = [
     "MillforgeBasePromptBudgetError",
     "MillforgeBaseMetadata",
     "MillforgeBaseComponents",
+    "MillforgeBaseRunnerDescriptor",
+    "MillforgeInvocationEvidence",
     "load_millforge_base_context",
     "build_millforge_base_system_prompt",
     "millforge_base_harness_source",
     "create_millforge_base_components",
+    "describe_millforge_base",
     "RuntimeArtifactWriterFactory",
     "default_runtime_artifact_writer_factory",
     "MillforgeBaseRuntimeServices",

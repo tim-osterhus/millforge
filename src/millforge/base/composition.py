@@ -168,6 +168,7 @@ class MillforgeBaseComponents:
     prompt: MillforgeBasePromptSnapshot
     harness_source: HarnessSource
     compiled_plan: CompiledHarnessPlan
+    model_profile: ResolvedModelProfile
     tool_snapshot: ToolCatalogSnapshot
     tool_executor: CompiledToolBindingExecutor
     capability_envelope: CapabilityEnvelope
@@ -346,6 +347,7 @@ def create_millforge_base_components(
         prompt=prompt,
         harness_source=source,
         compiled_plan=compiled_plan,
+        model_profile=model_profile,
         tool_snapshot=tool_snapshot,
         tool_executor=tool_executor,
         capability_envelope=capability_envelope,

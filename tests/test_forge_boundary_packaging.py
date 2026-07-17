@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -286,6 +287,8 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
             name for name in names if name.endswith(".dist-info/METADATA")
         )
         metadata = wheel.read(metadata_name).decode("utf-8")
+        forge_provenance = wheel.read("millforge/_forge/PROVENANCE.json")
+        pi_provenance = wheel.read("millforge/tools/pi_compat/PROVENANCE.json")
 
     assert "forge/__init__.py" not in names
     assert not any(name.startswith("forge/") for name in names)
@@ -293,6 +296,7 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
     assert "millforge/tools/registry.py" in names
     assert "millforge/_forge/LICENSE" in names
     assert "millforge/_forge/PROVENANCE.json" in names
+    assert "millforge/tools/pi_compat/PROVENANCE.json" in names
     assert "millforge/_forge/UPDATE_POLICY.md" in names
     assert not any(name.endswith(".pyc") for name in names)
     assert not (path_parts & FORBIDDEN_WHEEL_DIR_PARTS)
@@ -300,6 +304,81 @@ def test_wheel_content_exposes_only_millforge_private_forge_subset(
     metadata_lower = metadata.lower()
     for dependency in FORBIDDEN_RUNTIME_DEPENDENCIES:
         assert f"requires-dist: {dependency}" not in metadata_lower
+
+    def canonical_provenance_sha256(raw: bytes) -> str:
+        parsed = json.loads(raw)
+        assert isinstance(parsed, dict)
+        canonical = json.dumps(
+            parsed,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    install_target = tmp_path / "installed"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--ignore-requires-python",
+            "--no-deps",
+            "--target",
+            str(install_target),
+            str(wheel_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    outside_checkout = tmp_path / "outside-checkout"
+    outside_checkout.mkdir()
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(install_target)
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                """
+                import json
+                import millforge
+
+                descriptor = millforge.describe_millforge_base()
+                print(json.dumps({
+                    "module_file": millforge.__file__,
+                    "descriptor": descriptor.model_dump(mode="json"),
+                }))
+                """
+            ),
+        ],
+        cwd=outside_checkout,
+        env=environment,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    installed = json.loads(probe.stdout)
+    assert (
+        Path(installed["module_file"])
+        .resolve()
+        .is_relative_to(install_target.resolve())
+    )
+    descriptor = installed["descriptor"]
+    assert (
+        canonical_provenance_sha256(forge_provenance)
+        == (descriptor["forge_provenance_sha256"])
+    )
+    assert (
+        canonical_provenance_sha256(pi_provenance)
+        == (descriptor["pi_provenance_sha256"])
+    )
 
 
 def test_sdist_content_excludes_tests_runtime_artifacts_and_ref_forge(
