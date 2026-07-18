@@ -119,10 +119,17 @@ def _context_file_from_directory(
     scope: Literal["global", "project"],
     diagnostics: list[str],
 ) -> _DiscoveredContextFile | None:
+    attempted_candidates: list[Path] = []
     for filename in _CONTEXT_CANDIDATES:
         candidate = (directory / filename).resolve()
         if not candidate.exists():
             continue
+        if any(
+            _paths_refer_to_same_file(candidate, attempted)
+            for attempted in attempted_candidates
+        ):
+            continue
+        attempted_candidates.append(candidate)
         try:
             raw = candidate.read_bytes()
         except OSError as error:

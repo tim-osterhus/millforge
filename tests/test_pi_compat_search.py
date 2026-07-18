@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 import shutil
@@ -347,10 +348,7 @@ def test_grep_and_find_numeric_edge_cases_are_closed_and_source_compatible(
         assert result.model_text == "grep context must be a number"
 
 
-def test_search_closes_nul_paths_and_renders_posix_byte_filenames(
-    tmp_path: Path,
-) -> None:
-    # Millforge 11A QA: search results stay closed and UTF-8 display-safe.
+def test_search_closes_nul_paths(tmp_path: Path) -> None:
     for result in (
         execute_grep(cwd=tmp_path, pattern="match", path="bad\x00.txt"),
         execute_find(cwd=tmp_path, pattern="*", path="bad\x00"),
@@ -359,12 +357,22 @@ def test_search_closes_nul_paths_and_renders_posix_byte_filenames(
         assert result.side_effect_state is PiCompatSideEffectState.NOT_ATTEMPTED
         assert "NUL" in result.model_text
 
+
+def test_search_renders_posix_byte_filenames(tmp_path: Path) -> None:
+    # Millforge 11A QA: search results stay UTF-8 display-safe.
     if os.name == "nt":
-        return
+        pytest.skip("POSIX byte filenames are not available on Windows")
     filename = b"byte-name-\xff.txt"
-    descriptor = os.open(
-        os.fsencode(tmp_path) + b"/" + filename, os.O_WRONLY | os.O_CREAT, 0o600
-    )
+    try:
+        descriptor = os.open(
+            os.fsencode(tmp_path) + b"/" + filename,
+            os.O_WRONLY | os.O_CREAT,
+            0o600,
+        )
+    except OSError as error:
+        if error.errno == errno.EILSEQ:
+            pytest.skip("host filesystem rejects non-UTF-8 filename bytes")
+        raise
     try:
         os.write(descriptor, b"match\n")
     finally:
