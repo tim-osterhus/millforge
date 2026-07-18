@@ -10,6 +10,8 @@ import sys
 import tarfile
 import zipfile
 
+import pytest
+
 from millforge.tools import pi_compat
 from millforge.tools.pi_compat.contracts import (
     PiCompatErrorKind,
@@ -336,12 +338,15 @@ def test_posix_surrogateescape_filename_is_recoverable_and_display_safe(
     tmp_path: Path,
 ) -> None:
     # Millforge 11A QA: POSIX byte filenames must not fail UTF-8 result formatting.
-    if os.name == "nt":
-        return
-
     filename = b"undecodable-\xff.txt"
     byte_path = os.fsencode(tmp_path) + b"/" + filename
-    descriptor = os.open(byte_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        descriptor = os.open(byte_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    except (OSError, TypeError, ValueError) as error:
+        pytest.skip(
+            "host filesystem rejected the invalid-byte filename creation "
+            f"precondition: {type(error).__name__}: {error}"
+        )
     try:
         os.write(descriptor, b"contents")
     finally:

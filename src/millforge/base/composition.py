@@ -25,7 +25,11 @@ from millforge.compiler.catalogs import ModelProfileCatalogLookup, ToolCatalogSn
 from millforge.compiler.service import compile_harness_source_in_memory
 from millforge.compiler.source import HarnessSource
 from millforge.contracts import CapabilityEnvelope, CapabilityGrant
-from millforge.model_backend import CapabilitySupport, ResolvedModelProfile
+from millforge.model_backend import (
+    CapabilitySupport,
+    ResolvedModelProfile,
+    UnsupportedModelCapabilityError,
+)
 from millforge.protocols import CancellationResolver
 from millforge.tools.execution import CompiledToolBindingExecutor
 from millforge.tools.pi_compat.process import (
@@ -279,12 +283,16 @@ def create_millforge_base_components(
 
     _require_supported_platform()
 
-    if (
-        model_profile.capabilities.state_for("tool_calls")
+    unsupported_model_capabilities = tuple(
+        capability
+        for capability in ("tool_calls", "system_messages", "tool_result_messages")
+        if model_profile.capabilities.state_for(capability)
         is not CapabilitySupport.SUPPORTED
-    ):
-        raise ValueError(
-            "millforge-base requires a model profile with supported tool_calls"
+    )
+    if unsupported_model_capabilities:
+        raise UnsupportedModelCapabilityError(
+            "millforge-base requires supported model capabilities: "
+            + ", ".join(unsupported_model_capabilities)
         )
 
     resolved_cwd = _resolved_absolute_path(cwd, "cwd")

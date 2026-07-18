@@ -34,10 +34,54 @@ BASE_EXPORTS = (
     "MillforgeBaseBindingError",
     "MillforgeBaseRunner",
     "create_millforge_base_runner",
+    "MillforgeBaseLiveRunner",
+    "create_millforge_base_live_runner",
+    "AuthenticationPolicy",
+    "AuthenticationScheme",
+    "CapabilityDeclarations",
+    "CapabilitySupport",
+    "EndpointConfig",
+    "HeaderValuePolicy",
+    "ModelBackendConfigError",
+    "OpenAICompatibleTimeouts",
+    "ReasoningEffort",
+    "ReasoningMode",
+    "ReasoningPolicy",
+    "RequestOptionAllowlist",
+    "ResolvedModelProfile",
+    "ResolvedSecret",
+    "SamplingPolicy",
+    "SecretResolutionError",
+    "SecretResolver",
+    "TransportConfig",
+    "UnsupportedModelCapabilityError",
 )
 PUBLIC_EXPORTS = BASE_EXPORTS + (
     "compile_harness_source_in_memory",
     "InMemoryHarnessCompileError",
+    "SelectedOutput",
+    "SelectedOutputAbsent",
+    "SelectedOutputPresent",
+    "SelectedOutputRequirement",
+    "MAX_SELECTED_OUTPUT_ARRAY_ITEMS",
+    "MAX_SELECTED_OUTPUT_NESTING_DEPTH",
+    "MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES",
+    "MAX_SELECTED_OUTPUT_PAYLOAD_BYTES",
+    "MAX_SELECTED_OUTPUT_SCHEMA_BYTES",
+    "MAX_SELECTED_OUTPUT_STRING_LENGTH",
+    "canonical_selected_output_payload_bytes",
+    "canonical_selected_output_schema_bytes",
+    "parse_selected_output_payload_json",
+    "selected_output_schema_sha256",
+)
+PRIVATE_LIVE_IMPLEMENTATION_EXPORTS = (
+    "DefaultModelClient",
+    "OpenAIChatCompletionsTransport",
+    "StaticModelProfileResolver",
+    "ForgeGuardrailBackend",
+    "MillraceAdapter",
+    "ProviderRegistry",
+    "CredentialStore",
 )
 PINNED_PROMPT_RECORDS = [
     {
@@ -85,7 +129,15 @@ def test_base_public_exports_are_deliberate_and_free_of_private_forge_symbols() 
     )
     assert millforge.InMemoryHarnessCompileError is InMemoryHarnessCompileError
     assert not any(name.startswith("Forge") for name in millforge.__all__)
-    assert "ForgeGuardrailBackend" not in millforge.__all__
+    assert not any(
+        name in millforge.__all__ for name in PRIVATE_LIVE_IMPLEMENTATION_EXPORTS
+    )
+    assert not any(
+        name in millforge_base.__all__ for name in PRIVATE_LIVE_IMPLEMENTATION_EXPORTS
+    )
+    assert not any(
+        hasattr(millforge, name) for name in PRIVATE_LIVE_IMPLEMENTATION_EXPORTS
+    )
 
 
 def test_base_prompt_and_context_provenance_records_are_appended_exactly() -> None:
@@ -119,5 +171,25 @@ def test_base_docs_state_the_compatible_unrestricted_surface_and_deferrals() -> 
     ) in section
     assert "Deliberate adaptations" in section
     assert "create_millforge_base_components" in section
+    assert "create_millforge_base_live_runner" in section
+    assert "imported from the `millforge` package root" in section
+    assert "Consumer code does not import" in section
+    assert "`millforge.model_backend`, `millforge._forge`" in section
+    assert "local_total_seconds" in section
+    assert "remain caller-owned" in section
+    assert "MillforgeBaseClosedError" in section
+    assert "`HarnessExecutionRequest.stage` is provider-local" in section
+    assert (
+        '`StageIdentity(plane="execution", node_id="millforge-base",\n'
+        'stage_kind_id="millforge_base")`' in section
+    )
+    assert "opaque correlation values" in section
+    assert "does not interpret them as routing" in section
+    assert "external adapter retains and applies any" in section
+    assert "runner.invocation_evidence_for(request)" in section
+    assert "serialized schema is `1.2`" in section
     assert "ordinary harness DSL graph" in section
-    assert "Millrace default selection and live efficacy evaluation remain" in section
+    assert (
+        "Millrace default selection, external workflow mapping, and live efficacy"
+        in section
+    )

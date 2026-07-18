@@ -8,14 +8,33 @@ mutable working models are explicitly noted in their docstrings.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import re
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Callable, Dict, Literal, Optional, Tuple, TypeAlias
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Dict,
+    Literal,
+    Optional,
+    Self,
+    Tuple,
+    TypeAlias,
+)
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from millforge.compiled_plan import (
     CompiledArtifactPolicy,
@@ -28,6 +47,7 @@ from millforge.compiled_plan import (
     ToolBindingRef,
     ToolExecutionStatus,
     ToolTraceRecord,
+    canonical_json_serialize,
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -84,6 +104,358 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = Any
 JsonObject: TypeAlias = dict[str, JsonValue]
 SanitizedMetadataValue = JsonScalar
+
+# Public global ceilings for one invocation-local selected JSON output.
+MAX_SELECTED_OUTPUT_SCHEMA_BYTES = 64 * 1024
+MAX_SELECTED_OUTPUT_PAYLOAD_BYTES = 1024 * 1024
+MAX_SELECTED_OUTPUT_NESTING_DEPTH = 16
+MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES = 64
+MAX_SELECTED_OUTPUT_ARRAY_ITEMS = 1024
+MAX_SELECTED_OUTPUT_STRING_LENGTH = 64 * 1024
+
+_SELECTED_OUTPUT_TYPES = {
+    "object",
+    "array",
+    "string",
+    "integer",
+    "number",
+    "boolean",
+    "null",
+}
+_SELECTED_OUTPUT_SCHEMA_KEYWORDS = {
+    "object": {"type", "properties", "required", "additionalProperties"},
+    "array": {"type", "items", "minItems", "maxItems"},
+    "string": {"type", "minLength", "maxLength"},
+    "integer": {"type"},
+    "number": {"type"},
+    "boolean": {"type"},
+    "null": {"type"},
+}
+
+
+class _FrozenSelectedOutputDict(dict[str, Any]):
+    """Internal recursively frozen dict that retains JSON serialization shape."""
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("selected output authority is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable  # type: ignore[assignment]
+    setdefault = _immutable
+    update = _immutable  # type: ignore[assignment]
+    __ior__ = _immutable  # type: ignore[assignment]
+
+
+class _FrozenSelectedOutputList(list[Any]):
+    """Internal recursively frozen list that retains JSON serialization shape."""
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("selected output authority is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def _freeze_selected_output_json(value: JsonValue) -> JsonValue:
+    if isinstance(value, dict):
+        return _FrozenSelectedOutputDict(
+            {key: _freeze_selected_output_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return _FrozenSelectedOutputList(
+            _freeze_selected_output_json(item) for item in value
+        )
+    return value
+
+
+def _reject_selected_output_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"selected output JSON contains duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_selected_output_constant(value: str) -> None:
+    raise ValueError(f"selected output JSON contains non-finite number {value}")
+
+
+def _parse_selected_output_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("selected output JSON contains a non-finite number")
+    return parsed
+
+
+def _parse_selected_output_json(raw: str | bytes, *, field_name: str) -> JsonValue:
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{field_name} must be UTF-8 JSON") from exc
+    else:
+        text = raw
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_selected_output_duplicate_keys,
+            parse_constant=_reject_selected_output_constant,
+            parse_float=_parse_selected_output_float,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be strict JSON: {exc}") from exc
+
+
+class _RawJsonObject(list[tuple[str, Any]]):
+    """A JSON object represented as its ordered raw key/value pairs."""
+
+
+def _parse_json_objects_preserving_pairs(
+    raw: str | bytes | bytearray,
+) -> JsonValue | None:
+    """Parse JSON while retaining object key pairs for strict raw validation."""
+    try:
+        return json.loads(raw, object_pairs_hook=_RawJsonObject)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        # Let Pydantic preserve its normal raw-JSON validation behavior.
+        return None
+
+
+def _validate_raw_json_strictness(value: JsonValue, *, field_name: str) -> None:
+    """Reject duplicate object keys and non-finite numbers before conversion."""
+    if isinstance(value, _RawJsonObject):
+        seen: set[str] = set()
+        for key, item in value:
+            if key in seen:
+                raise ValueError(f"{field_name} contains duplicate key {key!r}")
+            seen.add(key)
+            _validate_raw_json_strictness(item, field_name=field_name)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_raw_json_strictness(item, field_name=field_name)
+    elif type(value) is float and not math.isfinite(value):
+        raise ValueError(f"{field_name} contains a non-finite number")
+
+
+def _validate_harness_request_raw_json(
+    raw: str | bytes | bytearray,
+) -> None:
+    """Reject ambiguous or non-finite values throughout a raw request."""
+    parsed = _parse_json_objects_preserving_pairs(raw)
+    if parsed is None:
+        return
+    _validate_raw_json_strictness(parsed, field_name="request JSON")
+
+
+def _validate_selected_output_bound(
+    schema: Mapping[str, Any],
+    *,
+    minimum_key: str,
+    maximum_key: str,
+    global_maximum: int,
+) -> None:
+    minimum = schema.get(minimum_key, 0)
+    maximum = schema.get(maximum_key, global_maximum)
+    if type(minimum) is not int or type(maximum) is not int:
+        raise ValueError(f"{minimum_key} and {maximum_key} must be integers")
+    if minimum < 0 or maximum < 0:
+        raise ValueError(f"{minimum_key} and {maximum_key} must be non-negative")
+    if minimum > maximum:
+        raise ValueError(f"{minimum_key} must not exceed {maximum_key}")
+    if maximum > global_maximum:
+        raise ValueError(f"{maximum_key} exceeds the selected output global ceiling")
+
+
+def _normalize_selected_output_schema(
+    schema: Any,
+    *,
+    depth: int,
+) -> JsonObject:
+    if depth > MAX_SELECTED_OUTPUT_NESTING_DEPTH:
+        raise ValueError("selected output schema exceeds the nesting-depth ceiling")
+    if not isinstance(schema, Mapping):
+        raise ValueError("every selected output schema node must be a JSON object")
+    if any(not isinstance(key, str) for key in schema):
+        raise ValueError("selected output schema object keys must be strings")
+
+    schema_type = schema.get("type")
+    if not isinstance(schema_type, str) or schema_type not in _SELECTED_OUTPUT_TYPES:
+        raise ValueError("selected output schema type is outside the admitted subset")
+    unsupported = set(schema) - _SELECTED_OUTPUT_SCHEMA_KEYWORDS[schema_type]
+    if unsupported:
+        rendered = ", ".join(sorted(unsupported))
+        raise ValueError(f"unsupported selected output schema keyword(s): {rendered}")
+
+    normalized: JsonObject = {"type": schema_type}
+    if schema_type == "object":
+        if schema.get("additionalProperties") is not False:
+            raise ValueError("object schemas require additionalProperties=false")
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if not isinstance(properties, Mapping):
+            raise ValueError("object schema properties must be a JSON object")
+        if any(not isinstance(key, str) for key in properties):
+            raise ValueError("selected output property names must be strings")
+        if len(properties) > MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES:
+            raise ValueError(
+                "selected output schema exceeds the object-property ceiling"
+            )
+        if not isinstance(required, list) or any(
+            not isinstance(item, str) for item in required
+        ):
+            raise ValueError("object schema required must be an array of strings")
+        if len(set(required)) != len(required):
+            raise ValueError("object schema required values must be unique")
+        unknown_required = set(required) - set(properties)
+        if unknown_required:
+            raise ValueError(
+                "object schema required values must name declared properties"
+            )
+        for property_name in properties:
+            if len(property_name) > MAX_SELECTED_OUTPUT_STRING_LENGTH:
+                raise ValueError("selected output property name exceeds string ceiling")
+        normalized["properties"] = {
+            key: _normalize_selected_output_schema(value, depth=depth + 1)
+            for key, value in properties.items()
+        }
+        normalized["required"] = sorted(required)
+        normalized["additionalProperties"] = False
+    elif schema_type == "array":
+        if "items" not in schema:
+            raise ValueError("array schemas require an items schema")
+        _validate_selected_output_bound(
+            schema,
+            minimum_key="minItems",
+            maximum_key="maxItems",
+            global_maximum=MAX_SELECTED_OUTPUT_ARRAY_ITEMS,
+        )
+        normalized["items"] = _normalize_selected_output_schema(
+            schema["items"],
+            depth=depth + 1,
+        )
+        if "minItems" in schema:
+            normalized["minItems"] = schema["minItems"]
+        if "maxItems" in schema:
+            normalized["maxItems"] = schema["maxItems"]
+    elif schema_type == "string":
+        _validate_selected_output_bound(
+            schema,
+            minimum_key="minLength",
+            maximum_key="maxLength",
+            global_maximum=MAX_SELECTED_OUTPUT_STRING_LENGTH,
+        )
+        if "minLength" in schema:
+            normalized["minLength"] = schema["minLength"]
+        if "maxLength" in schema:
+            normalized["maxLength"] = schema["maxLength"]
+    return normalized
+
+
+def canonical_selected_output_schema_bytes(
+    schema: str | bytes | Mapping[str, Any],
+) -> bytes:
+    """Admit and canonically serialize the closed selected-schema subset."""
+    if isinstance(schema, (str, bytes)):
+        raw_size = (
+            len(schema.encode("utf-8")) if isinstance(schema, str) else len(schema)
+        )
+        if raw_size > MAX_SELECTED_OUTPUT_SCHEMA_BYTES:
+            raise ValueError("selected output schema exceeds the schema-byte ceiling")
+        parsed = _parse_selected_output_json(
+            schema, field_name="selected output schema"
+        )
+    else:
+        parsed = schema
+    normalized = _normalize_selected_output_schema(parsed, depth=1)
+    canonical = canonical_json_serialize(normalized).encode("utf-8")
+    if len(canonical) > MAX_SELECTED_OUTPUT_SCHEMA_BYTES:
+        raise ValueError("selected output schema exceeds the schema-byte ceiling")
+    return canonical
+
+
+def selected_output_schema_sha256(
+    schema: str | bytes | Mapping[str, Any],
+) -> str:
+    """Return the SHA-256 digest of an admitted canonical selected schema."""
+    return hashlib.sha256(canonical_selected_output_schema_bytes(schema)).hexdigest()
+
+
+def _normalize_selected_output_payload(value: Any, *, depth: int) -> JsonValue:
+    if depth > MAX_SELECTED_OUTPUT_NESTING_DEPTH:
+        raise ValueError("selected output payload exceeds the nesting-depth ceiling")
+    if value is None or type(value) in {bool, int}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("selected output payload contains a non-finite number")
+        return value
+    if isinstance(value, str):
+        if len(value) > MAX_SELECTED_OUTPUT_STRING_LENGTH:
+            raise ValueError(
+                "selected output payload string exceeds the string ceiling"
+            )
+        return value
+    if isinstance(value, list):
+        if len(value) > MAX_SELECTED_OUTPUT_ARRAY_ITEMS:
+            raise ValueError("selected output payload exceeds the array-item ceiling")
+        return [
+            _normalize_selected_output_payload(item, depth=depth + 1) for item in value
+        ]
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("selected output payload object keys must be strings")
+        if len(value) > MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES:
+            raise ValueError(
+                "selected output payload exceeds the object-property ceiling"
+            )
+        for key in value:
+            if len(key) > MAX_SELECTED_OUTPUT_STRING_LENGTH:
+                raise ValueError(
+                    "selected output payload key exceeds the string ceiling"
+                )
+        return {
+            key: _normalize_selected_output_payload(item, depth=depth + 1)
+            for key, item in value.items()
+        }
+    raise ValueError("selected output payload contains a non-JSON value")
+
+
+def canonical_selected_output_payload_bytes(value: JsonValue) -> bytes:
+    """Validate global JSON bounds and return canonical selected payload bytes."""
+    normalized = _normalize_selected_output_payload(value, depth=1)
+    canonical = canonical_json_serialize(normalized).encode("utf-8")
+    if len(canonical) > MAX_SELECTED_OUTPUT_PAYLOAD_BYTES:
+        raise ValueError("selected output payload exceeds the payload-byte ceiling")
+    return canonical
+
+
+def parse_selected_output_payload_json(raw: str | bytes) -> JsonValue:
+    """Parse strict JSON, rejecting duplicate keys and all global bound violations."""
+    raw_size = len(raw.encode("utf-8")) if isinstance(raw, str) else len(raw)
+    if raw_size > MAX_SELECTED_OUTPUT_PAYLOAD_BYTES:
+        raise ValueError("selected output payload exceeds the payload-byte ceiling")
+    parsed = _parse_selected_output_json(raw, field_name="selected output payload")
+    canonical_selected_output_payload_bytes(parsed)
+    return parsed
+
 
 # ---------------------------------------------------------------------------
 # Closed enums
@@ -647,6 +1019,241 @@ class ToolExecutionContext(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Invocation-local selected output authority and admitted value
+# ---------------------------------------------------------------------------
+
+
+class SelectedOutputRequirement(BaseModel):
+    """Immutable required/optional authority for one selected JSON output.
+
+    ``json_schema`` may be supplied as a strict JSON string/bytes value or as a
+    Python mapping. It is normalized to the documented closed subset and its
+    canonical SHA-256 digest is pinned into the serialized request contract.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+        revalidate_instances="always",
+    )
+
+    required: StrictBool = Field(
+        description="Whether the invocation must admit a present selected output"
+    )
+    json_schema: JsonObject = Field(description="Admitted closed selected JSON schema")
+    schema_sha256: str = Field(
+        default="",
+        description="SHA-256 digest of the canonical admitted selected schema",
+    )
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: Any | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        """Validate raw requirement JSON without losing duplicate keys first."""
+        parsed = _parse_json_objects_preserving_pairs(json_data)
+        if parsed is not None:
+            _validate_raw_json_strictness(parsed, field_name="selected output JSON")
+        return super().model_validate_json(
+            json_data,
+            strict=strict,
+            extra=extra,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _admit_and_pin_schema(cls, value: Any) -> Any:
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping) or "json_schema" not in value:
+            return value
+        canonical = canonical_selected_output_schema_bytes(value["json_schema"])
+        admitted = json.loads(canonical)
+        digest = hashlib.sha256(canonical).hexdigest()
+        supplied_digest = value.get("schema_sha256")
+        if supplied_digest not in (None, "", digest):
+            raise ValueError("schema_sha256 does not match canonical selected schema")
+        normalized = dict(value)
+        normalized["json_schema"] = admitted
+        normalized["schema_sha256"] = digest
+        return normalized
+
+    @field_validator("schema_sha256")
+    @classmethod
+    def _schema_digest_valid(cls, value: str) -> str:
+        return _validate_sha256(value, "schema_sha256")
+
+    @model_validator(mode="after")
+    def _schema_digest_matches(self) -> SelectedOutputRequirement:
+        if self.schema_sha256 != selected_output_schema_sha256(self.json_schema):
+            raise ValueError("schema_sha256 does not match canonical selected schema")
+        object.__setattr__(
+            self,
+            "json_schema",
+            _freeze_selected_output_json(self.json_schema),
+        )
+        return self
+
+    @property
+    def canonical_schema_bytes(self) -> bytes:
+        """Return the admitted schema as canonical UTF-8 JSON bytes."""
+        return canonical_selected_output_schema_bytes(self.json_schema)
+
+
+class SelectedOutputAbsent(BaseModel):
+    """Explicit absence for an admitted optional selected-output authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    present: Literal[False] = False
+
+
+class SelectedOutputPresent(BaseModel):
+    """A present, globally bounded JSON value; ``value=None`` is JSON null."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+        revalidate_instances="always",
+    )
+
+    present: Literal[True] = True
+    value: JsonValue = Field(description="Admitted JSON value, including JSON null")
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_is_bounded_json(cls, value: Any) -> JsonValue:
+        normalized = _normalize_selected_output_payload(value, depth=1)
+        canonical_selected_output_payload_bytes(normalized)
+        return _freeze_selected_output_json(normalized)
+
+
+SelectedOutput: TypeAlias = Annotated[
+    SelectedOutputAbsent | SelectedOutputPresent,
+    Field(discriminator="present"),
+]
+
+
+def admit_selected_output(
+    requirement: SelectedOutputRequirement,
+    *,
+    present: bool,
+    value: Any = None,
+) -> SelectedOutput:
+    """Mechanically admit one invocation-local selected-output candidate.
+
+    Absence is legal only for optional authorities.  Present values first pass
+    the global payload ceilings owned by :class:`SelectedOutputPresent`, then
+    the exact closed schema carried by ``requirement``.  No prose, artifact, or
+    workspace fallback participates in admission.
+    """
+
+    if not present:
+        if requirement.required:
+            raise ValueError("required selected output candidate is missing")
+        return SelectedOutputAbsent()
+
+    candidate = SelectedOutputPresent(value=value)
+    error = _selected_output_schema_error(
+        candidate.value,
+        requirement.json_schema,
+        path="$",
+    )
+    if error is not None:
+        raise ValueError(f"selected output candidate failed schema validation: {error}")
+    return candidate
+
+
+def _selected_output_schema_error(
+    value: Any,
+    schema: Mapping[str, Any],
+    *,
+    path: str,
+) -> str | None:
+    """Return the first deterministic mismatch against the admitted subset."""
+
+    schema_type = schema["type"]
+    if schema_type == "object":
+        if not isinstance(value, Mapping):
+            return f"{path} must be object"
+        properties = schema["properties"]
+        for key in schema["required"]:
+            if key not in value:
+                return f"{path}.{key} is required"
+        extra = sorted(set(value) - set(properties))
+        if extra:
+            return f"{path}.{extra[0]} is not allowed"
+        for key, item in value.items():
+            error = _selected_output_schema_error(
+                item,
+                properties[key],
+                path=f"{path}.{key}",
+            )
+            if error is not None:
+                return error
+        return None
+    if schema_type == "array":
+        if not isinstance(value, list):
+            return f"{path} must be array"
+        minimum = schema.get("minItems", 0)
+        maximum = schema.get("maxItems", MAX_SELECTED_OUTPUT_ARRAY_ITEMS)
+        if len(value) < minimum:
+            return f"{path} has fewer than {minimum} items"
+        if len(value) > maximum:
+            return f"{path} has more than {maximum} items"
+        for index, item in enumerate(value):
+            error = _selected_output_schema_error(
+                item,
+                schema["items"],
+                path=f"{path}[{index}]",
+            )
+            if error is not None:
+                return error
+        return None
+    if schema_type == "string":
+        if not isinstance(value, str):
+            return f"{path} must be string"
+        minimum = schema.get("minLength", 0)
+        maximum = schema.get("maxLength", MAX_SELECTED_OUTPUT_STRING_LENGTH)
+        if len(value) < minimum:
+            return f"{path} is shorter than {minimum} characters"
+        if len(value) > maximum:
+            return f"{path} is longer than {maximum} characters"
+        return None
+    if schema_type == "integer":
+        return (
+            None
+            if isinstance(value, int) and not isinstance(value, bool)
+            else f"{path} must be integer"
+        )
+    if schema_type == "number":
+        return (
+            None
+            if isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value))
+            else f"{path} must be finite number"
+        )
+    if schema_type == "boolean":
+        return None if isinstance(value, bool) else f"{path} must be boolean"
+    if schema_type == "null":
+        return None if value is None else f"{path} must be null"
+    raise AssertionError(f"unreachable selected output schema type: {schema_type}")
+
+
+# ---------------------------------------------------------------------------
 # Harness execution request (primary executable boundary)
 # ---------------------------------------------------------------------------
 
@@ -655,9 +1262,13 @@ class HarnessExecutionRequest(BaseModel):
     """Immutable executable boundary for harness execution.
 
     This is the primary input contract for ``HarnessRuntime.execute()``.
-    All identifiers are validated for non-blank values, run IDs are
-    checked for consistency, and collection-level duplicates are
-    rejected at construction time.
+    ``stage`` is the provider-local identity admitted by the selected compiled
+    Millforge harness; it does not carry a caller workflow plane, node, route,
+    dispatch identity, or authority.  ``request_id`` and ``run_id`` are opaque
+    caller-owned correlation values that Millforge validates and echoes without
+    interpreting them as workflow or terminal authority.  Run IDs are checked
+    for consistency and collection-level duplicates are rejected at
+    construction time.
     """
 
     model_config = ConfigDict(
@@ -666,11 +1277,13 @@ class HarnessExecutionRequest(BaseModel):
         hide_input_in_errors=True,
     )
 
-    request_id: str = Field(description="Unique request identifier")
-    run_id: str = Field(description="Run this request belongs to")
+    request_id: str = Field(description="Opaque caller request correlation value")
+    run_id: str = Field(description="Opaque caller run correlation value")
     work_item_id: str = Field(description="Active work item identifier")
     task: HarnessTaskInput = Field(description="Exact bounded task instruction")
-    stage: StageIdentity = Field(description="Stage identity")
+    stage: StageIdentity = Field(
+        description="Provider-local identity of the admitted compiled harness stage"
+    )
     compiled_harness: CompiledHarnessRef = Field(
         description="Reference to the compiled harness"
     )
@@ -687,6 +1300,33 @@ class HarnessExecutionRequest(BaseModel):
         description="Secret references (handles only, never values)"
     )
     model_profile: ModelProfileRef = Field(description="Model profile reference")
+    selected_output: SelectedOutputRequirement | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Optional invocation-local required/optional selected JSON output",
+    )
+
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: Any | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        """Validate raw request JSON before Pydantic can collapse key pairs."""
+        _validate_harness_request_raw_json(json_data)
+        return super().model_validate_json(
+            json_data,
+            strict=strict,
+            extra=extra,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
 
     # ------------------------------------------------------------------
     # Cross-field validators
@@ -1627,12 +2267,13 @@ class GuardedSessionResult(BaseModel):
 
 
 class TerminalIntent(BaseModel):
-    """Terminal intent expressing a desired stage disposition.
+    """Terminal intent expressing a provider-local stage disposition.
 
     Extended for 02B shape — includes request identity, stage
     identity, terminal node, closed disposition, summary, and
     artifact references.  Immutable snapshot — once emitted, the
-    intent is not modified.
+    intent is not modified.  Correlation values are echoed from the execution
+    request and do not grant caller workflow or terminal authority.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1648,6 +2289,16 @@ class TerminalIntent(BaseModel):
     summary: str = Field(description="Human-readable summary")
     artifact_refs: Tuple[ArtifactRef, ...] = Field(
         default_factory=tuple, description="Artifact references"
+    )
+    selected_output: SelectedOutput | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Admitted selected JSON output, explicitly present or absent",
+    )
+    selected_output_schema_sha256: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Digest of the invocation-local selected schema authority",
     )
 
     @field_validator("request_id")
@@ -1678,13 +2329,31 @@ class TerminalIntent(BaseModel):
             raise ValueError("summary must be a non-empty string")
         return v
 
+    @field_validator("selected_output_schema_sha256")
+    @classmethod
+    def _selected_schema_digest_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_sha256(value, "selected_output_schema_sha256")
+
+    @model_validator(mode="after")
+    def _selected_output_authority_is_paired(self) -> TerminalIntent:
+        if (self.selected_output is None) != (
+            self.selected_output_schema_sha256 is None
+        ):
+            raise ValueError(
+                "selected_output and selected_output_schema_sha256 must be paired"
+            )
+        return self
+
 
 class HarnessExecutionResult(BaseModel):
     """Result of a harness execution.
 
     Immutable snapshot with semantic result classification and
     structured metadata — 02B semantic shape replaces legacy
-    process-shaped fields.
+    process-shaped fields.  Its stage and terminal intent remain provider-local;
+    request and run identifiers remain opaque caller correlation values.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1714,9 +2383,32 @@ class HarnessExecutionResult(BaseModel):
         default=TerminalCertainty.NOT_APPLICABLE,
         description="Certainty of terminal-result commit ordering",
     )
+    selected_output: SelectedOutput | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Admitted selected JSON output, explicitly present or absent",
+    )
+    selected_output_schema_sha256: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Digest of the invocation-local selected schema authority",
+    )
+
+    @field_validator("selected_output_schema_sha256")
+    @classmethod
+    def _selected_schema_digest_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_sha256(value, "selected_output_schema_sha256")
 
     @model_validator(mode="after")
     def _check_result_class_invariants(self) -> HarnessExecutionResult:
+        if (self.selected_output is None) != (
+            self.selected_output_schema_sha256 is None
+        ):
+            raise ValueError(
+                "selected_output and selected_output_schema_sha256 must be paired"
+            )
         completed_classes = {
             ExecutionResultClass.DOMAIN_TERMINAL,
             ExecutionResultClass.DOMAIN_REJECTED,
@@ -1744,6 +2436,15 @@ class HarnessExecutionResult(BaseModel):
                 raise ValueError("terminal_intent.run_id must match result")
             if self.terminal_intent.stage != self.stage:
                 raise ValueError("terminal_intent.stage must match result")
+            if self.terminal_intent.selected_output != self.selected_output:
+                raise ValueError("terminal_intent.selected_output must match result")
+            if (
+                self.terminal_intent.selected_output_schema_sha256
+                != self.selected_output_schema_sha256
+            ):
+                raise ValueError(
+                    "terminal_intent selected schema digest must match result"
+                )
         elif (
             self.terminal_certainty == TerminalCertainty.COMMITTED
             and self.result_class
@@ -1753,6 +2454,10 @@ class HarnessExecutionResult(BaseModel):
             }
         ):
             raise ValueError("committed terminal_certainty requires a domain result")
+        if self.selected_output is not None and self.terminal_intent is None:
+            raise ValueError(
+                "selected_output authority requires a matching terminal_intent"
+            )
         return self
 
 

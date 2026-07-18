@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -100,7 +101,7 @@ def test_disabled_context_is_the_exact_empty_snapshot(tmp_path: Path) -> None:
     assert snapshot.truncated is False
 
 
-def test_context_discovery_orders_global_then_root_to_cwd_and_deduplicates(
+def test_context_discovery_orders_global_then_root_to_cwd(
     tmp_path: Path,
 ) -> None:
     home, cwd = _workspace(tmp_path)
@@ -108,20 +109,52 @@ def test_context_discovery_orders_global_then_root_to_cwd_and_deduplicates(
     _write(home / ".millforge" / "AGENTS.md", "global")
     _write(root / "AGENTS.md", "root")
     _write(root / "nested" / "CLAUDE.md", "nested")
-    _write(root / "nested" / "CLAUDE.MD", "later candidate")
 
     snapshot = load_millforge_base_context(cwd=cwd, home_directory=home, enabled=True)
     assert [file.content for file in snapshot.files] == ["global", "root", "nested"]
     assert [file.scope for file in snapshot.files] == ["global", "project", "project"]
 
-    deduplicated_cwd = home / ".millforge"
-    deduplicated_cwd.mkdir(parents=True, exist_ok=True)
-    deduplicated = load_millforge_base_context(
-        cwd=deduplicated_cwd, home_directory=home, enabled=True
+
+def test_context_candidate_precedence_observes_host_case_semantics(
+    tmp_path: Path,
+) -> None:
+    """Candidate order stays deterministic whether case variants alias or coexist."""
+
+    home, cwd = _workspace(tmp_path)
+    preferred = cwd / "CLAUDE.md"
+    later = cwd / "CLAUDE.MD"
+    _write(preferred, "preferred candidate")
+    _write(later, "later candidate")
+
+    aliases = preferred.samefile(later)
+    snapshot = load_millforge_base_context(cwd=cwd, home_directory=home, enabled=True)
+
+    assert len(snapshot.files) == 1
+    assert snapshot.files[0].content == (
+        "later candidate" if aliases else "preferred candidate"
     )
-    assert [file.path for file in deduplicated.files].count(
-        (home / ".millforge" / "AGENTS.md").resolve()
-    ) == 1
+
+
+def test_context_deduplicates_filesystem_aliases_with_global_precedence(
+    tmp_path: Path,
+) -> None:
+    """Filesystem identity, including case aliases, must beat path spelling."""
+
+    home, cwd = _workspace(tmp_path)
+    global_context = home / ".millforge" / "AGENTS.md"
+    project_alias = cwd / "AGENTS.md"
+    _write(global_context, "global")
+    project_alias.parent.mkdir(parents=True, exist_ok=True)
+    os.link(global_context, project_alias)
+
+    assert global_context.samefile(project_alias)
+    assert global_context.resolve() != project_alias.resolve()
+
+    snapshot = load_millforge_base_context(cwd=cwd, home_directory=home, enabled=True)
+
+    assert [(file.scope, file.path, file.content) for file in snapshot.files] == [
+        ("global", global_context.resolve(), "global")
+    ]
 
 
 def test_context_global_pi_fallback_and_unreadable_winner_advance(

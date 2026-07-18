@@ -238,11 +238,27 @@ async def test_execute_bash_keeps_event_loop_schedulable(
 )
 @_asyncio_test
 async def test_execute_bash_keeps_late_post_exit_output(
-    tmp_path: Path, shell_config: PiCompatShellConfig
+    tmp_path: Path,
+    shell_config: PiCompatShellConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Pi 0.79.6: packages/coding-agent/test/suite/regressions/5208-late-bash-output.test.ts
     # "captures output emitted after exit while a detached child holds stdout open"
-    command = "printf 'HEAD\\n'; ( for i in 1 2 3 4 5 6; do sleep 0.05; printf 'TICK%s\\n' \"$i\"; done ) &"
+    release = tmp_path / "release-descendant"
+    original_finish = process_module._finish_post_exit_output
+
+    async def release_after_parent_exit(**kwargs: Any) -> None:
+        release.write_text("release", encoding="utf-8")
+        await original_finish(**kwargs)
+
+    monkeypatch.setattr(
+        process_module, "_finish_post_exit_output", release_after_parent_exit
+    )
+    command = (
+        f"printf 'HEAD\\n'; "
+        f"( while [ ! -f {shlex.quote(str(release))} ]; do :; done; "
+        "printf 'LATE\\n' ) &"
+    )
     result = await execute_bash(
         cwd=tmp_path,
         command=command,
@@ -253,7 +269,7 @@ async def test_execute_bash_keeps_late_post_exit_output(
 
     assert result.error_kind is None
     assert "HEAD" in result.model_text
-    assert "TICK6" in result.model_text
+    assert "LATE" in result.model_text
 
 
 @pytest.mark.skipif(

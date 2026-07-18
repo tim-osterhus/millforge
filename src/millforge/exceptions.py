@@ -43,6 +43,13 @@ class MillforgeConfigError(MillforgeError):
     """
 
 
+class MillforgeBaseClosedError(MillforgeError):
+    """A live ``millforge-base`` runner was used after asynchronous close."""
+
+    def __init__(self) -> None:
+        super().__init__("millforge-base live runner is closed")
+
+
 class UnsupportedPlatformError(MillforgeConfigError):
     """The base runner was invoked on an unsupported native platform."""
 

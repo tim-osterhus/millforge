@@ -31,6 +31,7 @@ from millforge import (
     MillforgeInvocationEvidence,
     RuntimeArtifactWriterFactory,
     SecretRef,
+    SelectedOutputRequirement,
     create_millforge_base_runner,
     describe_millforge_base,
 )
@@ -79,6 +80,10 @@ DESCRIPTOR_FIELDS = (
 )
 EVIDENCE_FIELDS = (
     "schema_version",
+    "request_id",
+    "run_id",
+    "selected_output_schema_sha256",
+    "selected_output_required",
     "descriptor_sha256",
     "compiled_plan_sha256",
     "model_profile_id",
@@ -168,6 +173,14 @@ def _rehash_descriptor(payload: dict[str, Any]) -> MillforgeBaseRunnerDescriptor
     return MillforgeBaseRunnerDescriptor.model_validate(payload)
 
 
+def test_base_provider_stage_identity_is_exact_and_provider_local() -> None:
+    assert identity._MILLFORGE_BASE_STAGE_IDENTITY.model_dump(mode="json") == {
+        "plane": "execution",
+        "node_id": "millforge-base",
+        "stage_kind_id": "millforge_base",
+    }
+
+
 def test_descriptor_has_exact_contract_and_canonical_self_hash() -> None:
     descriptor = describe_millforge_base()
     forge_provenance = (
@@ -235,8 +248,10 @@ def test_public_contracts_reject_missing_digests(
     with pytest.raises(ValidationError, match="descriptor_sha256"):
         MillforgeBaseRunnerDescriptor.model_validate(descriptor_payload)
 
-    _components_value, runner = _runner(monkeypatch, tmp_path)
-    evidence_payload = runner.invocation_evidence.model_dump(mode="json")
+    components, runner = _runner(monkeypatch, tmp_path)
+    evidence_payload = runner.invocation_evidence_for(
+        _request(components, tmp_path)
+    ).model_dump(mode="json")
     evidence_payload.pop("invocation_sha256")
     with pytest.raises(ValidationError, match="invocation_sha256"):
         MillforgeInvocationEvidence.model_validate(evidence_payload)
@@ -250,10 +265,10 @@ def test_stale_model_instances_are_revalidated(
     with pytest.raises(ValidationError, match="descriptor_sha256"):
         MillforgeBaseRunnerDescriptor.model_validate(stale_descriptor)
 
-    _components_value, runner = _runner(monkeypatch, tmp_path)
-    stale_evidence = runner.invocation_evidence.model_copy(
-        update={"cwd_sha256": "f" * 64}
-    )
+    components, runner = _runner(monkeypatch, tmp_path)
+    stale_evidence = runner.invocation_evidence_for(
+        _request(components, tmp_path)
+    ).model_copy(update={"cwd_sha256": "f" * 64})
     with pytest.raises(ValidationError, match="invocation_sha256"):
         MillforgeInvocationEvidence.model_validate(stale_evidence)
 
@@ -280,6 +295,8 @@ def test_descriptor_malformed_fields_raise_validation_errors(
     ("field_name", "value", "match"),
     (
         ("model_profile_id", object(), "model_profile_id"),
+        ("request_id", " ", "request_id"),
+        ("run_id", " ", "run_id"),
         ("context_file_count", {"invalid": True}, "context_file_count"),
         ("unexpected", object(), "extra_forbidden"),
     ),
@@ -291,8 +308,10 @@ def test_evidence_malformed_fields_raise_validation_errors(
     value: object,
     match: str,
 ) -> None:
-    _components_value, runner = _runner(monkeypatch, tmp_path)
-    payload = runner.invocation_evidence.model_dump(mode="json")
+    components, runner = _runner(monkeypatch, tmp_path)
+    payload = runner.invocation_evidence_for(_request(components, tmp_path)).model_dump(
+        mode="json"
+    )
     payload[field_name] = value
 
     with pytest.raises(ValidationError, match=match):
@@ -606,12 +625,18 @@ def test_harness_tool_reference_resolution_fails_closed(
 def test_invocation_evidence_exact_contract_round_trip_and_self_hash(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _components_value, runner = _runner(monkeypatch, tmp_path)
-    evidence = runner.invocation_evidence
+    components, runner = _runner(monkeypatch, tmp_path)
+    request = _request(components, tmp_path)
+    evidence = runner.invocation_evidence_for(request)
     payload = evidence.model_dump(mode="json")
     digest = payload.pop("invocation_sha256")
 
     assert tuple(type(evidence).model_fields) == EVIDENCE_FIELDS
+    assert evidence.schema_version == "1.2"
+    assert evidence.request_id == request.request_id
+    assert evidence.run_id == request.run_id
+    assert "selected_output_schema_sha256" not in payload
+    assert "selected_output_required" not in payload
     assert digest == hashlib.sha256(_canonical_bytes(payload)).hexdigest()
     assert (
         MillforgeInvocationEvidence.model_validate_json(evidence.model_dump_json())
@@ -628,7 +653,12 @@ def test_invocation_evidence_changes_for_every_dynamic_source(
 ) -> None:
     components = _components(monkeypatch, tmp_path)
     descriptor = describe_millforge_base()
-    original = identity._build_invocation_evidence(components, descriptor)
+    original = identity._build_invocation_evidence(
+        components,
+        descriptor,
+        request_id="request-evidence",
+        run_id="run-evidence",
+    )
     metadata_fields = (
         ("effective_prompt_sha256", "1" * 64),
         ("context_sha256", "2" * 64),
@@ -666,10 +696,83 @@ def test_invocation_evidence_changes_for_every_dynamic_source(
     ]
 
     assert all(
-        identity._build_invocation_evidence(variant, descriptor).invocation_sha256
+        identity._build_invocation_evidence(
+            variant,
+            descriptor,
+            request_id="request-evidence",
+            run_id="run-evidence",
+        ).invocation_sha256
         != original.invocation_sha256
         for variant in variants
     )
+    assert (
+        identity._build_invocation_evidence(
+            components,
+            descriptor,
+            request_id="other-request-evidence",
+            run_id="run-evidence",
+        ).invocation_sha256
+        != original.invocation_sha256
+    )
+    assert (
+        identity._build_invocation_evidence(
+            components,
+            descriptor,
+            request_id="request-evidence",
+            run_id="other-run-evidence",
+        ).invocation_sha256
+        != original.invocation_sha256
+    )
+    selected = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "integer"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+    selected_evidence = identity._build_invocation_evidence(
+        components,
+        descriptor,
+        request_id="request-evidence",
+        run_id="run-evidence",
+        selected_output=selected,
+    )
+    assert selected_evidence.selected_output_schema_sha256 == selected.schema_sha256
+    assert selected_evidence.selected_output_required is True
+    assert selected_evidence.invocation_sha256 != original.invocation_sha256
+    optional_evidence = identity._build_invocation_evidence(
+        components,
+        descriptor,
+        request_id="request-evidence",
+        run_id="run-evidence",
+        selected_output=selected.model_copy(update={"required": False}),
+    )
+    assert optional_evidence.selected_output_required is False
+    assert optional_evidence.invocation_sha256 != selected_evidence.invocation_sha256
+    assert describe_millforge_base() == descriptor
+
+
+def test_runner_invocation_evidence_carries_request_local_selected_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    components, runner = _runner(monkeypatch, tmp_path)
+    descriptor = describe_millforge_base()
+    requirement = SelectedOutputRequirement(
+        required=False,
+        json_schema={"type": "array", "items": {"type": "string"}},
+    )
+    request = _request(components, tmp_path).model_copy(
+        update={"selected_output": requirement}
+    )
+
+    evidence = runner.invocation_evidence_for(request)
+
+    assert evidence.selected_output_schema_sha256 == requirement.schema_sha256
+    assert evidence.selected_output_required is False
+    assert "json_schema" not in evidence.model_dump(mode="json")
     assert describe_millforge_base() == descriptor
 
 
@@ -678,7 +781,12 @@ def test_model_behavior_excludes_secret_references_and_evidence_leaks_no_inputs(
 ) -> None:
     components = _components(monkeypatch, tmp_path)
     descriptor = describe_millforge_base()
-    original = identity._build_invocation_evidence(components, descriptor)
+    original = identity._build_invocation_evidence(
+        components,
+        descriptor,
+        request_id="request-evidence",
+        run_id="run-evidence",
+    )
     secret = SecretRef(secret_id="raw-secret-reference", env_var="RAW_SECRET_ENV")
     authentication = components.model_profile.authentication.model_copy(
         update={"secret_ref": secret}
@@ -689,7 +797,12 @@ def test_model_behavior_excludes_secret_references_and_evidence_leaks_no_inputs(
             update={"authentication": authentication}
         ),
     )
-    same_behavior = identity._build_invocation_evidence(changed_secret, descriptor)
+    same_behavior = identity._build_invocation_evidence(
+        changed_secret,
+        descriptor,
+        request_id="request-evidence",
+        run_id="run-evidence",
+    )
     canonical = _canonical_bytes(
         {
             "descriptor": descriptor.model_dump(mode="json"),
@@ -868,19 +981,22 @@ def test_model_behavior_hash_ignores_source_diagnostics_and_secret_references() 
     assert identity._model_behavior_sha256(changed_secret) == original
 
 
-def test_runner_properties_are_read_only_and_preserve_object_identity(
+def test_runner_descriptor_is_read_only_and_request_evidence_is_stateless(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _components_value, runner = _runner(monkeypatch, tmp_path)
+    components, runner = _runner(monkeypatch, tmp_path)
     descriptor = runner.descriptor
-    evidence = runner.invocation_evidence
+    request = _request(components, tmp_path)
+    first_evidence = runner.invocation_evidence_for(request)
+    second_evidence = runner.invocation_evidence_for(request)
 
     assert runner.descriptor is descriptor
-    assert runner.invocation_evidence is evidence
+    assert first_evidence == second_evidence
+    assert first_evidence is not second_evidence
     with pytest.raises(AttributeError):
         runner.descriptor = descriptor  # type: ignore[misc]
     with pytest.raises(AttributeError):
-        runner.invocation_evidence = evidence  # type: ignore[misc]
+        runner.invocation_evidence_for = lambda _request: first_evidence  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
@@ -960,7 +1076,7 @@ async def test_profile_binding_tampering_is_rejected_before_execution_side_effec
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target", ("descriptor_digest", "descriptor", "evidence"))
+@pytest.mark.parametrize("target", ("descriptor_digest", "descriptor"))
 async def test_tampering_is_rejected_before_any_execution_side_effect(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
 ) -> None:
@@ -975,12 +1091,6 @@ async def test_tampering_is_rejected_before_any_execution_side_effect(
         payload["runner_id"] = "other"
         runner._descriptor = _rehash_descriptor(payload)
         expected_reason = "descriptor_composition"
-    else:
-        runner._invocation_evidence = runner.invocation_evidence.model_copy(
-            update={"context_sha256": "e" * 64}
-        )
-        expected_reason = "invocation_evidence_hash"
-
     monkeypatch.setattr(
         runner_module,
         "_load_invocation_executor",

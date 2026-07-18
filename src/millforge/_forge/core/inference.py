@@ -186,7 +186,7 @@ async def run_inference(
     api_format = getattr(client, "api_format", "ollama")
     new_messages: list[Message] = []
     max_retries = error_tracker.max_retries
-    attempt_limit = max_retries + 1
+    attempt_limit = max(max_retries, error_tracker.max_tool_errors) + 1
     if max_attempts is not None:
         attempt_limit = min(attempt_limit, max_attempts)
     attempts = 0

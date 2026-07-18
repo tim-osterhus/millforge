@@ -152,6 +152,113 @@ components = create_millforge_base_components(
 )
 ```
 
+The supported live OpenAI-compatible surface is
+`create_millforge_base_live_runner()`. Construction is async only so any
+factory-owned HTTP client can be cleaned up if a later local construction step
+fails; it performs no network request or provider probe. Every Millforge type
+and factory in this direct construction, execution, and asynchronous cleanup
+example is imported from the `millforge` package root:
+
+```python
+from pathlib import Path
+
+from millforge import (
+    AuthenticationPolicy,
+    AuthenticationScheme,
+    CapabilityDeclarations,
+    CapabilitySupport,
+    EndpointConfig,
+    OpenAICompatibleTimeouts,
+    ResolvedModelProfile,
+    SecretRef,
+    create_millforge_base_live_runner,
+)
+
+secret_ref = SecretRef(secret_id="model-key", env_var="MODEL_API_KEY")
+profile = ResolvedModelProfile(
+    profile_id="local-tools",
+    provider_id="openai-compatible",
+    model_id="tool-model",
+    endpoint=EndpointConfig(base_url="https://models.example/v1"),
+    authentication=AuthenticationPolicy(
+        scheme=AuthenticationScheme.BEARER,
+        secret_ref=secret_ref,
+    ),
+    capabilities=CapabilityDeclarations(
+        support={
+            "tool_calls": CapabilitySupport.SUPPORTED,
+            "system_messages": CapabilitySupport.SUPPORTED,
+            "tool_result_messages": CapabilitySupport.SUPPORTED,
+        }
+    ),
+    timeout_seconds=90,
+    source_digest="caller-profile-v1",
+)
+
+live_runner = await create_millforge_base_live_runner(
+    profile_id="local-tools",
+    model_profile=profile,
+    secret_ref=secret_ref,
+    secret_resolver=secret_resolver,
+    cwd=Path("/absolute/workspace"),
+    clock=clock,
+    cancellation_resolver=cancellation_resolver,
+    artifact_writer_factory=artifact_writer_factory,
+    timeouts=OpenAICompatibleTimeouts(
+        connect_seconds=10,
+        read_seconds=90,
+        write_seconds=30,
+        pool_seconds=10,
+        local_total_seconds=75,
+    ),
+    # http_transport=httpx.MockTransport(handler),  # deterministic offline seam
+)
+async with live_runner:
+    result = await live_runner.execute(request)
+```
+
+Here `request` is a public `HarnessExecutionRequest` whose compiled-harness and
+capability values agree with `live_runner.components`; the isolated package
+smoke in `scripts/installed_package_smoke.py` shows the complete request and a
+two-call fake OpenAI-compatible traversal. Consumer code does not import
+`millforge.model_backend`, `millforge._forge`, or checkout-only test helpers.
+
+The effective model-call timeout is the minimum of the request deadline, the
+resolved profile's `timeout_seconds`, and `local_total_seconds`; each HTTP phase
+is narrowed further by its named bound. The live runner owns and closes only the
+model client and HTTP client it creates. The secret resolver, clock,
+cancellation resolver, artifact-writer factory, and optional injected
+`AsyncHttpTransport` (including `httpx.MockTransport`) remain caller-owned.
+`aclose()` is idempotent,
+factory-owned resources close once, and execution after close raises
+`MillforgeBaseClosedError`.
+
+`HarnessExecutionRequest.stage` is provider-local: it identifies the compiled
+Millforge harness stage, not a caller workflow plane, node, route, dispatch
+identity, or authority. `MillforgeBaseRunner` admits exactly
+`StageIdentity(plane="execution", node_id="millforge-base",
+stage_kind_id="millforge_base")` and rejects every field mismatch before the
+private invocation executor, model, or tools are called. Caller-supplied
+`request_id` and `run_id` values are opaque correlation values; Millforge
+validates and echoes them unchanged but does not interpret them as routing,
+outcome, or terminal authority. An external adapter retains and applies any
+caller workflow identity and authority separately. Per-request
+`runner.invocation_evidence_for(request)` returns immutable, self-hashed
+invocation evidence that carries those same correlation values without adding
+workflow authority. Its request-local serialized schema is `1.2`; consumers
+must treat its digest as changed from the earlier composition-only evidence.
+
+Selected output is an opt-in, invocation-local request authority. The public
+`SelectedOutputRequirement` contract freezes one required/optional closed JSON
+schema and pins its canonical SHA-256 digest; `SelectedOutputAbsent` and
+`SelectedOutputPresent(value=None)` keep omission distinct from JSON `null`.
+Selected schemas and admitted values are bounded by named public ceilings and
+reject unsupported keywords/types, duplicate keys, non-finite numbers, invalid
+bounds, and oversized or excessively nested data. The selected schema digest
+and required/optional state appear in request-local invocation evidence only
+when authority is present; no-selection request serialization and behavior are
+preserved.
+
 For a custom subset, define an ordinary harness DSL graph with the desired
 Pi-compatible descriptor references and compile it through the normal
 Millforge compiler; `MillforgeBaseOptions` deliberately has no tool-selection
@@ -160,8 +267,8 @@ when the pinned runner descriptor declares the current platform. On native
 Windows, default resolution must fail closed or select another explicitly
 configured supported runner; runtime fallback must never remap an already
 compiled Millforge binding.
-Millrace default selection and live efficacy evaluation remain explicitly
-deferred to Millrace integration work.
+Millrace default selection, external workflow mapping, and live efficacy
+evaluation remain explicitly deferred to Millrace integration work.
 
 ## Millforge 03A Closure Evidence
 

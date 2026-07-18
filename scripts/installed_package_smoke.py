@@ -1,49 +1,49 @@
-"""Exercise an installed Millforge artifact through its stable base facade."""
+"""Exercise an installed wheel or sdist through Millforge's public live facade."""
 
 from __future__ import annotations
 
 import asyncio
 import datetime
 import importlib.metadata
+import json
 import sys
 import tempfile
 from pathlib import Path
 
+import httpx
 import millforge
 from millforge import (
-    AssistantMessage,
+    AuthenticationPolicy,
+    AuthenticationScheme,
     CancellationRef,
+    CapabilityDeclarations,
+    CapabilitySupport,
     CompiledHarnessHash,
     CompiledHarnessIdentity,
     CompiledHarnessRef,
+    EndpointConfig,
     ExecutionStatus,
     HarnessExecutionRequest,
     HarnessTaskInput,
+    MillforgeBaseLiveRunner,
     MillforgeBaseOptions,
-    MillforgeBaseRuntimeServices,
-    ModelCompletionResponse,
     ModelProfileRef,
-    ModelToolCall,
-    ParsedToolArguments,
+    OpenAICompatibleTimeouts,
+    ResolvedModelProfile,
+    ResolvedSecret,
     RunDirRef,
+    SecretRef,
     StageIdentity,
     TimeoutRef,
-    create_millforge_base_components,
-    create_millforge_base_runner,
+    create_millforge_base_live_runner,
 )
-from millforge.model_backend import (
-    AuthenticationPolicy,
-    AuthenticationScheme,
-    CapabilityDeclarations,
-    CapabilitySupport,
-    EndpointConfig,
-    ReasoningMode,
-    ReasoningPolicy,
-    RequestOptionAllowlist,
-    ResolvedModelProfile,
-    SamplingPolicy,
+
+
+_RAW_SECRET = "package-smoke-secret-value-7e4f0d"
+_TRANSCRIPT_MARKERS = (
+    "Read the package note.",
+    "Installed package traversal complete.",
 )
-from millforge.testing import FakeModelClient
 
 
 class _CancellationToken:
@@ -73,131 +73,218 @@ class _CancellationResolver:
 
 class _Clock:
     def utc_now(self) -> datetime.datetime:
-        return datetime.datetime(2026, 7, 17, tzinfo=datetime.timezone.utc)
+        return datetime.datetime(2026, 7, 18, tzinfo=datetime.timezone.utc)
 
     def monotonic(self) -> float:
         return 1.0
 
 
-def _model_profile() -> ResolvedModelProfile:
+class _SecretResolver:
+    def __init__(self, admitted_ref: SecretRef) -> None:
+        self._admitted_ref = admitted_ref
+        self.resolve_calls = 0
+
+    def resolve(self, ref: SecretRef) -> ResolvedSecret:
+        assert ref == self._admitted_ref
+        self.resolve_calls += 1
+        return ResolvedSecret(_RAW_SECRET)
+
+
+def _model_profile(secret_ref: SecretRef) -> ResolvedModelProfile:
     return ResolvedModelProfile(
-        profile_id="fake.package-smoke.v1",
-        provider_id="fake",
-        model_id="fake-tools",
-        endpoint=EndpointConfig(base_url="https://unused.invalid/v1"),
-        authentication=AuthenticationPolicy(scheme=AuthenticationScheme.NONE),
-        sampling=SamplingPolicy(
-            allowed_overrides=(),
-            allow_maximum_output_tokens_override=False,
+        profile_id="package-smoke-openai-compatible",
+        provider_id="openai-compatible",
+        model_id="fake-tool-model",
+        endpoint=EndpointConfig(base_url="https://models.invalid/v1"),
+        authentication=AuthenticationPolicy(
+            scheme=AuthenticationScheme.BEARER,
+            secret_ref=secret_ref,
         ),
-        reasoning=ReasoningPolicy(mode=ReasoningMode.DISABLED),
         capabilities=CapabilityDeclarations(
             support={
                 "tool_calls": CapabilitySupport.SUPPORTED,
                 "system_messages": CapabilitySupport.SUPPORTED,
                 "tool_result_messages": CapabilitySupport.SUPPORTED,
-                "parallel_tool_calls": CapabilitySupport.UNSUPPORTED,
-                "structured_output": CapabilitySupport.UNSUPPORTED,
-                "reasoning_controls": CapabilitySupport.UNSUPPORTED,
-                "usage_reporting": CapabilitySupport.UNSUPPORTED,
             }
         ),
-        request_options=RequestOptionAllowlist(),
-        source_digest="package-smoke-v1",
+        timeout_seconds=30,
+        source_digest="installed-package-smoke-v2",
     )
 
 
-def _response(model_id: str, *, terminal: bool) -> ModelCompletionResponse:
-    name = "submit" if terminal else "read"
-    arguments = (
-        {"terminal_result": "COMPLETE", "summary": "package smoke complete"}
-        if terminal
-        else {"path": "note.txt"}
-    )
-    return ModelCompletionResponse(
-        provider_request_id=f"fake-{name}",
-        model_id=model_id,
-        message=AssistantMessage(
-            content="deterministic package smoke",
-            tool_calls=(
-                ModelToolCall(
-                    call_id=f"call-{name}",
-                    name=name,
-                    arguments=ParsedToolArguments(value=arguments),
-                ),
+class _FakeOpenAITransport:
+    """Caller-owned transport that records counts, never request transcripts."""
+
+    def __init__(self) -> None:
+        self.request_count = 0
+        self.close_calls = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.request_count += 1
+        body = json.loads(request.content)
+        assert body["model"] == "fake-tool-model"
+        assert request.url == "https://models.invalid/v1/chat/completions"
+        assert request.headers["authorization"] == f"Bearer {_RAW_SECRET}"
+
+        if self.request_count == 1:
+            message = {
+                "role": "assistant",
+                "content": _TRANSCRIPT_MARKERS[0],
+                "tool_calls": [
+                    {
+                        "id": "call-read",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"path":"note.txt"}',
+                        },
+                    }
+                ],
+            }
+        elif self.request_count == 2:
+            message = {
+                "role": "assistant",
+                "content": _TRANSCRIPT_MARKERS[1],
+                "tool_calls": [
+                    {
+                        "id": "call-submit",
+                        "type": "function",
+                        "function": {
+                            "name": "submit",
+                            "arguments": (
+                                '{"summary":"offline installed smoke complete",'
+                                '"terminal_result":"COMPLETE"}'
+                            ),
+                        },
+                    }
+                ],
+            }
+        else:
+            raise AssertionError("unexpected additional model request")
+
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "model": "fake-tool-model",
+                "choices": [{"finish_reason": "tool_calls", "message": message}],
+            },
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+def _request(
+    live_runner: MillforgeBaseLiveRunner, root: Path, secret_ref: SecretRef
+) -> HarnessExecutionRequest:
+    plan = live_runner.components.compiled_plan
+    run_id = "run-installed-package-smoke"
+    return HarnessExecutionRequest(
+        request_id="request-installed-package-smoke",
+        run_id=run_id,
+        work_item_id="work-installed-package-smoke",
+        task=HarnessTaskInput(instruction="Read note.txt and complete."),
+        stage=StageIdentity(
+            plane="execution",
+            node_id="millforge-base",
+            stage_kind_id="millforge_base",
+        ),
+        compiled_harness=CompiledHarnessRef(
+            identity=CompiledHarnessIdentity(
+                compiled_plan_id="plan-installed-package-smoke",
+                harness_id=plan.harness_id,
+                harness_version=plan.harness_version,
+            ),
+            path=root / "compiled-plan.json",
+            expected_hash=CompiledHarnessHash(
+                algorithm="sha256",
+                digest=plan.compiled_sha256,
             ),
         ),
-        finish_reason="tool_calls",
-        usage=None,
+        capability_envelope=live_runner.components.capability_envelope,
+        input_artifacts=(),
+        run_directory=RunDirRef(run_id=run_id, path=root),
+        timeout=TimeoutRef(timeout_seconds=30),
+        cancellation=CancellationRef(cancellation_id="cancel-installed-smoke"),
+        secret_refs=(secret_ref,),
+        model_profile=ModelProfileRef(profile_id=plan.model_profile.profile_id),
     )
 
 
-async def _run_facade() -> None:
+async def _run_public_live_facade() -> dict[str, object]:
+    network_events: list[str] = []
+
+    def audit(event: str, _args: tuple[object, ...]) -> None:
+        if event in {
+            "http.client.connect",
+            "socket.connect",
+            "socket.getaddrinfo",
+            "socket.gethostbyname",
+        }:
+            network_events.append(event)
+
+    sys.addaudithook(audit)
+
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root).resolve()
         (root / "note.txt").write_text("offline package smoke\n", encoding="utf-8")
+        secret_ref = SecretRef(
+            secret_id="package-smoke-secret",
+            env_var="MILLFORGE_PACKAGE_SMOKE_SECRET",
+        )
         resolver = _CancellationResolver()
-        components = create_millforge_base_components(
-            model_profile=_model_profile(),
-            cwd=root,
-            home_directory=root,
-            cancellation_resolver=resolver,
-            options=MillforgeBaseOptions(load_context_files=False),
-            prompt_date=datetime.date(2026, 7, 17),
-        )
-        plan = components.compiled_plan
-        model = FakeModelClient(
-            responses=[
-                _response(plan.model_profile.profile_id, terminal=False),
-                _response(plan.model_profile.profile_id, terminal=True),
-            ]
-        )
-        runner = create_millforge_base_runner(
-            components=components,
-            services=MillforgeBaseRuntimeServices(
-                model_client=model,
-                clock=_Clock(),
-                cancellation_resolver=resolver,
-            ),
-        )
-        request = HarnessExecutionRequest(
-            request_id="request-package-smoke-v1",
-            run_id="run-package-smoke-v1",
-            work_item_id="work-package-smoke-v1",
-            task=HarnessTaskInput(instruction="Read note.txt and complete."),
-            stage=StageIdentity(
-                plane="execution",
-                node_id="millforge-base",
-                stage_kind_id="millforge_base",
-            ),
-            compiled_harness=CompiledHarnessRef(
-                identity=CompiledHarnessIdentity(
-                    compiled_plan_id="plan-package-smoke-v1",
-                    harness_id=plan.harness_id,
-                    harness_version=plan.harness_version,
-                ),
-                path=root / "compiled-plan.json",
-                expected_hash=CompiledHarnessHash(
-                    algorithm="sha256",
-                    digest=plan.compiled_sha256,
-                ),
-            ),
-            capability_envelope=components.capability_envelope,
-            input_artifacts=(),
-            run_directory=RunDirRef(run_id="run-package-smoke-v1", path=root),
-            timeout=TimeoutRef(timeout_seconds=60),
-            cancellation=CancellationRef(cancellation_id="cancel-package-smoke-v1"),
-            secret_refs=(),
-            model_profile=ModelProfileRef(profile_id=plan.model_profile.profile_id),
-        )
+        secret_resolver = _SecretResolver(secret_ref)
+        transport = _FakeOpenAITransport()
 
-        result = await runner.execute(request)
+        live_runner = await create_millforge_base_live_runner(
+            profile_id="package-smoke-openai-compatible",
+            model_profile=_model_profile(secret_ref),
+            secret_ref=secret_ref,
+            secret_resolver=secret_resolver,
+            cwd=root,
+            clock=_Clock(),
+            cancellation_resolver=resolver,
+            timeouts=OpenAICompatibleTimeouts(
+                connect_seconds=2,
+                read_seconds=10,
+                write_seconds=5,
+                pool_seconds=2,
+                local_total_seconds=20,
+            ),
+            http_transport=transport,
+            options=MillforgeBaseOptions(load_context_files=False),
+            prompt_date=datetime.date(2026, 7, 18),
+            home_directory=root,
+        )
+        assert transport.request_count == 0
+        assert secret_resolver.resolve_calls == 0
+
+        async with live_runner:
+            result = await live_runner.execute(_request(live_runner, root, secret_ref))
 
         assert result.status is ExecutionStatus.COMPLETED
         assert result.terminal_intent is not None
         assert result.terminal_intent.terminal_result == "COMPLETE"
-        assert model.call_count == 2
-        assert (root / "millforge" / "terminal_result.json").is_file()
+        assert transport.request_count == 2
+        assert transport.close_calls == 0
+        assert secret_resolver.resolve_calls == 2
+        assert network_events == []
+        await transport.aclose()
+        assert transport.close_calls == 1
+
+        retained = {
+            "fake_transport_calls": transport.request_count,
+            "network_probe_events": len(network_events),
+            "provider_local_result": result.terminal_intent.terminal_result,
+        }
+        serialized = json.dumps(retained, sort_keys=True)
+        assert _RAW_SECRET not in serialized
+        assert str(root) not in serialized
+        assert "millrace-agents" not in serialized
+        assert not any(marker in serialized for marker in _TRANSCRIPT_MARKERS)
+        return retained
 
 
 def main() -> None:
@@ -209,7 +296,17 @@ def main() -> None:
     assert expected_requires_python == ">=3.11"
     assert millforge.__version__ == distribution.version
     assert millforge.describe_millforge_base().package_version == distribution.version
-    asyncio.run(_run_facade())
+    assert Path(millforge.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+
+    retained = asyncio.run(_run_public_live_facade())
+    retained.update(
+        {
+            "construction_surface": "millforge.create_millforge_base_live_runner",
+            "requires_python": expected_requires_python,
+            "version": expected_version,
+        }
+    )
+    print(json.dumps(retained, sort_keys=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":

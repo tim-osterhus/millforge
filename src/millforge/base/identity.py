@@ -20,14 +20,14 @@ from pydantic import (
 )
 
 import millforge
-from millforge.compiled_plan import calculate_compiled_plan_sha256
+from millforge.compiled_plan import StageIdentity, calculate_compiled_plan_sha256
 from millforge.compiler.catalogs import (
     CatalogLookupClassification,
     ToolCatalogSnapshot,
 )
 from millforge.compiler.source import HarnessSource
 from millforge.compiler.validators import parse_tool_reference
-from millforge.contracts import CapabilityEnvelope
+from millforge.contracts import CapabilityEnvelope, SelectedOutputRequirement
 from millforge.model_backend import CapabilitySupport, ResolvedModelProfile
 from millforge.tools.pi_compat_catalog import (
     create_pi_compat_tool_snapshot,
@@ -45,7 +45,7 @@ __all__ = [
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _DESCRIPTOR_SCHEMA_VERSION = "1.0"
-_INVOCATION_SCHEMA_VERSION = "1.0"
+_INVOCATION_SCHEMA_VERSION = "1.2"
 _PACKAGE_NAME = "millforge"
 _RUNNER_ID = "millforge-base"
 _RUNNER_VERSION = 1
@@ -55,6 +55,11 @@ _ARTIFACT_CONTRACT_VERSION = "millforge.runtime-artifacts.v1"
 _PROMPT_CONTRACT_VERSION = "millforge-base.prompt.v1"
 _CONTEXT_CONTRACT_VERSION = "millforge-base.context.v1"
 _SUPPORTED_PLATFORMS = SUPPORTED_PLATFORMS
+_MILLFORGE_BASE_STAGE_IDENTITY = StageIdentity(
+    plane="execution",
+    node_id="millforge-base",
+    stage_kind_id="millforge_base",
+)
 
 
 def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
@@ -131,7 +136,7 @@ class MillforgeBaseRunnerDescriptor(BaseModel):
 
 
 class MillforgeInvocationEvidence(BaseModel):
-    """Immutable sanitized evidence for one composed base-runner invocation."""
+    """Immutable sanitized evidence for one admitted base-runner request."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -139,7 +144,17 @@ class MillforgeInvocationEvidence(BaseModel):
         revalidate_instances="always",
     )
 
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.2"]
+    request_id: StrictStr
+    run_id: StrictStr
+    selected_output_schema_sha256: StrictStr | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    selected_output_required: StrictBool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     descriptor_sha256: StrictStr
     compiled_plan_sha256: StrictStr
     model_profile_id: StrictStr
@@ -154,6 +169,7 @@ class MillforgeInvocationEvidence(BaseModel):
     invocation_sha256: StrictStr
 
     @field_validator(
+        "selected_output_schema_sha256",
         "descriptor_sha256",
         "compiled_plan_sha256",
         "model_behavior_sha256",
@@ -164,13 +180,28 @@ class MillforgeInvocationEvidence(BaseModel):
         "invocation_sha256",
     )
     @classmethod
-    def _hashes_are_lowercase_sha256(cls, value: str) -> str:
+    def _hashes_are_lowercase_sha256(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not _SHA256_RE.fullmatch(value):
             raise ValueError("evidence hashes must be lowercase SHA-256 values")
         return value
 
+    @field_validator("request_id", "run_id")
+    @classmethod
+    def _correlation_values_are_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("evidence correlation values must be non-empty strings")
+        return value
+
     @model_validator(mode="after")
     def _digest_matches_payload(self) -> MillforgeInvocationEvidence:
+        if (self.selected_output_schema_sha256 is None) != (
+            self.selected_output_required is None
+        ):
+            raise ValueError(
+                "selected output evidence digest and required state must be paired"
+            )
         payload = self.model_dump(mode="json")
         if self.invocation_sha256 != _payload_sha256(payload, "invocation_sha256"):
             raise ValueError("invocation_sha256 does not match canonical payload")
@@ -327,6 +358,10 @@ def _capability_envelope_sha256(envelope: CapabilityEnvelope) -> str:
 def _build_invocation_evidence(
     components: MillforgeBaseComponents,
     descriptor: MillforgeBaseRunnerDescriptor,
+    *,
+    request_id: str,
+    run_id: str,
+    selected_output: SelectedOutputRequirement | None = None,
 ) -> MillforgeInvocationEvidence:
     compiled_payload = components.compiled_plan.model_dump(mode="json")
     if (
@@ -337,6 +372,8 @@ def _build_invocation_evidence(
     metadata = components.metadata
     payload = {
         "schema_version": _INVOCATION_SCHEMA_VERSION,
+        "request_id": request_id,
+        "run_id": run_id,
         "descriptor_sha256": descriptor.descriptor_sha256,
         "compiled_plan_sha256": components.compiled_plan.compiled_sha256,
         "model_profile_id": components.model_profile.profile_id,
@@ -351,6 +388,9 @@ def _build_invocation_evidence(
         "prompt_truncated": metadata.prompt_truncated,
         "cwd_sha256": metadata.cwd_sha256,
     }
+    if selected_output is not None:
+        payload["selected_output_schema_sha256"] = selected_output.schema_sha256
+        payload["selected_output_required"] = selected_output.required
     return MillforgeInvocationEvidence.model_validate(
         _with_payload_digest(payload, digest_field="invocation_sha256")
     )

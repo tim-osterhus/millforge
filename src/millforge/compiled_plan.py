@@ -170,15 +170,22 @@ class DiagnosticField(BaseModel):
 
 
 class StageIdentity(BaseModel):
-    """Immutable identity of a stage within a plane."""
+    """Immutable provider-local identity of a compiled harness stage.
+
+    On an execution request this identifies the stage that the selected
+    Millforge harness admits.  It is not the caller's workflow plane, node,
+    route, dispatch identity, or authority.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     plane: Literal["execution", "planning", "learning"] = Field(
-        description="Plane the stage belongs to"
+        description="Provider-local plane the compiled harness stage belongs to"
     )
-    node_id: str = Field(description="Stage node identifier")
-    stage_kind_id: str = Field(description="Stage kind identifier")
+    node_id: str = Field(description="Provider-local compiled stage node identifier")
+    stage_kind_id: str = Field(
+        description="Provider-local compiled stage kind identifier"
+    )
 
     @field_validator("node_id", "stage_kind_id")
     @classmethod

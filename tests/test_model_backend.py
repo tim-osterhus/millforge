@@ -45,6 +45,7 @@ from millforge.model_backend import (
     ModelProviderError,
     ModelRequestDeadlineExceededError,
     OpenAIChatCompletionsTransport,
+    OpenAICompatibleTimeouts,
     ProviderErrorCategory,
     RequestOptionAllowlist,
     ResolvedModelProfile,
@@ -366,6 +367,7 @@ def _client(
     token: _Token | None = None,
     clock: _Clock | None = None,
     secret_resolver: _RecordingSecretResolver | None = None,
+    local_timeout_seconds: float | None = None,
 ) -> tuple[DefaultModelClient, _RecordingTransport]:
     transport = _RecordingTransport(
         response
@@ -384,6 +386,7 @@ def _client(
         transport=transport,
         cancellation_resolver=_CancellationResolver(token or _Token()),
         clock=clock or _Clock([0.0, 0.0, 0.0]),
+        local_timeout_seconds=local_timeout_seconds,
     )
     return client, transport
 
@@ -578,6 +581,14 @@ def test_secret_resolution_requires_request_admission_before_raw_exposure() -> N
         "Authorization": "Bearer sk-real-secret"
     }
 
+    class LeakyResolver:
+        def resolve(self, _ref: SecretRef) -> ResolvedSecret:
+            raise RuntimeError("sk-raw-resolver-secret")
+
+    with pytest.raises(SecretResolutionError) as caught:
+        resolve_authentication_secret(policy, (_secret(),), LeakyResolver())
+    assert "sk-raw-resolver-secret" not in repr(caught.value)
+
 
 def test_static_profile_resolver_exact_lookup_and_sanitized_diagnostics() -> None:
     profile = _profile()
@@ -642,6 +653,27 @@ def test_transport_safety_defaults_reject_redirects_and_environment_proxy_trust(
         TransportConfig(trust_env=True)
     with pytest.raises(ValidationError, match="finite"):
         TransportConfig(timeout_seconds=float("inf"))
+
+
+def test_explicit_live_timeouts_are_positive_finite_typed_contracts() -> None:
+    timeouts = OpenAICompatibleTimeouts(
+        connect_seconds=1,
+        read_seconds=2,
+        write_seconds=3,
+        pool_seconds=4,
+        local_total_seconds=5,
+    )
+
+    assert timeouts.read_seconds == 2
+    for value in (0, -1, float("inf"), float("nan"), True):
+        with pytest.raises(ModelBackendConfigError, match="positive finite"):
+            OpenAICompatibleTimeouts(
+                connect_seconds=value,
+                read_seconds=2,
+                write_seconds=3,
+                pool_seconds=4,
+                local_total_seconds=5,
+            )
 
 
 def test_resolved_profile_exposes_canonical_immutable_profile_contract() -> None:
@@ -736,11 +768,14 @@ def test_provider_error_repr_and_message_are_sanitized_and_bounded() -> None:
     assert dict(error.fields)["raw_token"] == "**redacted**"
 
 
-def test_internal_backend_contract_is_not_exported_from_public_package() -> None:
+def test_live_composition_contracts_are_exported_without_private_clients() -> None:
     import millforge
 
-    assert "ResolvedModelProfile" not in millforge.__all__
-    assert "AuthenticationPolicy" not in millforge.__all__
+    assert "ResolvedModelProfile" in millforge.__all__
+    assert "AuthenticationPolicy" in millforge.__all__
+    assert "OpenAICompatibleTimeouts" in millforge.__all__
+    assert "DefaultModelClient" not in millforge.__all__
+    assert "OpenAIChatCompletionsTransport" not in millforge.__all__
 
 
 def test_model_client_protocol_signature_has_no_backend_transport_fields() -> None:
@@ -789,6 +824,14 @@ async def test_default_model_client_effective_timeout_uses_profile_deadline_mini
     await client.complete(_request(secret_refs=(_secret(),)))
 
     assert transport.requests[0].timeout_seconds == 3.0
+
+    local_client, local_transport = _client(
+        profile=profile,
+        clock=_Clock([1.0, 1.0]),
+        local_timeout_seconds=2.0,
+    )
+    await local_client.complete(_request(secret_refs=(_secret(),)))
+    assert local_transport.requests[0].timeout_seconds == 2.0
 
 
 @pytest.mark.asyncio
@@ -1464,6 +1507,44 @@ async def test_default_model_client_preserves_invalid_tool_arguments() -> None:
     assert isinstance(arguments, InvalidToolArguments)
     assert arguments.raw == "{not-json"
     assert arguments.error_code == "malformed_json"
+
+
+@pytest.mark.asyncio
+async def test_default_model_client_rejects_overflowed_tool_argument_number() -> None:
+    client, _ = _client(
+        response=TransportResponse(
+            status_code=200,
+            body={
+                "model": "gpt-test",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"candidate":1e999}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+    )
+
+    response = await client.complete(_request(secret_refs=(_secret(),)))
+
+    arguments = response.tool_calls[0].arguments
+    assert isinstance(arguments, InvalidToolArguments)
+    assert arguments.raw == '{"candidate":1e999}'
+    assert arguments.error_code == "non_finite_json"
 
 
 @pytest.mark.asyncio

@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
 
 import millforge.base.runner as runner_module
+import millforge.model_backend as model_backend_module
 from millforge import (
     ArtifactRef,
     AssistantMessage,
+    AsyncHttpTransport,
     BackendTranslationError,
     CancellationRef,
     CapabilityEnvelope,
@@ -25,21 +29,35 @@ from millforge import (
     HarnessExecutionRequest,
     HarnessExecutionResult,
     HarnessTaskInput,
+    InvalidToolArguments,
     MillforgeBaseBindingError,
+    MillforgeBaseClosedError,
     MillforgeBaseComponents,
+    MillforgeBaseRunnerDescriptor,
     MillforgeBaseRuntimeServices,
+    MillforgeInvocationEvidence,
+    ModelBackendConfigError,
     ModelCompletionResponse,
     ModelCompletionRequest,
     ModelProfileRef,
     ModelToolCall,
+    OpenAICompatibleTimeouts,
     ParsedToolArguments,
     RunDirRef,
     RuntimeArtifactWriterFactory,
+    ResolvedSecret,
+    SecretRef,
+    SecretResolutionError,
+    SelectedOutputAbsent,
+    SelectedOutputPresent,
+    SelectedOutputRequirement,
     StageIdentity,
     TimeoutRef,
+    create_millforge_base_live_runner,
     create_millforge_base_runner,
     default_runtime_artifact_writer_factory,
 )
+from millforge.contracts import admit_selected_output
 from millforge.base import composition
 from millforge.testing import FakeModelClient
 from millforge.tools.pi_compat.process import PiCompatShellConfig
@@ -69,12 +87,19 @@ def _components(monkeypatch: pytest.MonkeyPatch, root: Path) -> MillforgeBaseCom
 
 
 def _request(
-    components: MillforgeBaseComponents, run_root: Path, *, suffix: str = "one"
+    components: MillforgeBaseComponents,
+    run_root: Path,
+    *,
+    suffix: str = "one",
+    request_id: str | None = None,
+    run_id: str | None = None,
 ) -> HarnessExecutionRequest:
     plan = components.compiled_plan
+    request_id = request_id or f"request-{suffix}"
+    run_id = run_id or f"run-{suffix}"
     return HarnessExecutionRequest(
-        request_id=f"request-{suffix}",
-        run_id=f"run-{suffix}",
+        request_id=request_id,
+        run_id=run_id,
         work_item_id=f"work-{suffix}",
         task=HarnessTaskInput(instruction="Read note.txt and complete the task."),
         stage=StageIdentity(
@@ -96,7 +121,7 @@ def _request(
         ),
         capability_envelope=components.capability_envelope,
         input_artifacts=(),
-        run_directory=RunDirRef(run_id=f"run-{suffix}", path=run_root),
+        run_directory=RunDirRef(run_id=run_id, path=run_root),
         timeout=TimeoutRef(timeout_seconds=60),
         cancellation=CancellationRef(cancellation_id=f"cancel-{suffix}"),
         secret_refs=(),
@@ -158,6 +183,70 @@ def _tool_response(model_id: str, *, terminal: str | None = None):
     )
 
 
+_CANDIDATE_OMITTED = object()
+
+
+def _terminal_response(
+    model_id: str,
+    *,
+    candidate: Any = _CANDIDATE_OMITTED,
+    terminal: str = "COMPLETE",
+    call_suffix: str = "selected",
+    content: str | None = "offline response",
+) -> ModelCompletionResponse:
+    name = {"COMPLETE": "submit", "BLOCKED": "block", "REJECTED": "reject"}[terminal]
+    arguments: dict[str, Any] = {
+        "terminal_result": terminal,
+        "summary": "candidate summary",
+    }
+    if candidate is not _CANDIDATE_OMITTED:
+        arguments["candidate"] = candidate
+    return ModelCompletionResponse(
+        provider_request_id=f"provider-{name}-{call_suffix}",
+        model_id=model_id,
+        message=AssistantMessage(
+            content=content,
+            tool_calls=(
+                ModelToolCall(
+                    call_id=f"call-{name}-{call_suffix}",
+                    name=name,
+                    arguments=ParsedToolArguments(value=arguments),
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+        usage=None,
+    )
+
+
+def _invalid_terminal_response(
+    model_id: str,
+    *,
+    raw: str = "{not-json",
+    call_suffix: str,
+    content: str | None = None,
+) -> ModelCompletionResponse:
+    return ModelCompletionResponse(
+        provider_request_id=f"provider-submit-{call_suffix}",
+        model_id=model_id,
+        message=AssistantMessage(
+            content=content,
+            tool_calls=(
+                ModelToolCall(
+                    call_id=f"call-submit-{call_suffix}",
+                    name="submit",
+                    arguments=InvalidToolArguments(
+                        raw=raw,
+                        error_code="malformed_json",
+                    ),
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+        usage=None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_public_facade_runs_tool_then_terminal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -206,6 +295,341 @@ async def test_public_facade_runs_tool_then_terminal(
 
 
 @pytest.mark.asyncio
+async def test_selected_output_null_content_corrects_then_admits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    plan = components.compiled_plan
+    requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string", "minLength": 2}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+    request = _request(components, tmp_path).model_copy(
+        update={"selected_output": requirement}
+    )
+    model = FakeModelClient(
+        responses=[
+            _terminal_response(
+                plan.model_profile.profile_id,
+                candidate={"answer": 1},
+                call_suffix="invalid",
+                content=None,
+            ),
+            _terminal_response(
+                plan.model_profile.profile_id,
+                candidate={"answer": "ok"},
+                call_suffix="valid",
+                content=None,
+            ),
+        ]
+    )
+    writers: list[FakeArtifactWriter] = []
+
+    def writer_factory(_run_directory: Path) -> FakeArtifactWriter:
+        writer = FakeArtifactWriter()
+        writers.append(writer)
+        return writer
+
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(RuntimeArtifactWriterFactory, writer_factory),
+        ),
+    )
+
+    result = await runner.execute(request)
+
+    assert result.status is ExecutionStatus.COMPLETED
+    assert model.call_count == 2
+    submit_tools = [
+        tool
+        for tool in model.requests[0].tools
+        if tool.name in {"submit", "block", "reject"}
+    ]
+    assert len(submit_tools) == 3
+    for tool in submit_tools:
+        assert tool.input_schema["properties"]["candidate"] == requirement.json_schema
+        assert "candidate" in tool.input_schema["required"]
+    assert "candidate" not in runner.descriptor.model_dump_json()
+    assert result.selected_output == SelectedOutputPresent(value={"answer": "ok"})
+    assert result.selected_output_schema_sha256 == requirement.schema_sha256
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.selected_output == result.selected_output
+    event_types = [event["event_type"] for event in writers[0].events_calls[0][1]]
+    assert "terminal_intent_rejected" in event_types
+    assert "correction_issued" in event_types
+    terminal_artifact = writers[0].terminal_result_calls[0][1]
+    assert "candidate" not in terminal_artifact
+    assert "selected_output" not in terminal_artifact
+
+
+@pytest.mark.asyncio
+async def test_same_runner_keeps_optional_absence_distinct_from_null_and_schema_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    profile_id = components.compiled_plan.model_profile.profile_id
+    optional_null = SelectedOutputRequirement(
+        required=False,
+        json_schema={"type": "null"},
+    )
+    required_array = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "array",
+            "items": {"type": "integer"},
+            "minItems": 1,
+            "maxItems": 3,
+        },
+    )
+    model = FakeModelClient(
+        responses=[
+            _terminal_response(profile_id, call_suffix="absent"),
+            _terminal_response(profile_id, candidate=None, call_suffix="null"),
+            _terminal_response(profile_id, candidate=[1, 2], call_suffix="array"),
+        ]
+    )
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+            ),
+        ),
+    )
+    absent_request = _request(components, tmp_path / "absent", suffix="absent")
+    absent_request = absent_request.model_copy(
+        update={"selected_output": optional_null}
+    )
+    null_request = _request(components, tmp_path / "null", suffix="null").model_copy(
+        update={"selected_output": optional_null}
+    )
+    array_request = _request(components, tmp_path / "array", suffix="array").model_copy(
+        update={"selected_output": required_array}
+    )
+
+    absent = await runner.execute(absent_request)
+    present_null = await runner.execute(null_request)
+    present_array = await runner.execute(array_request)
+
+    assert absent.selected_output == SelectedOutputAbsent()
+    assert present_null.selected_output == SelectedOutputPresent(value=None)
+    assert present_array.selected_output == SelectedOutputPresent(value=[1, 2])
+    terminal_schemas = [
+        next(tool for tool in request.tools if tool.name == "submit").input_schema
+        for request in model.requests
+    ]
+    assert terminal_schemas[0]["properties"]["candidate"] == {"type": "null"}
+    assert "candidate" not in terminal_schemas[0]["required"]
+    assert terminal_schemas[2]["properties"]["candidate"] == required_array.json_schema
+    assert "candidate" in terminal_schemas[2]["required"]
+
+
+def test_selected_output_runtime_admission_rejects_all_bounded_failure_shapes() -> None:
+    record = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+    with pytest.raises(ValueError, match="missing"):
+        admit_selected_output(record, present=False)
+    with pytest.raises(ValueError, match="must be string"):
+        admit_selected_output(record, present=True, value={"answer": 1})
+    with pytest.raises(ValueError, match="is required"):
+        admit_selected_output(record, present=True, value={})
+    with pytest.raises(ValueError, match="is not allowed"):
+        admit_selected_output(
+            record,
+            present=True,
+            value={"answer": "ok", "prose": "not authority"},
+        )
+
+    string_requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={"type": "string"},
+    )
+    with pytest.raises(ValueError, match="string ceiling"):
+        admit_selected_output(string_requirement, present=True, value="x" * 65_537)
+
+    array_requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={"type": "array", "items": {"type": "null"}},
+    )
+    with pytest.raises(ValueError, match="array-item ceiling"):
+        admit_selected_output(
+            array_requirement,
+            present=True,
+            value=[None] * 1_025,
+        )
+
+    object_requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    )
+    with pytest.raises(ValueError, match="object-property ceiling"):
+        admit_selected_output(
+            object_requirement,
+            present=True,
+            value={f"field_{index}": None for index in range(65)},
+        )
+
+    nested: Any = None
+    for _ in range(17):
+        nested = [nested]
+    with pytest.raises(ValueError, match="nesting-depth ceiling"):
+        admit_selected_output(array_requirement, present=True, value=nested)
+
+    payload = ["x" * 65_536 for _ in range(17)]
+    payload_requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={"type": "array", "items": {"type": "string"}},
+    )
+    with pytest.raises(ValueError, match="payload-byte ceiling"):
+        admit_selected_output(payload_requirement, present=True, value=payload)
+
+
+def test_provider_tool_argument_parser_rejects_duplicate_and_nonfinite_candidates() -> (
+    None
+):
+    duplicate = model_backend_module._normalize_tool_arguments(
+        '{"terminal_result":"COMPLETE","summary":"done",'
+        '"candidate":{"answer":1,"answer":2}}'
+    )
+    nonfinite = model_backend_module._normalize_tool_arguments(
+        '{"terminal_result":"COMPLETE","summary":"done","candidate":NaN}'
+    )
+    overflow = model_backend_module._normalize_tool_arguments(
+        '{"terminal_result":"COMPLETE","summary":"done","candidate":1e999}'
+    )
+
+    assert isinstance(duplicate, InvalidToolArguments)
+    assert duplicate.error_code == "ambiguous_json"
+    assert isinstance(nonfinite, InvalidToolArguments)
+    assert nonfinite.error_code == "ambiguous_json"
+    assert isinstance(overflow, InvalidToolArguments)
+    assert overflow.error_code == "non_finite_json"
+
+
+@pytest.mark.asyncio
+async def test_selected_output_iteration_exhaustion_fails_closed_without_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    profile_id = components.compiled_plan.model_profile.profile_id
+    requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+    request = _request(components, tmp_path).model_copy(
+        update={"selected_output": requirement}
+    )
+    model = FakeModelClient(
+        responses=[
+            _terminal_response(
+                profile_id,
+                candidate={"answer": index},
+                call_suffix=f"invalid-{index}",
+            )
+            for index in range(components.compiled_plan.budgets.max_iterations)
+        ]
+    )
+    writer = FakeArtifactWriter()
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory, lambda _path: writer
+            ),
+        ),
+    )
+
+    result = await runner.execute(request)
+
+    assert result.status is ExecutionStatus.INTERRUPTED
+    assert result.result_class is ExecutionResultClass.BUDGET_EXHAUSTED
+    assert result.terminal_intent is None
+    assert result.selected_output is None
+    assert result.selected_output_schema_sha256 is None
+    assert writer.terminal_result_calls == []
+
+
+@pytest.mark.asyncio
+async def test_selected_output_null_content_malformed_arguments_exhaust_tool_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    profile_id = components.compiled_plan.model_profile.profile_id
+    requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+    request = _request(components, tmp_path).model_copy(
+        update={"selected_output": requirement}
+    )
+    model = FakeModelClient(
+        responses=[
+            _invalid_terminal_response(profile_id, call_suffix=f"invalid-{index}")
+            for index in range(components.compiled_plan.budgets.max_tool_errors + 1)
+        ]
+    )
+    writer = FakeArtifactWriter()
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory, lambda _path: writer
+            ),
+        ),
+    )
+
+    result = await runner.execute(request)
+
+    assert result.status is ExecutionStatus.FAILED
+    assert result.result_class is ExecutionResultClass.MODEL_FAILURE
+    assert model.call_count == components.compiled_plan.budgets.max_tool_errors + 1
+    assert result.terminal_intent is None
+    assert result.selected_output is None
+    assert result.selected_output_schema_sha256 is None
+    assert writer.terminal_result_calls == []
+
+
+@pytest.mark.asyncio
 async def test_binding_mismatches_precede_all_side_effects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -226,6 +650,11 @@ async def test_binding_mismatches_precede_all_side_effects(
             cancellation_resolver=FakeCancellationResolver(),
             artifact_writer_factory=cast(RuntimeArtifactWriterFactory, writer_factory),
         ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_load_invocation_executor",
+        lambda: pytest.fail("executor loaded before request binding verification"),
     )
     mismatches = (
         (
@@ -254,6 +683,18 @@ async def test_binding_mismatches_precede_all_side_effects(
                         }
                     )
                 }
+            ),
+        ),
+        (
+            "stage_kind",
+            request.model_copy(
+                update={"stage": request.stage.model_copy(update={"plane": "planning"})}
+            ),
+        ),
+        (
+            "stage_kind",
+            request.model_copy(
+                update={"stage": request.stage.model_copy(update={"node_id": "other"})}
             ),
         ),
         (
@@ -290,6 +731,87 @@ async def test_binding_mismatches_precede_all_side_effects(
 
 
 @pytest.mark.asyncio
+async def test_opaque_correlation_values_round_trip_through_runtime_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    model_id = components.compiled_plan.model_profile.profile_id
+    model = FakeModelClient(responses=[_tool_response(model_id, terminal="COMPLETE")])
+    writer = FakeArtifactWriter()
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory, lambda _path: writer
+            ),
+        ),
+    )
+    request_id = "opaque request correlation: alpha/7"
+    run_id = "opaque run correlation: beta?attempt=42"
+    request = _request(
+        components,
+        tmp_path,
+        request_id=request_id,
+        run_id=run_id,
+    )
+
+    restored = HarnessExecutionRequest.model_validate_json(request.model_dump_json())
+    result = await runner.execute(restored)
+
+    assert restored.request_id == request_id
+    assert restored.run_id == run_id
+    assert result.request_id == request_id
+    assert result.run_id == run_id
+    assert result.stage == request.stage
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.request_id == request_id
+    assert result.terminal_intent.run_id == run_id
+    assert result.terminal_intent.stage == request.stage
+
+    model_context = model.requests[0].messages[1].content
+    assert model_context is not None
+    assert request_id in model_context
+    assert run_id in model_context
+
+    events = writer.events_calls[0][1]
+    trace = writer.tool_trace_calls[0][1]
+    assert events
+    assert trace
+    for record in (*events, *trace):
+        assert record["request_id"] == request_id
+        assert record["run_id"] == run_id
+        assert record["stage"] == request.stage.model_dump(mode="json")
+
+    terminal_evidence = writer.terminal_result_calls[0][1]
+    execution_evidence = writer.execution_summary_calls[0][1]
+    metrics_evidence = writer.metrics_calls[0][1]
+    manifest_evidence = writer.manifest_calls[0][1]
+    for evidence in (
+        terminal_evidence,
+        execution_evidence,
+        metrics_evidence,
+        manifest_evidence,
+    ):
+        assert evidence["request_id"] == request_id
+        assert evidence["run_id"] == run_id
+    assert terminal_evidence["stage"] == request.stage.model_dump(mode="json")
+    assert execution_evidence["stage"] == request.stage.model_dump(mode="json")
+
+    invocation_evidence = runner.invocation_evidence_for(restored)
+    assert invocation_evidence.request_id == request_id
+    assert invocation_evidence.run_id == run_id
+    assert (
+        type(invocation_evidence).model_validate_json(
+            invocation_evidence.model_dump_json()
+        )
+        == invocation_evidence
+    )
+
+
+@pytest.mark.asyncio
 async def test_each_sequential_and_concurrent_call_gets_fresh_invocation_objects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -299,6 +821,7 @@ async def test_each_sequential_and_concurrent_call_gets_fresh_invocation_objects
     runtimes: list[object] = []
     lazy_writers: list[object] = []
     writers: list[FakeArtifactWriter] = []
+    invocation_evidence: list[MillforgeInvocationEvidence] = []
     active = 0
     both_active = asyncio.Event()
     concurrent_mode = False
@@ -332,6 +855,29 @@ async def test_each_sequential_and_concurrent_call_gets_fresh_invocation_objects
 
     monkeypatch.setattr(invocation_executor, "ForgeGuardrailBackend", RecordingBackend)
     monkeypatch.setattr(invocation_executor, "DefaultHarnessRuntime", RecordingRuntime)
+    build_evidence = runner_module._build_invocation_evidence
+
+    def record_invocation_evidence(
+        evidence_components: MillforgeBaseComponents,
+        descriptor: MillforgeBaseRunnerDescriptor,
+        *,
+        request_id: str,
+        run_id: str,
+        selected_output: SelectedOutputRequirement | None = None,
+    ) -> MillforgeInvocationEvidence:
+        evidence = build_evidence(
+            evidence_components,
+            descriptor,
+            request_id=request_id,
+            run_id=run_id,
+            selected_output=selected_output,
+        )
+        invocation_evidence.append(evidence)
+        return evidence
+
+    monkeypatch.setattr(
+        runner_module, "_build_invocation_evidence", record_invocation_evidence
+    )
     runner = create_millforge_base_runner(
         components=components,
         services=MillforgeBaseRuntimeServices(
@@ -362,6 +908,19 @@ async def test_each_sequential_and_concurrent_call_gets_fresh_invocation_objects
     assert len({id(item) for item in tool_executors}) == 4
     assert all(item is not components.tool_executor for item in tool_executors)
     assert writers == []
+    assert [item.request_id for item in invocation_evidence] == [
+        "request-first",
+        "request-second",
+        "request-first",
+        "request-second",
+    ]
+    assert [item.run_id for item in invocation_evidence] == [
+        "run-first",
+        "run-second",
+        "run-first",
+        "run-second",
+    ]
+    assert len({id(item) for item in invocation_evidence}) == 4
 
 
 @pytest.mark.asyncio
@@ -668,3 +1227,419 @@ def test_inconsistent_components_are_rejected_at_factory(
             ),
         )
     assert caught.value.reason == "backend_composition"
+
+
+class _LiveSecretResolver:
+    def __init__(self, secret_ref: SecretRef, raw_value: str) -> None:
+        self.secret_ref = secret_ref
+        self._raw_value = raw_value
+        self.resolve_calls: list[SecretRef] = []
+
+    def resolve(self, ref: SecretRef) -> ResolvedSecret:
+        self.resolve_calls.append(ref)
+        if ref != self.secret_ref:
+            raise AssertionError("unexpected secret reference")
+        return ResolvedSecret(self._raw_value)
+
+
+class _RecordingHttpTransport:
+    def __init__(self, handler: Any) -> None:
+        self._handler = handler
+        self.requests: list[httpx.Request] = []
+        self.close_calls = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return await self._handler(request)
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+class _RecordingMockTransport(httpx.MockTransport):
+    def __init__(self, handler: Any) -> None:
+        super().__init__(handler)
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        await super().aclose()
+
+
+class _ConstructionFailingSecretResolver:
+    """Detect an accidental construction-time secret-resolution attempt."""
+
+    def __init__(self) -> None:
+        self.resolve_calls = 0
+
+    def resolve(self, _ref: SecretRef) -> ResolvedSecret:
+        self.resolve_calls += 1
+        raise AssertionError("secret resolution must not run during construction")
+
+
+class _TriggerCancellationToken:
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+
+    @property
+    def cancellation_id(self) -> str:
+        return "live-cancellation"
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+    async def wait(self) -> None:
+        await self._event.wait()
+
+    @property
+    def reason(self) -> str | None:
+        return "caller cancelled live request" if self.is_cancelled() else None
+
+    def cancel(self) -> None:
+        self._event.set()
+
+
+class _TriggerCancellationResolver:
+    def __init__(self, token: _TriggerCancellationToken) -> None:
+        self.token = token
+
+    def resolve(self, _ref: CancellationRef) -> _TriggerCancellationToken:
+        return self.token
+
+
+def _patch_live_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        composition,
+        "resolve_pi_compat_shell",
+        lambda: PiCompatShellConfig(executable="/test/bin/bash", arguments=("-c",)),
+    )
+
+
+def _live_timeouts() -> OpenAICompatibleTimeouts:
+    return OpenAICompatibleTimeouts(
+        connect_seconds=2,
+        read_seconds=7,
+        write_seconds=3,
+        pool_seconds=1,
+        local_total_seconds=5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_public_live_factory_completes_offline_traversal_and_closes_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_live_shell(monkeypatch)
+    (tmp_path / "note.txt").write_text("offline proof\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = make_canonical_builder_profile_a()
+    secret_ref = cast(SecretRef, profile.authentication.secret_ref)
+    raw_secret = "sk-live-factory-secret"
+    secret_resolver = _LiveSecretResolver(secret_ref, raw_secret)
+    response_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal response_count
+        response_count += 1
+        body = json.loads(request.content)
+        assert body["model"] == profile.model_id
+        assert request.headers["authorization"] == f"Bearer {raw_secret}"
+        assert request.extensions["timeout"] == {
+            "connect": 2,
+            "read": 5,
+            "write": 3,
+            "pool": 1,
+        }
+        if response_count == 1:
+            message = {
+                "role": "assistant",
+                "content": "Read the note.",
+                "tool_calls": [
+                    {
+                        "id": "call-read",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": '{"path":"note.txt"}',
+                        },
+                    }
+                ],
+            }
+            finish_reason = "tool_calls"
+        else:
+            message = {
+                "role": "assistant",
+                "content": "Complete.",
+                "tool_calls": [
+                    {
+                        "id": "call-submit",
+                        "type": "function",
+                        "function": {
+                            "name": "submit",
+                            "arguments": (
+                                '{"summary":"offline complete",'
+                                '"terminal_result":"COMPLETE"}'
+                            ),
+                        },
+                    }
+                ],
+            }
+            finish_reason = "tool_calls"
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "model": profile.model_id,
+                "choices": [{"finish_reason": finish_reason, "message": message}],
+            },
+            request=request,
+        )
+
+    injected_transport = _RecordingHttpTransport(handler)
+    assert isinstance(injected_transport, AsyncHttpTransport)
+    live_runner = await create_millforge_base_live_runner(
+        profile_id=profile.profile_id,
+        model_profile=profile,
+        secret_ref=secret_ref,
+        secret_resolver=secret_resolver,
+        cwd=tmp_path.resolve(),
+        clock=FakeClock(monotonic_value=1.0),
+        cancellation_resolver=FakeCancellationResolver(),
+        artifact_writer_factory=cast(
+            RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+        ),
+        timeouts=_live_timeouts(),
+        http_transport=injected_transport,
+        prompt_date=datetime.date(2026, 7, 15),
+        home_directory=home.resolve(),
+    )
+    request = _request(live_runner.components, tmp_path / "run-live").model_copy(
+        update={"secret_refs": (secret_ref,)}
+    )
+    assert injected_transport.requests == []
+    assert secret_resolver.resolve_calls == []
+
+    async with live_runner:
+        result = await live_runner.execute(request)
+
+    assert result.status is ExecutionStatus.COMPLETED
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "COMPLETE"
+    assert response_count == 2
+    assert live_runner.is_closed is True
+    assert injected_transport.close_calls == 0
+    assert secret_resolver.resolve_calls == [secret_ref, secret_ref]
+    assert raw_secret not in repr(
+        (profile, live_runner.components, live_runner.descriptor, result)
+    )
+
+    close_task = live_runner._close_task
+    assert close_task is not None
+    await asyncio.gather(live_runner.aclose(), live_runner.aclose())
+    assert live_runner._close_task is close_task
+    assert injected_transport.close_calls == 0
+    with pytest.raises(MillforgeBaseClosedError, match="live runner is closed"):
+        await live_runner.execute(request)
+
+
+@pytest.mark.asyncio
+async def test_public_live_factory_accepts_mock_transport_without_secret_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_live_shell(monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = make_canonical_builder_profile_a()
+    secret_ref = cast(SecretRef, profile.authentication.secret_ref)
+    secret_resolver = _ConstructionFailingSecretResolver()
+    mock_transport = _RecordingMockTransport(
+        lambda request: httpx.Response(500, request=request)
+    )
+
+    assert isinstance(mock_transport, AsyncHttpTransport)
+    live_runner = await create_millforge_base_live_runner(
+        profile_id=profile.profile_id,
+        model_profile=profile,
+        secret_ref=secret_ref,
+        secret_resolver=secret_resolver,
+        cwd=tmp_path.resolve(),
+        clock=FakeClock(),
+        cancellation_resolver=FakeCancellationResolver(),
+        timeouts=_live_timeouts(),
+        http_transport=mock_transport,
+        prompt_date=datetime.date(2026, 7, 15),
+        home_directory=home.resolve(),
+    )
+
+    assert secret_resolver.resolve_calls == 0
+    await live_runner.aclose()
+    assert mock_transport.close_calls == 0
+
+    with pytest.raises(
+        ModelBackendConfigError, match="does not implement AsyncHttpTransport"
+    ):
+        await create_millforge_base_live_runner(
+            profile_id=profile.profile_id,
+            model_profile=profile,
+            secret_ref=secret_ref,
+            secret_resolver=secret_resolver,
+            cwd=tmp_path.resolve(),
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+            timeouts=_live_timeouts(),
+            http_transport=cast(AsyncHttpTransport, object()),
+            prompt_date=datetime.date(2026, 7, 15),
+            home_directory=home.resolve(),
+        )
+    assert secret_resolver.resolve_calls == 0
+
+    with pytest.raises(
+        SecretResolutionError, match="does not implement SecretResolver"
+    ):
+        await create_millforge_base_live_runner(
+            profile_id=profile.profile_id,
+            model_profile=profile,
+            secret_ref=secret_ref,
+            secret_resolver=cast(Any, object()),
+            cwd=tmp_path.resolve(),
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+            timeouts=_live_timeouts(),
+            prompt_date=datetime.date(2026, 7, 15),
+            home_directory=home.resolve(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_factory_rejects_identity_and_cleans_partial_owned_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_live_shell(monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = make_canonical_builder_profile_a()
+    secret_ref = cast(SecretRef, profile.authentication.secret_ref)
+    raw_secret = "sk-partial-failure-secret"
+    secret_resolver = _LiveSecretResolver(secret_ref, raw_secret)
+
+    with pytest.raises(
+        ModelBackendConfigError, match="profile IDs must match"
+    ) as caught:
+        await create_millforge_base_live_runner(
+            profile_id="unknown-profile",
+            model_profile=profile,
+            secret_ref=secret_ref,
+            secret_resolver=secret_resolver,
+            cwd=tmp_path.resolve(),
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+            timeouts=_live_timeouts(),
+            prompt_date=datetime.date(2026, 7, 15),
+            home_directory=home.resolve(),
+        )
+    assert raw_secret not in repr(caught.value)
+
+    caller_transport = _RecordingHttpTransport(
+        lambda request: httpx.Response(500, request=request)
+    )
+    created_transports: list[Any] = []
+
+    class RecordingOwnedTransport(model_backend_module.OpenAIChatCompletionsTransport):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.close_calls = 0
+            created_transports.append(self)
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            await super().aclose()
+
+    monkeypatch.setattr(
+        runner_module, "OpenAIChatCompletionsTransport", RecordingOwnedTransport
+    )
+
+    def fail_runner_construction(**_kwargs: Any) -> Any:
+        raise RuntimeError("injected construction failure")
+
+    monkeypatch.setattr(
+        runner_module, "create_millforge_base_runner", fail_runner_construction
+    )
+    with pytest.raises(ModelBackendConfigError, match="construction failed"):
+        await create_millforge_base_live_runner(
+            profile_id=profile.profile_id,
+            model_profile=profile,
+            secret_ref=secret_ref,
+            secret_resolver=secret_resolver,
+            cwd=tmp_path.resolve(),
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+            timeouts=_live_timeouts(),
+            http_transport=caller_transport,
+            prompt_date=datetime.date(2026, 7, 15),
+            home_directory=home.resolve(),
+        )
+
+    assert len(created_transports) == 1
+    assert created_transports[0].close_calls == 1
+    assert created_transports[0]._client.is_closed is True
+    assert caller_transport.close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_public_live_factory_cancellation_interrupts_blocked_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_live_shell(monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = make_canonical_builder_profile_a()
+    secret_ref = cast(SecretRef, profile.authentication.secret_ref)
+    secret_resolver = _LiveSecretResolver(secret_ref, "sk-cancelled-secret")
+    token = _TriggerCancellationToken()
+    cancellation_resolver = _TriggerCancellationResolver(token)
+    started = asyncio.Event()
+    interrupted = asyncio.Event()
+
+    async def blocked_handler(_request: httpx.Request) -> httpx.Response:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            interrupted.set()
+            raise
+        raise AssertionError("blocked handler unexpectedly resumed")
+
+    live_runner = await create_millforge_base_live_runner(
+        profile_id=profile.profile_id,
+        model_profile=profile,
+        secret_ref=secret_ref,
+        secret_resolver=secret_resolver,
+        cwd=tmp_path.resolve(),
+        clock=FakeClock(monotonic_value=1.0),
+        cancellation_resolver=cancellation_resolver,
+        artifact_writer_factory=cast(
+            RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+        ),
+        timeouts=_live_timeouts(),
+        http_transport=_RecordingHttpTransport(blocked_handler),
+        prompt_date=datetime.date(2026, 7, 15),
+        home_directory=home.resolve(),
+    )
+    request = _request(live_runner.components, tmp_path / "run-cancel").model_copy(
+        update={"secret_refs": (secret_ref,)}
+    )
+    execution = asyncio.create_task(live_runner.execute(request))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    token.cancel()
+    result = await asyncio.wait_for(execution, timeout=1)
+
+    assert interrupted.is_set()
+    assert result.status is ExecutionStatus.INTERRUPTED
+    assert result.result_class is ExecutionResultClass.CANCELLED
+    await live_runner.aclose()

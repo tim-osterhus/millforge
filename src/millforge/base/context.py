@@ -143,6 +143,17 @@ def _project_directories(cwd: Path) -> tuple[Path, ...]:
     return tuple(reversed(cwd.parents)) + (cwd,)
 
 
+def _paths_refer_to_same_file(left: Path, right: Path) -> bool:
+    """Compare host filesystem identity, falling back across removal races."""
+
+    if left == right:
+        return True
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 def _context_sha256(files: tuple[MillforgeBaseContextFile, ...]) -> str:
     payload = [
         {
@@ -247,13 +258,16 @@ def _load_millforge_base_context_resolved(
     if native_global is not None:
         discovered.append(native_global)
 
-    seen_paths = {file.path for file in discovered}
+    seen_paths = [file.path for file in discovered]
     for directory in _project_directories(cwd):
         project_file = _context_file_from_directory(directory, "project", diagnostics)
-        if project_file is None or project_file.path in seen_paths:
+        if project_file is None or any(
+            _paths_refer_to_same_file(project_file.path, seen_path)
+            for seen_path in seen_paths
+        ):
             continue
         discovered.append(project_file)
-        seen_paths.add(project_file.path)
+        seen_paths.append(project_file.path)
 
     files, truncated = _allocate_context(tuple(discovered))
     return MillforgeBaseContextSnapshot(

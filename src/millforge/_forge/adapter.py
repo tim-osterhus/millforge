@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, NoReturn, Protocol
 
 from millforge._forge.clients.base import StreamChunk, TokenUsage as ForgeTokenUsage
 from millforge._forge.context.manager import ContextManager
@@ -79,6 +79,8 @@ from millforge.contracts import (
     ModelToolCall,
     ParsedToolArguments,
     SamplingRequest,
+    SelectedOutput,
+    SelectedOutputRequirement,
     SystemMessage,
     TerminalIntent,
     ToolExecutionContext,
@@ -89,6 +91,7 @@ from millforge.contracts import (
     UserMessage,
     UsageMetadata,
     ValidatedToolCall,
+    admit_selected_output,
 )
 from millforge.exceptions import (
     BackendTranslationError,
@@ -198,6 +201,8 @@ class TerminalCandidate:
     terminal_result: str
     summary: str
     artifact_refs: tuple[ArtifactRef, ...]
+    selected_output: SelectedOutput | None = None
+    selected_output_schema_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +292,12 @@ class ForgeGuardrailBackend:
                 model_client=self._model_client,
                 model=request.execution_request.model_profile.profile_id,
                 event_translator=event_translator,
+                selected_output=request.execution_request.selected_output,
+                terminal_tool_names=frozenset(
+                    node.model_tool_name
+                    for node in plan.nodes
+                    if node.terminal_result is not None
+                ),
             )
             tool_bridge = ForgeToolBridge(
                 plan=plan,
@@ -555,6 +566,7 @@ class ForgeGuardrailBackend:
                 usage=_usage_from_optional_bridges(model_bridge, tool_bridge),
             )
         except Exception as exc:
+            category: DiagnosticCategory
             if model_bridge is not None and (
                 model_bridge.in_model_call or model_bridge.model_exception_seen
             ):
@@ -952,9 +964,13 @@ class ForgeModelBridge:
         model_client: ModelClientLike,
         model: str,
         event_translator: ForgeEventTranslator | None = None,
+        selected_output: SelectedOutputRequirement | None = None,
+        terminal_tool_names: frozenset[str] = frozenset(),
     ) -> None:
         self._model_client = model_client
         self._event_translator = event_translator
+        self._selected_output = selected_output
+        self._terminal_tool_names = terminal_tool_names
         self.model = model
         self.last_usage: dict[int, ForgeTokenUsage] = {}
         self._model_calls = 0
@@ -1021,7 +1037,17 @@ class ForgeModelBridge:
             messages=tuple(
                 _model_message_from_private(message) for message in messages
             ),
-            tools=tuple(_tool_definition_from_spec(spec) for spec in tools or ()),
+            tools=tuple(
+                _tool_definition_from_spec(
+                    spec,
+                    selected_output=(
+                        self._selected_output
+                        if spec.name in self._terminal_tool_names
+                        else None
+                    ),
+                )
+                for spec in tools or ()
+            ),
             sampling_overrides=SamplingRequest(),
             maximum_output_tokens_override=None,
             deadline=self._deadline(),
@@ -1300,11 +1326,55 @@ class ForgeToolBridge:
             )
             raise _WorkflowDeadlineExceededError("tool call deadline expired")
 
+        admitted_selected_output: SelectedOutput | None = None
+        execution_args = args
+        selected_output_requirement = (
+            self._session_request.execution_request.selected_output
+        )
+        if node.terminal_result is not None and selected_output_requirement is not None:
+            try:
+                admitted_selected_output = admit_selected_output(
+                    selected_output_requirement,
+                    present="candidate" in args,
+                    value=args.get("candidate"),
+                )
+            except ValueError as exc:
+                self._append_trace(
+                    node=node,
+                    call_id=call_id,
+                    input_sha256=input_sha256,
+                    prerequisite_decisions=prereq_decisions,
+                    capability_decisions=capability_decisions,
+                    status=ToolExecutionStatus.NOT_EXECUTED,
+                    retryable=True,
+                    side_effect_certainty=SideEffectCertainty.NOT_ATTEMPTED,
+                    summary="selected output candidate rejected",
+                )
+                self._append_event(
+                    SessionEventType.TERMINAL_INTENT_REJECTED,
+                    node_id=node.node_id,
+                    tool_call_id=call_id,
+                    code="selected_output_invalid",
+                )
+                self._append_event(
+                    SessionEventType.CORRECTION_ISSUED,
+                    node_id=node.node_id,
+                    tool_call_id=call_id,
+                    code="selected_output_invalid",
+                )
+                raise ToolResolutionError(
+                    str(exc),
+                    tool_name=tool_name,
+                ) from None
+            execution_args = dict(args)
+            execution_args.pop("candidate", None)
+
+        execution_input_sha256 = _sha256_json(execution_args)
         validated_call = ValidatedToolCall(
             call_id=call_id,
             node_id=node.node_id,
             binding=node.binding,
-            arguments=args,
+            arguments=execution_args,
         )
         try:
             context = self._execution_context()
@@ -1317,7 +1387,7 @@ class ForgeToolBridge:
                 result = await execute_model_tool(
                     model_tool_name=tool_name,
                     call_id=call_id,
-                    arguments=args,
+                    arguments=execution_args,
                     context=context,
                     prerequisite_results=prerequisite_results,
                     session_id=self._session_request.session_id,
@@ -1353,7 +1423,7 @@ class ForgeToolBridge:
         result_defect = _tool_result_boundary_defect(
             result=result,
             expected_call=validated_call,
-            expected_input_sha256=input_sha256,
+            expected_input_sha256=execution_input_sha256,
         )
         if result_defect is not None:
             self._append_trace(
@@ -1475,7 +1545,12 @@ class ForgeToolBridge:
             tool_call_id=call_id,
         )
         if node.terminal_result is not None:
-            self._accept_terminal_candidate(node, call_id, result)
+            self._accept_terminal_candidate(
+                node,
+                call_id,
+                result,
+                selected_output=admitted_selected_output,
+            )
         return _model_visible_tool_content(result)
 
     def _resolve_call_id(self, tool_name: str, args: Mapping[str, Any]) -> str:
@@ -1490,14 +1565,15 @@ class ForgeToolBridge:
     def _execution_context(self) -> ToolExecutionContext:
         request = self._session_request.execution_request
         token = self._cancellation_resolver.resolve(request.cancellation)
-        update = {
-            "deadline": self._session_request.deadline,
-            "cancellation_requested": token.is_cancelled(),
-            "current_monotonic": self._clock.monotonic(),
-        }
         trusted = self._session_request.tool_execution_context
         if trusted is not None:
-            return trusted.model_copy(update=update)
+            return trusted.model_copy(
+                update={
+                    "deadline": self._session_request.deadline,
+                    "cancellation_requested": token.is_cancelled(),
+                    "current_monotonic": self._clock.monotonic(),
+                }
+            )
         return ToolExecutionContext(
             request_id=request.request_id,
             run_id=request.run_id,
@@ -1511,7 +1587,9 @@ class ForgeToolBridge:
             compiled_artifact_policy=self._plan.artifact_policy,
             input_artifacts=request.input_artifacts,
             work_item_id=request.work_item_id,
-            **update,
+            deadline=self._session_request.deadline,
+            cancellation_requested=token.is_cancelled(),
+            current_monotonic=self._clock.monotonic(),
         )
 
     def _prerequisite_decisions(
@@ -1566,6 +1644,8 @@ class ForgeToolBridge:
         node: CompiledHarnessNode,
         call_id: str,
         result: ToolExecutionResult,
+        *,
+        selected_output: SelectedOutput | None,
     ) -> None:
         assert node.terminal_result is not None
         candidate = TerminalCandidate(
@@ -1575,6 +1655,13 @@ class ForgeToolBridge:
             terminal_result=node.terminal_result,
             summary=result.summary,
             artifact_refs=tuple(self._owned_artifacts.values()),
+            selected_output=selected_output,
+            selected_output_schema_sha256=(
+                self._session_request.execution_request.selected_output.schema_sha256
+                if selected_output is not None
+                and self._session_request.execution_request.selected_output is not None
+                else None
+            ),
         )
         self._terminal_candidate = candidate
         missing_required = [
@@ -1612,6 +1699,8 @@ class ForgeToolBridge:
             disposition=disposition,
             summary=candidate.summary,
             artifact_refs=candidate.artifact_refs,
+            selected_output=candidate.selected_output,
+            selected_output_schema_sha256=candidate.selected_output_schema_sha256,
         )
         self._append_event(
             SessionEventType.TERMINAL_INTENT_ACCEPTED,
@@ -1724,7 +1813,7 @@ async def _cancel_and_await_watcher(
     await asyncio.gather(watcher, return_exceptions=True)
 
 
-def _reject(message: str) -> None:
+def _reject(message: str) -> NoReturn:
     raise ForgeBindingRejectedError(message)
 
 
@@ -1797,7 +1886,7 @@ _REQUEST_CONTEXT_SEPARATOR = "\n\n--- millforge request context ---\n"
 
 
 def _request_context_payload(request: HarnessExecutionRequest) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "input_artifacts": [
             {
                 "artifact_id": artifact.artifact_id,
@@ -1815,6 +1904,13 @@ def _request_context_payload(request: HarnessExecutionRequest) -> dict[str, Any]
         },
         "work_item_id": request.work_item_id,
     }
+    if request.selected_output is not None:
+        payload["selected_output"] = {
+            "candidate_transport": "terminal_tool_argument",
+            "required": request.selected_output.required,
+            "schema_sha256": request.selected_output.schema_sha256,
+        }
+    return payload
 
 
 def _context_compaction_callback(_event: Any) -> None:
@@ -1847,8 +1943,11 @@ def _model_message_from_private(message: Mapping[str, Any]) -> ModelMessage:
     if role == "user":
         return UserMessage(content=str(content or ""))
     if role == "assistant":
+        assistant_content = (
+            None if content is None or (content == "" and tool_calls) else str(content)
+        )
         return AssistantMessage(
-            content=str(content) if content is not None else None,
+            content=assistant_content,
             tool_calls=tuple(tool_calls),
         )
     if role == "tool":
@@ -1895,12 +1994,48 @@ def _tool_arguments_from_private(
     )
 
 
-def _tool_definition_from_spec(spec: ToolSpec) -> ModelToolDefinition:
+def _tool_definition_from_spec(
+    spec: ToolSpec,
+    *,
+    selected_output: SelectedOutputRequirement | None = None,
+) -> ModelToolDefinition:
+    input_schema = spec.get_json_schema()
+    if selected_output is not None:
+        input_schema = _selected_output_terminal_tool_schema(
+            input_schema,
+            selected_output,
+        )
     return ModelToolDefinition(
         name=spec.name,
         description=spec.description,
-        input_schema=spec.get_json_schema(),
+        input_schema=input_schema,
     )
+
+
+def _selected_output_terminal_tool_schema(
+    input_schema: Mapping[str, Any],
+    selected_output: SelectedOutputRequirement,
+) -> dict[str, Any]:
+    """Derive one model-visible terminal schema without mutating its descriptor."""
+
+    derived = json.loads(
+        json.dumps(input_schema, sort_keys=True, separators=(",", ":"))
+    )
+    properties = derived.get("properties")
+    required = derived.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        raise ForgeBindingRejectedError(
+            "Terminal tool schema is not a closed object schema"
+        )
+    if "candidate" in properties:
+        raise ForgeBindingRejectedError(
+            "Terminal tool schema already reserves the selected output candidate field"
+        )
+    properties["candidate"] = json.loads(selected_output.canonical_schema_bytes)
+    if selected_output.required:
+        required.append("candidate")
+    derived["required"] = sorted(required)
+    return derived
 
 
 def _parsed_model_tool_args(call: ModelToolCall) -> Any:

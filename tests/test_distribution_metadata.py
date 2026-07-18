@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 VERSION_MODULE = ROOT / "src" / "millforge" / "_version.py"
 PACKAGE_INIT = ROOT / "src" / "millforge" / "__init__.py"
+INSTALLED_SMOKE = ROOT / "scripts" / "installed_package_smoke.py"
+READINESS_REPORT = (
+    ROOT / "tests" / "fixtures" / "default_runner_readiness_closure_report.md"
+)
+READINESS_BASELINE = "96d0e61514788d43635e390c39e14bb52a44387c"
 
 PROJECT_LICENSE = "Apache-2.0"
 PROJECT_LICENSE_CLASSIFIER = "License :: OSI Approved :: Apache Software License"
@@ -168,6 +173,110 @@ def test_project_metadata_declares_supported_distribution_contract() -> None:
     assert "Operating System :: MacOS" in classifiers
     assert "Operating System :: POSIX :: Linux" in classifiers
     assert "Programming Language :: Python :: 3.11" in classifiers
+
+    runtime_dependency_names = {
+        re.split(r"[\s<>=!~;\[]", item, maxsplit=1)[0].lower()
+        for item in project["dependencies"]
+    }
+    assert runtime_dependency_names == {"httpx", "pathspec", "pydantic"}
+    assert "scripts" not in project
+    assert "gui-scripts" not in project
+    assert "entry-points" not in project
+    assert set(project["optional-dependencies"]) == {"dev"}
+
+
+def test_installed_smoke_uses_only_the_root_millforge_consumer_surface() -> None:
+    tree = ast.parse(INSTALLED_SMOKE.read_text(encoding="utf-8"))
+    imported_modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported_modules.append(node.module)
+
+    millforge_imports = tuple(
+        module for module in imported_modules if module.startswith("millforge")
+    )
+    assert millforge_imports == ("millforge", "millforge")
+    assert not any(
+        module.startswith(
+            (
+                "millforge._forge",
+                "millforge.model_backend",
+                "millforge.testing",
+                "tests",
+            )
+        )
+        for module in imported_modules
+    )
+
+
+def test_default_runner_readiness_report_is_tracked_and_self_contained() -> None:
+    report = READINESS_REPORT.read_text(encoding="utf-8")
+    required_sections = (
+        "## Source Identity",
+        "## Public API And Compatibility Changes",
+        "## Descriptor Identity",
+        "## Selected Output Contract",
+        "## Lifecycle, Ownership, And Timeouts",
+        "## Local Verification Evidence",
+        "## Hosted CI Evidence",
+        "## Package Inspection",
+        "## Repository Status",
+        "## Deferred Work",
+        "## Readiness Boundary",
+    )
+    required_commands = (
+        "uv sync --frozen --extra dev",
+        'uv run python -m pytest -m "not live_model_backend"',
+        "uv run python -m compileall -q src",
+        "uv run mypy .",
+        "uv run ruff check .",
+        "uv run ruff format --check .",
+        "uv build",
+        "uv run python scripts/ci_package_smoke.py dist",
+        "git ls-files --error-unmatch "
+        "tests/fixtures/default_runner_readiness_closure_report.md",
+        "git diff --check",
+        f"git diff --stat {READINESS_BASELINE}",
+        "git status --short --branch",
+    )
+    deferred_terms = (
+        "external adapter implementation",
+        "runner selection/defaulting",
+        "caller dispatch echo",
+        "workflow terminal mapping",
+        "retries",
+        "durable orchestration",
+        "live paid evaluation",
+        "native Windows",
+        "release tagging",
+        "GitHub release creation",
+        "PyPI publication",
+    )
+
+    assert report.startswith("# Default Runner Readiness Closure Report\n")
+    assert READINESS_BASELINE in report
+    assert all(section in report for section in required_sections)
+    assert all(f"`{command}`" in report for command in required_commands)
+    assert all(term in report for term in deferred_terms)
+    assert "Millrace runtime artifacts are not evidence for this report" in report
+    assert re.search(r"Resulting closure commit: (?:`[0-9a-f]{40}`|PENDING)", report)
+
+    tracked = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--error-unmatch",
+            str(READINESS_REPORT.relative_to(ROOT)),
+        ],
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert tracked.returncode == 0, tracked.stderr
 
 
 def test_version_module_is_the_only_project_version_source() -> None:

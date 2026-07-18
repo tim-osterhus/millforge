@@ -1,8 +1,9 @@
-"""Internal provider-neutral model backend contracts.
+"""Provider-neutral model backend contracts and private orchestration.
 
-This module is intentionally not re-exported from ``millforge.__init__``.
-It may carry endpoint, authentication, secret, and transport details that the
-public ``ModelClient`` protocol must not expose.
+The immutable profile, policy, timeout, and secret-resolution contracts needed
+by the supported live factory are re-exported deliberately from ``millforge``.
+Concrete model clients, HTTP transports, wire records, and orchestration helpers
+remain private implementation details and are not public package exports.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from millforge.exceptions import (
     MillforgeConfigError,
     ModelTransportError,
 )
+from millforge.protocols import AsyncHttpTransport
 
 _CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 DEFAULT_REDACTION_POLICY = RedactionPolicy()
@@ -98,6 +100,51 @@ def _bounded(value: str, *, length: int = _MAX_SANITIZED_VALUE_LENGTH) -> str:
 
 class ModelBackendConfigError(MillforgeConfigError):
     """Invalid internal model backend configuration."""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAICompatibleTimeouts:
+    """Explicit positive finite timeout authority for a live composition.
+
+    The four phase bounds configure the HTTP transport. ``local_total_seconds``
+    is an additional composition-owned ceiling for the complete model call; it
+    may narrow, but never widen, the request deadline or resolved profile bound.
+    """
+
+    connect_seconds: float
+    read_seconds: float
+    write_seconds: float
+    pool_seconds: float
+    local_total_seconds: float
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "connect_seconds",
+            "read_seconds",
+            "write_seconds",
+            "pool_seconds",
+            "local_total_seconds",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ModelBackendConfigError(
+                    f"{field_name} must be a positive finite number"
+                )
+            if value <= 0 or not math.isfinite(value):
+                raise ModelBackendConfigError(
+                    f"{field_name} must be a positive finite number"
+                )
+
+    @classmethod
+    def uniform(cls, timeout_seconds: float) -> OpenAICompatibleTimeouts:
+        """Create equal phase and local bounds for compatibility callers."""
+        return cls(
+            connect_seconds=timeout_seconds,
+            read_seconds=timeout_seconds,
+            write_seconds=timeout_seconds,
+            pool_seconds=timeout_seconds,
+            local_total_seconds=timeout_seconds,
+        )
 
 
 class UnsupportedModelCapabilityError(ModelBackendConfigError):
@@ -696,6 +743,13 @@ class TransportRequest(BaseModel):
     def _request_strings_nonblank(cls, value: str, info: Any) -> str:
         return _nonblank(value, info.field_name)
 
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _timeout_is_finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("timeout_seconds must be finite")
+        return value
+
 
 class TransportResponse(BaseModel):
     """Private transport response record after bounded parsing."""
@@ -871,22 +925,52 @@ class CapabilityNegotiator:
             )
 
 
+class _CallerOwnedAsyncTransport(httpx.AsyncBaseTransport):
+    """Delegate requests without transferring close ownership to httpx."""
+
+    def __init__(self, transport: AsyncHttpTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        """Leave the caller-injected transport open."""
+
+
 class OpenAIChatCompletionsTransport:
     """Non-streaming OpenAI-compatible Chat Completions HTTP transport."""
 
     def __init__(
         self,
         *,
-        http_transport: httpx.AsyncBaseTransport | None = None,
-        timeout_seconds: float = 60.0,
+        http_transport: AsyncHttpTransport | None = None,
+        timeouts: OpenAICompatibleTimeouts | None = None,
+        timeout_seconds: float | None = None,
     ) -> None:
-        timeout = _phase_timeout(timeout_seconds)
+        if timeouts is not None and timeout_seconds is not None:
+            raise ModelBackendConfigError(
+                "configure either explicit timeouts or timeout_seconds, not both"
+            )
+        self._timeouts = timeouts or OpenAICompatibleTimeouts.uniform(
+            60.0 if timeout_seconds is None else timeout_seconds
+        )
+        timeout = _phase_timeout(self._timeouts)
+        if http_transport is not None and not isinstance(
+            http_transport, AsyncHttpTransport
+        ):
+            raise ModelBackendConfigError(
+                "http_transport does not implement AsyncHttpTransport"
+            )
+        client_transport = None
+        if http_transport is not None:
+            client_transport = _CallerOwnedAsyncTransport(http_transport)
         self._client = httpx.AsyncClient(
             follow_redirects=False,
             trust_env=False,
             verify=True,
             timeout=timeout,
-            transport=http_transport,
+            transport=client_transport,
         )
         self._client.headers.clear()
         self._closed = False
@@ -911,12 +995,17 @@ class OpenAIChatCompletionsTransport:
 
     async def send(self, request: TransportRequest) -> TransportResponse:
         """POST one bounded non-streaming Chat Completions request."""
+        if self._closed:
+            raise ModelBackendConfigError("model transport is closed")
         try:
             response = await self._client.post(
                 request.url,
                 headers=request.headers,
                 json=request.body,
-                timeout=_phase_timeout(request.timeout_seconds),
+                timeout=_phase_timeout(
+                    self._timeouts,
+                    total_timeout_seconds=request.timeout_seconds,
+                ),
             )
         except httpx.TimeoutException as exc:
             raise ModelProviderError(
@@ -992,6 +1081,7 @@ class DefaultModelClient:
         cancellation_resolver: ModelCancellationResolver | None = None,
         clock: ModelBackendClock | None = None,
         capability_negotiator: CapabilityNegotiator | None = None,
+        local_timeout_seconds: float | None = None,
     ) -> None:
         self._profile_resolver = profile_resolver
         self._secret_resolver = secret_resolver
@@ -999,6 +1089,16 @@ class DefaultModelClient:
         self._cancellation_resolver = cancellation_resolver
         self._clock = clock or _SystemClock()
         self._capability_negotiator = capability_negotiator or CapabilityNegotiator()
+        if local_timeout_seconds is not None and (
+            isinstance(local_timeout_seconds, bool)
+            or not isinstance(local_timeout_seconds, (int, float))
+            or local_timeout_seconds <= 0
+            or not math.isfinite(local_timeout_seconds)
+        ):
+            raise ModelBackendConfigError(
+                "local_timeout_seconds must be a positive finite number"
+            )
+        self._local_timeout_seconds = local_timeout_seconds
         self._closed = False
 
     async def __aenter__(self) -> DefaultModelClient:
@@ -1028,6 +1128,8 @@ class DefaultModelClient:
         self, request: ModelCompletionRequest
     ) -> ModelCompletionResponse:
         """Resolve backend policy, call transport once, and normalize the response."""
+        if self._closed:
+            raise ModelBackendConfigError("model client is closed")
         profile = self._profile_resolver.resolve(request.model_profile_id)
         if profile.profile_id != request.model_profile_id:
             raise ModelBackendConfigError("resolved profile identity mismatch")
@@ -1169,7 +1271,10 @@ class DefaultModelClient:
         remaining = request.deadline.effective_deadline_monotonic - now
         if remaining <= 0:
             self._raise_deadline_expired()
-        timeout_seconds = min(profile.timeout_seconds, remaining)
+        admitted_bounds = [profile.timeout_seconds, remaining]
+        if self._local_timeout_seconds is not None:
+            admitted_bounds.append(self._local_timeout_seconds)
+        timeout_seconds = min(admitted_bounds)
         return timeout_seconds, now + timeout_seconds
 
     @staticmethod
@@ -1499,16 +1604,45 @@ def _normalize_tool_arguments(
     raw: JsonValue,
 ) -> ParsedToolArguments | InvalidToolArguments:
     if isinstance(raw, dict):
+        try:
+            _reject_non_finite_json(raw, path="tool arguments")
+        except ModelBackendConfigError:
+            return InvalidToolArguments(raw=raw, error_code="non_finite_json")
         return ParsedToolArguments(value=raw)
     if not isinstance(raw, str):
         return InvalidToolArguments(raw=raw, error_code="not_json_object")
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_tool_argument_keys,
+            parse_constant=_reject_tool_argument_constant,
+        )
     except json.JSONDecodeError:
         return InvalidToolArguments(raw=raw, error_code="malformed_json")
+    except ValueError:
+        return InvalidToolArguments(raw=raw, error_code="ambiguous_json")
     if not isinstance(parsed, dict):
         return InvalidToolArguments(raw=raw, error_code="not_json_object")
+    try:
+        _reject_non_finite_json(parsed, path="tool arguments")
+    except ModelBackendConfigError:
+        return InvalidToolArguments(raw=raw, error_code="non_finite_json")
     return ParsedToolArguments(value=parsed)
+
+
+def _reject_duplicate_tool_argument_keys(
+    pairs: list[tuple[str, JsonValue]],
+) -> JsonObject:
+    parsed: JsonObject = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError(f"duplicate tool argument key {key!r}")
+        parsed[key] = value
+    return parsed
+
+
+def _reject_tool_argument_constant(value: str) -> None:
+    raise ValueError(f"non-finite tool argument number {value}")
 
 
 def _normalize_usage(value: object) -> TokenUsage | None:
@@ -1612,15 +1746,30 @@ def _provider_http_error(
     )
 
 
-def _phase_timeout(timeout_seconds: float) -> httpx.Timeout:
-    if timeout_seconds <= 0 or not math.isfinite(timeout_seconds):
+def _phase_timeout(
+    timeouts: OpenAICompatibleTimeouts | float,
+    *,
+    total_timeout_seconds: float | None = None,
+) -> httpx.Timeout:
+    if isinstance(timeouts, (int, float)):
+        timeouts = OpenAICompatibleTimeouts.uniform(timeouts)
+    if total_timeout_seconds is not None and (
+        total_timeout_seconds <= 0 or not math.isfinite(total_timeout_seconds)
+    ):
         raise ModelBackendConfigError("transport timeout must be positive and finite")
+
+    def bounded(value: float) -> float:
+        return (
+            value
+            if total_timeout_seconds is None
+            else min(value, total_timeout_seconds)
+        )
+
     return httpx.Timeout(
-        timeout_seconds,
-        connect=timeout_seconds,
-        read=timeout_seconds,
-        write=timeout_seconds,
-        pool=timeout_seconds,
+        connect=bounded(timeouts.connect_seconds),
+        read=bounded(timeouts.read_seconds),
+        write=bounded(timeouts.write_seconds),
+        pool=bounded(timeouts.pool_seconds),
     )
 
 
@@ -1698,7 +1847,15 @@ def resolve_authentication_secret(
     if policy.secret_ref is None:
         return None
     assert_secret_admitted(policy.secret_ref, admitted)
-    return resolver.resolve(policy.secret_ref)
+    try:
+        resolved = resolver.resolve(policy.secret_ref)
+    except Exception:
+        raise SecretResolutionError("authentication secret resolution failed") from None
+    if not isinstance(resolved, ResolvedSecret):
+        raise SecretResolutionError(
+            "secret resolver returned an unsupported resolved secret"
+        )
+    return resolved
 
 
 def build_auth_headers(

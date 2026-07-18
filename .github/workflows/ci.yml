@@ -41,7 +41,6 @@ jobs:
       - run: uv sync --frozen --extra dev
 
       - name: Full offline tests
-        if: matrix.gate == 'full' || matrix.gate == 'offline'
         run: uv run python -m pytest -m "not live_model_backend"
 
       - name: Python 3.11 source and static gates
@@ -58,23 +57,6 @@ jobs:
         run: |
           uv build
           uv run python scripts/ci_package_smoke.py dist
-
-      - name: Bounded macOS compatibility gates
-        if: matrix.gate == 'macos'
-        run: |
-          uv run python -m pytest -m "not live_model_backend" \
-            tests/test_python_compatibility.py \
-            tests/test_base_composition.py \
-            tests/test_base_public_api.py \
-            tests/test_base_runner.py \
-            tests/test_base_identity.py \
-            tests/test_model_backend.py \
-            tests/test_forge_adapter_translation.py \
-            tests/test_pi_compat_operations.py \
-            tests/test_pi_compat_process.py \
-            tests/test_pi_compat_tool_catalog.py \
-            tests/test_pi_compat_tool_execution.py \
-            tests/test_artifacts.py
 
       - name: macOS package install smoke
         if: matrix.gate == 'macos'

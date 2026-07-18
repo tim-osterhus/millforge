@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
-from typing import cast, get_args
+from typing import Any, cast, get_args
 
 import millforge
 import pytest
@@ -62,10 +63,19 @@ from millforge.contracts import (
     ModelCompletionResponse,
     ModelToolDefinition,
     ModelToolCall,
+    MAX_SELECTED_OUTPUT_ARRAY_ITEMS,
+    MAX_SELECTED_OUTPUT_NESTING_DEPTH,
+    MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES,
+    MAX_SELECTED_OUTPUT_PAYLOAD_BYTES,
+    MAX_SELECTED_OUTPUT_SCHEMA_BYTES,
+    MAX_SELECTED_OUTPUT_STRING_LENGTH,
     ParsedToolArguments,
     RedactionPolicy,
     SamplingRequest,
     SanitizedMetadata,
+    SelectedOutputAbsent,
+    SelectedOutputPresent,
+    SelectedOutputRequirement,
     SideEffectRecord,
     StageIdentity,
     TerminalIntent,
@@ -78,6 +88,10 @@ from millforge.contracts import (
     ValidatedToolCall,
     UserMessage,
     SystemMessage,
+    canonical_selected_output_payload_bytes,
+    canonical_selected_output_schema_bytes,
+    parse_selected_output_payload_json,
+    selected_output_schema_sha256,
     redact_diagnostic_mapping,
     redact_diagnostic_text,
     redact_diagnostic_value,
@@ -571,6 +585,314 @@ def test_canonical_builder_fixture_prerequisites_and_artifact_policy() -> None:
         },
     ]
     assert plan.validate_plan_invariants() == []
+
+
+def test_execution_request_documents_provider_local_identity_and_opaque_ids() -> None:
+    request_doc = HarnessExecutionRequest.__doc__ or ""
+    stage_doc = StageIdentity.__doc__ or ""
+
+    assert "provider-local" in request_doc
+    assert "caller workflow plane" in request_doc
+    assert "opaque" in request_doc
+    assert "caller-owned correlation values" in request_doc
+    assert "provider-local" in stage_doc
+    assert "route, dispatch identity, or authority" in stage_doc
+    assert (
+        HarnessExecutionRequest.model_fields["stage"].description
+        == "Provider-local identity of the admitted compiled harness stage"
+    )
+    assert "Opaque caller" in (
+        HarnessExecutionRequest.model_fields["request_id"].description or ""
+    )
+    assert "Opaque caller" in (
+        HarnessExecutionRequest.model_fields["run_id"].description or ""
+    )
+
+
+def _selected_record_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1, "maxLength": 80},
+            "scores": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 0,
+                "maxItems": 4,
+            },
+            "note": {"type": "null"},
+        },
+        "required": ["scores", "name"],
+        "additionalProperties": False,
+    }
+
+
+def test_selected_output_bounds_and_canonical_schema_contract_are_pinned() -> None:
+    assert (
+        MAX_SELECTED_OUTPUT_SCHEMA_BYTES,
+        MAX_SELECTED_OUTPUT_PAYLOAD_BYTES,
+        MAX_SELECTED_OUTPUT_NESTING_DEPTH,
+        MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES,
+        MAX_SELECTED_OUTPUT_ARRAY_ITEMS,
+        MAX_SELECTED_OUTPUT_STRING_LENGTH,
+    ) == (64 * 1024, 1024 * 1024, 16, 64, 1024, 64 * 1024)
+
+    first = _selected_record_schema()
+    second = {
+        "additionalProperties": False,
+        "required": ["name", "scores"],
+        "properties": {
+            "note": {"type": "null"},
+            "scores": {
+                "maxItems": 4,
+                "minItems": 0,
+                "items": {"type": "number"},
+                "type": "array",
+            },
+            "name": {"maxLength": 80, "type": "string", "minLength": 1},
+        },
+        "type": "object",
+    }
+
+    assert canonical_selected_output_schema_bytes(first) == (
+        canonical_selected_output_schema_bytes(second)
+    )
+    assert selected_output_schema_sha256(first) == selected_output_schema_sha256(second)
+    requirement = SelectedOutputRequirement(required=True, json_schema=first)
+    assert requirement.required is True
+    assert requirement.schema_sha256 == selected_output_schema_sha256(first)
+    assert requirement.json_schema["required"] == ["name", "scores"]
+    assert requirement.canonical_schema_bytes == canonical_selected_output_schema_bytes(
+        first
+    )
+    assert (
+        SelectedOutputRequirement.model_validate_json(requirement.model_dump_json())
+        == requirement
+    )
+    with pytest.raises(ValidationError, match="frozen"):
+        requirement.required = False  # type: ignore[misc]
+    with pytest.raises(TypeError, match="immutable"):
+        requirement.json_schema["type"] = "null"
+    with pytest.raises(TypeError, match="immutable"):
+        cast(list[str], requirement.json_schema["required"]).append("note")
+
+
+@pytest.mark.parametrize(
+    ("json_schema", "match"),
+    (
+        ({"type": "object", "properties": {}, "required": []}, "additionalProperties"),
+        ({"type": "string", "pattern": ".*"}, "unsupported"),
+        ({"type": ["string", "null"]}, "outside the admitted subset"),
+        ({"type": "array"}, "items"),
+        ({"type": "string", "minLength": -1}, "non-negative"),
+        ({"type": "string", "minLength": 2, "maxLength": 1}, "must not exceed"),
+        (
+            {"type": "array", "items": {"type": "boolean"}, "maxItems": True},
+            "must be integers",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"known": {"type": "integer"}},
+                "required": ["unknown"],
+                "additionalProperties": False,
+            },
+            "declared properties",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {1: {"type": "integer"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+            "property names must be strings",
+        ),
+    ),
+)
+def test_selected_output_schema_rejects_unsupported_or_invalid_contracts(
+    json_schema: object,
+    match: str,
+) -> None:
+    with pytest.raises((ValidationError, ValueError), match=match):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema=cast(dict[str, Any], json_schema),
+        )
+
+
+def test_selected_output_schema_rejects_duplicates_nonfinite_and_global_excess() -> (
+    None
+):
+    with pytest.raises(ValidationError, match="duplicate key"):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema=cast(dict[str, Any], '{"type":"string","type":"string"}'),
+        )
+    with pytest.raises(ValidationError, match="non-finite"):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema=cast(dict[str, Any], '{"type":"string","maxLength":NaN}'),
+        )
+    with pytest.raises(ValidationError, match="schema-byte"):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema=cast(
+                dict[str, Any], " " * MAX_SELECTED_OUTPUT_SCHEMA_BYTES + "{}"
+            ),
+        )
+    with pytest.raises(ValidationError, match="object-property"):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema={
+                "type": "object",
+                "properties": {
+                    f"p{index}": {"type": "integer"}
+                    for index in range(MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES + 1)
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        )
+
+    nested: dict[str, object] = {"type": "null"}
+    for _ in range(MAX_SELECTED_OUTPUT_NESTING_DEPTH):
+        nested = {"type": "array", "items": nested}
+    with pytest.raises(ValidationError, match="nesting-depth"):
+        SelectedOutputRequirement(required=True, json_schema=nested)
+
+
+def test_selected_output_raw_json_boundaries_reject_nested_duplicate_keys(
+    tmp_path: Path,
+) -> None:
+    requirement = SelectedOutputRequirement(
+        required=True,
+        json_schema=_selected_record_schema(),
+    )
+    assert (
+        SelectedOutputRequirement.model_validate_json(requirement.model_dump_json())
+        == requirement
+    )
+    with pytest.raises(ValueError, match="duplicate key 'type'"):
+        SelectedOutputRequirement.model_validate_json(
+            '{"required":true,"json_schema":{"type":"object",'
+            '"properties":{"answer":{"type":"string","type":"null"}},'
+            '"required":[],"additionalProperties":false}}'
+        )
+
+    request = make_canonical_builder_execution_request(tmp_path).model_copy(
+        update={"selected_output": requirement}
+    )
+    encoded_request = request.model_dump_json()
+    duplicate_schema = encoded_request.replace(
+        '"type":"string"',
+        '"type":"string","type":"null"',
+        1,
+    )
+    with pytest.raises(ValueError, match="duplicate key 'type'"):
+        HarnessExecutionRequest.model_validate_json(duplicate_schema)
+    assert HarnessExecutionRequest.model_validate_json(encoded_request) == request
+
+
+@pytest.mark.parametrize("with_selected_output", (False, True))
+def test_harness_request_raw_json_rejects_duplicate_keys_beyond_selected_output(
+    tmp_path: Path,
+    with_selected_output: bool,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    if with_selected_output:
+        request = request.model_copy(
+            update={
+                "selected_output": SelectedOutputRequirement(
+                    required=False,
+                    json_schema=_selected_record_schema(),
+                )
+            }
+        )
+    encoded_request = request.model_dump_json()
+
+    duplicate_request_id = encoded_request.replace(
+        '"request_id":"request-builder-001"',
+        '"request_id":"request-builder-001","request_id":"duplicate-request"',
+        1,
+    )
+    duplicate_instruction = encoded_request.replace(
+        '"instruction":"Build the requested workspace change."',
+        '"instruction":"Build the requested workspace change.",'
+        '"instruction":"duplicate instruction"',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="duplicate key 'request_id'"):
+        HarnessExecutionRequest.model_validate_json(duplicate_request_id)
+    with pytest.raises(ValueError, match="duplicate key 'instruction'"):
+        HarnessExecutionRequest.model_validate_json(duplicate_instruction)
+    assert HarnessExecutionRequest.model_validate_json(encoded_request) == request
+
+
+def test_selected_output_payload_is_bounded_strict_json_and_null_is_present() -> None:
+    absent = SelectedOutputAbsent()
+    present_null = SelectedOutputPresent(value=None)
+    present_record = SelectedOutputPresent(value={"b": 2, "a": [True, "ok"]})
+
+    assert absent.model_dump(mode="json") == {"present": False}
+    assert present_null.model_dump(mode="json") == {"present": True, "value": None}
+    assert absent != present_null
+    with pytest.raises(TypeError, match="immutable"):
+        cast(dict[str, object], present_record.value)["new"] = True
+    with pytest.raises(TypeError, match="immutable"):
+        cast(list[object], present_record.value["a"]).append(False)
+    assert canonical_selected_output_payload_bytes(present_record.value) == (
+        b'{"a":[true,"ok"],"b":2}\n'
+    )
+    assert parse_selected_output_payload_json('{"value":null}') == {"value": None}
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        parse_selected_output_payload_json('{"value":1,"value":2}')
+    with pytest.raises(ValueError, match="non-finite"):
+        parse_selected_output_payload_json('{"value":1e999}')
+    with pytest.raises(ValidationError, match="non-finite"):
+        SelectedOutputPresent(value=math.inf)
+    with pytest.raises(ValidationError, match="object keys must be strings"):
+        SelectedOutputPresent(value={1: "not-json"})
+    with pytest.raises(ValidationError, match="non-JSON"):
+        SelectedOutputPresent(value=("tuple",))
+    with pytest.raises(ValidationError, match="string ceiling"):
+        SelectedOutputPresent(value="x" * (MAX_SELECTED_OUTPUT_STRING_LENGTH + 1))
+    with pytest.raises(ValidationError, match="array-item"):
+        SelectedOutputPresent(value=[None] * (MAX_SELECTED_OUTPUT_ARRAY_ITEMS + 1))
+    with pytest.raises(ValidationError, match="payload-byte"):
+        SelectedOutputPresent(
+            value=[
+                "x" * MAX_SELECTED_OUTPUT_STRING_LENGTH
+                for _ in range(
+                    MAX_SELECTED_OUTPUT_PAYLOAD_BYTES
+                    // MAX_SELECTED_OUTPUT_STRING_LENGTH
+                    + 1
+                )
+            ]
+        )
+
+
+def test_execution_request_selected_output_is_optional_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    assert request.selected_output is None
+    assert "selected_output" not in request.model_dump(mode="json")
+
+    payload = request.model_dump(mode="json")
+    payload["selected_output"] = {
+        "required": False,
+        "json_schema": _selected_record_schema(),
+    }
+    selected = HarnessExecutionRequest.model_validate(payload)
+    assert selected.selected_output is not None
+    assert selected.selected_output.required is False
+    assert (
+        HarnessExecutionRequest.model_validate_json(selected.model_dump_json())
+        == selected
+    )
 
 
 def test_canonical_builder_execution_request_round_trip_and_constraints(
@@ -1968,6 +2290,45 @@ def test_harness_execution_result_invariants() -> None:
         timing=timing,
     )
     assert result.terminal_intent == terminal
+    assert "selected_output" not in result.model_dump(mode="json")
+    assert "selected_output_schema_sha256" not in result.model_dump(mode="json")
+
+    schema_digest = selected_output_schema_sha256(_selected_record_schema())
+    selected_value = SelectedOutputPresent(value=None)
+    selected_terminal = terminal.model_copy(
+        update={
+            "selected_output": selected_value,
+            "selected_output_schema_sha256": schema_digest,
+        }
+    )
+    selected_result = result.model_copy(
+        update={
+            "terminal_intent": selected_terminal,
+            "selected_output": selected_value,
+            "selected_output_schema_sha256": schema_digest,
+        }
+    )
+    assert (
+        HarnessExecutionResult.model_validate(selected_result.model_dump(mode="json"))
+        == selected_result
+    )
+    optional_absent = SelectedOutputAbsent()
+    assert optional_absent.present is False
+    with pytest.raises(ValidationError, match="must be paired"):
+        HarnessExecutionResult.model_validate(
+            result.model_copy(
+                update={
+                    "terminal_intent": None,
+                    "selected_output": optional_absent,
+                }
+            ).model_dump(mode="json")
+        )
+    with pytest.raises(ValidationError, match="must match result"):
+        HarnessExecutionResult.model_validate(
+            selected_result.model_copy(
+                update={"selected_output": SelectedOutputAbsent()}
+            ).model_dump(mode="json")
+        )
 
     with pytest.raises(ValidationError, match="status=completed"):
         HarnessExecutionResult(
@@ -2001,6 +2362,9 @@ def test_public_models_are_frozen_and_forbid_extras() -> None:
         Deadline,
         DiagnosticMetadata,
         HarnessExecutionResult,
+        SelectedOutputRequirement,
+        SelectedOutputAbsent,
+        SelectedOutputPresent,
     ]
     for model in frozen_models:
         config = getattr(model, "model_config")

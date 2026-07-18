@@ -28,6 +28,24 @@ from millforge.contracts import (
 
 
 @runtime_checkable
+class AsyncHttpTransport(Protocol):
+    """Caller-owned async HTTP transport accepted by the live factory.
+
+    ``httpx.AsyncBaseTransport`` implements this shape. Keeping the public
+    protocol provider-neutral preserves the package boundary that confines the
+    concrete HTTP dependency to ``millforge.model_backend``.
+    """
+
+    async def handle_async_request(self, request: Any) -> Any:
+        """Handle one async HTTP request."""
+        ...
+
+    async def aclose(self) -> None:
+        """Close transport resources when the caller chooses."""
+        ...
+
+
+@runtime_checkable
 class CancellationToken(Protocol):
     """Protocol for cancellation tokens.
 

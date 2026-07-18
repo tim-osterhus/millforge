@@ -32,11 +32,14 @@ from millforge.contracts import (
     GuardedSessionStatus,
     HarnessExecutionRequest,
     HarnessExecutionResult,
+    SelectedOutputAbsent,
+    SelectedOutputPresent,
     TerminalCertainty,
     TerminalIntent,
     TimingMetadata,
     ToolExecutionContext,
     UsageMetadata,
+    admit_selected_output,
 )
 from millforge.exceptions import (
     ArtifactWriteError,
@@ -734,6 +737,14 @@ class DefaultHarnessRuntime:
             timing=self._timing(request),
             diagnostic=diagnostic,
             terminal_certainty=TerminalCertainty.COMMITTED,
+            selected_output=(
+                terminal_intent.selected_output if terminal_intent is not None else None
+            ),
+            selected_output_schema_sha256=(
+                terminal_intent.selected_output_schema_sha256
+                if terminal_intent is not None
+                else None
+            ),
         )
 
     def _timing(self, request: HarnessExecutionRequest | None) -> TimingMetadata:
@@ -987,6 +998,48 @@ class DefaultHarnessRuntime:
             raise MillforgeConfigError("terminal_intent.run_id must match request")
         if terminal_intent.stage != request.stage:
             raise MillforgeConfigError("terminal_intent.stage must match request")
+
+        selected_output_requirement = request.selected_output
+        if selected_output_requirement is None:
+            if (
+                terminal_intent.selected_output is not None
+                or terminal_intent.selected_output_schema_sha256 is not None
+            ):
+                raise MillforgeConfigError(
+                    "terminal_intent selected output exceeds request authority"
+                )
+        else:
+            if terminal_intent.selected_output_schema_sha256 != (
+                selected_output_requirement.schema_sha256
+            ):
+                raise MillforgeConfigError(
+                    "terminal_intent selected schema digest must match request"
+                )
+            selected_output = terminal_intent.selected_output
+            if selected_output is None:
+                raise MillforgeConfigError(
+                    "terminal_intent is missing selected output admission state"
+                )
+            try:
+                if isinstance(selected_output, SelectedOutputAbsent):
+                    admitted = admit_selected_output(
+                        selected_output_requirement,
+                        present=False,
+                    )
+                elif isinstance(selected_output, SelectedOutputPresent):
+                    admitted = admit_selected_output(
+                        selected_output_requirement,
+                        present=True,
+                        value=selected_output.value,
+                    )
+                else:  # pragma: no cover - closed discriminated contract
+                    raise ValueError("unsupported selected output admission state")
+            except ValueError as exc:
+                raise MillforgeConfigError(str(exc)) from None
+            if admitted != selected_output:
+                raise MillforgeConfigError(
+                    "terminal_intent selected output is not canonically admitted"
+                )
 
         expected_terminal = plan.terminal_result_map.get(
             terminal_intent.terminal_node_id

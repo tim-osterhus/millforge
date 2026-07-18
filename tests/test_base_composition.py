@@ -27,7 +27,11 @@ from millforge.contracts import (
     StageIdentity,
     TimeoutRef,
 )
-from millforge.model_backend import CapabilityDeclarations, CapabilitySupport
+from millforge.model_backend import (
+    CapabilityDeclarations,
+    CapabilitySupport,
+    UnsupportedModelCapabilityError,
+)
 from millforge.runtime import DefaultHarnessRuntime, ExecutionStatus
 from millforge.testing import FakeModelClient
 from millforge.tools.pi_compat.process import PiCompatShellConfig
@@ -96,7 +100,9 @@ def test_composition_admits_model_reuses_shell_and_emits_sanitized_metadata(
     monkeypatch.setattr(
         composition, "millforge_base_harness_source", source_must_not_be_built
     )
-    with pytest.raises(ValueError, match="supported tool_calls"):
+    with pytest.raises(
+        UnsupportedModelCapabilityError, match="supported model capabilities"
+    ):
         create_millforge_base_components(
             model_profile=unsupported,
             cwd=tmp_path.resolve(),
