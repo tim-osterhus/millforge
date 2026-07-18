@@ -1689,7 +1689,12 @@ class ForgeToolBridge:
                 "Terminal candidate failed owned-history validation"
             )
         request = self._session_request.execution_request
-        disposition = _terminal_disposition(node.terminal_result)
+        disposition = _terminal_disposition(
+            node.terminal_result,
+            legacy_blocked_suffix=not node.binding.tool_id.startswith(
+                "builtin.pi_compat.terminal."
+            ),
+        )
         self._terminal_intent = TerminalIntent(
             request_id=request.request_id,
             run_id=request.run_id,
@@ -2096,6 +2101,8 @@ def _has_denial(records: tuple[ToolTraceDecisionRecord, ...]) -> bool:
 
 def _terminal_disposition(
     terminal_result: str,
+    *,
+    legacy_blocked_suffix: bool = False,
 ) -> Literal["success", "blocked", "rejected"]:
     if terminal_result == "COMPLETE":
         return "success"
@@ -2103,7 +2110,11 @@ def _terminal_disposition(
         return "blocked"
     if terminal_result == "REJECTED":
         return "rejected"
-    return "blocked" if terminal_result.endswith("_BLOCKED") else "success"
+    return (
+        "blocked"
+        if legacy_blocked_suffix and terminal_result.endswith("_BLOCKED")
+        else "success"
+    )
 
 
 def _model_visible_tool_content(result: ToolExecutionResult) -> str:

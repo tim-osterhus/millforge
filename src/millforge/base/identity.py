@@ -30,11 +30,16 @@ from millforge.compiler.validators import parse_tool_reference
 from millforge.contracts import CapabilityEnvelope, SelectedOutputRequirement
 from millforge.model_backend import CapabilitySupport, ResolvedModelProfile
 from millforge.tools.pi_compat_catalog import (
-    create_pi_compat_tool_snapshot,
+    _create_pi_compat_tool_snapshot_for_terminal_results,
 )
 
 from .composition import MillforgeBaseComponents
-from .harness import _TOOL_PACK_ID, millforge_base_harness_source
+from .harness import (
+    _TOOL_PACK_ID,
+    DEFAULT_BASE_TERMINAL_RESULTS,
+    _millforge_base_harness_source_for_terminal_results,
+    canonicalize_base_terminal_results,
+)
 from .platform import SUPPORTED_PLATFORMS, SupportedPlatform
 
 __all__ = [
@@ -262,7 +267,9 @@ def _required_capabilities_for_source(
     return tuple(sorted(capabilities))
 
 
-def _static_contract() -> tuple[
+def _static_contract_for_terminal_results(
+    legal_terminal_results: tuple[str, ...],
+) -> tuple[
     str,
     int,
     str,
@@ -270,11 +277,14 @@ def _static_contract() -> tuple[
     tuple[str, ...],
     str,
 ]:
-    source = millforge_base_harness_source(
+    source = _millforge_base_harness_source_for_terminal_results(
         model_profile_id="millforge-base.descriptor",
         system_instructions="millforge-base descriptor inspection",
+        legal_terminal_results=legal_terminal_results,
     )
-    tool_snapshot = create_pi_compat_tool_snapshot()
+    tool_snapshot = _create_pi_compat_tool_snapshot_for_terminal_results(
+        legal_terminal_results
+    )
     required_capabilities = _required_capabilities_for_source(source, tool_snapshot)
     terminals = tuple(
         sorted(
@@ -293,8 +303,21 @@ def _static_contract() -> tuple[
     )
 
 
-def describe_millforge_base() -> MillforgeBaseRunnerDescriptor:
+def describe_millforge_base(
+    *,
+    legal_terminal_results: tuple[str, ...] = DEFAULT_BASE_TERMINAL_RESULTS,
+) -> MillforgeBaseRunnerDescriptor:
     """Return the side-effect-free installed ``millforge-base`` descriptor."""
+
+    return _describe_millforge_base(
+        canonicalize_base_terminal_results(legal_terminal_results)
+    )
+
+
+def _describe_millforge_base(
+    legal_terminal_results: tuple[str, ...],
+) -> MillforgeBaseRunnerDescriptor:
+    """Describe an already-canonical terminal vocabulary without side effects."""
 
     (
         harness_id,
@@ -303,7 +326,7 @@ def describe_millforge_base() -> MillforgeBaseRunnerDescriptor:
         capabilities,
         terminals,
         tool_catalog_sha256,
-    ) = _static_contract()
+    ) = _static_contract_for_terminal_results(legal_terminal_results)
     payload = {
         "schema_version": _DESCRIPTOR_SCHEMA_VERSION,
         "package_name": _PACKAGE_NAME,
@@ -420,7 +443,8 @@ def _descriptor_agrees_with_components(
         and descriptor.tool_pack_id == metadata.tool_pack_id
         and descriptor.tool_catalog_sha256 == components.tool_snapshot.snapshot_sha256
         and descriptor.required_capability_ids == plan.required_capabilities
-        and descriptor.legal_terminal_result_ids == terminals
+        and descriptor.legal_terminal_result_ids == components.legal_terminal_results
+        and terminals == components.legal_terminal_results
         and all(
             profile.capabilities.state_for(capability_id) is CapabilitySupport.SUPPORTED
             for capability_id in descriptor.required_model_capability_ids

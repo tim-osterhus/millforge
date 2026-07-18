@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import math
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from millforge._forge import adapter as forge_adapter
 import millforge.tools.pi_compat_runtime as pi_compat_runtime
+from millforge.base import composition
 from millforge import (
     CancellationRef,
     CapabilityEnvelope,
@@ -47,6 +49,7 @@ from millforge.tools.pi_compat.contracts import (
     PiCompatOperationResult,
     PiCompatSideEffectState,
 )
+from millforge.tools.execution import CompiledToolBindingExecutor
 from millforge.tools.pi_compat.process import PiCompatShellConfig
 from millforge.tools.pi_compat_catalog import PI_COMPAT_TOOL_DESCRIPTORS
 from millforge.tools.results import make_tool_result
@@ -55,6 +58,7 @@ from tests.conftest import (
     FakeCancellationResolver,
     FakeClock,
     FakePlanLoader,
+    make_canonical_builder_profile_a,
     make_test_harness_execution_request,
 )
 
@@ -253,6 +257,27 @@ def _executor(
         shell_config=shell_config,
     )
     return executor, resolver
+
+
+def _configured_components(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(
+        composition,
+        "resolve_pi_compat_shell",
+        lambda: PiCompatShellConfig(executable="/test/bin/bash", arguments=("-c",)),
+    )
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    return composition.create_millforge_base_components(
+        legal_terminal_results=("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED"),
+        model_profile=make_canonical_builder_profile_a(),
+        cwd=tmp_path.resolve(),
+        cancellation_resolver=FakeCancellationResolver(),
+        prompt_date=datetime.date(2026, 7, 15),
+        home_directory=home.resolve(),
+    )
 
 
 @pytest.mark.asyncio
@@ -902,6 +927,95 @@ def test_forge_terminal_disposition_is_exact(
     disposition: str,
 ) -> None:
     assert forge_adapter._terminal_disposition(terminal_result) == disposition
+
+
+@pytest.mark.asyncio
+async def test_configured_terminal_tools_validate_exact_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _configured_components(monkeypatch, tmp_path)
+    executor = components.tool_executor.fork_for_invocation()
+    terminal_nodes = tuple(
+        node
+        for node in components.compiled_plan.nodes
+        if node.terminal_result is not None
+    )
+
+    for node in terminal_nodes:
+        assert node.terminal_result is not None
+        valid = await executor.execute_model_tool(
+            model_tool_name=node.model_tool_name,
+            call_id=f"call-{node.node_id}",
+            arguments={
+                "terminal_result": node.terminal_result,
+                "summary": "configured terminal",
+            },
+            context=_context(_DESCRIPTORS["submit"]),
+        )
+        wrong_result = "REJECTED" if node.terminal_result != "REJECTED" else "COMPLETE"
+        invalid = await executor.execute_model_tool(
+            model_tool_name=node.model_tool_name,
+            call_id=f"call-{node.node_id}-wrong",
+            arguments={
+                "terminal_result": wrong_result,
+                "summary": "wrong terminal",
+            },
+            context=_context(_DESCRIPTORS["submit"]),
+        )
+
+        assert valid.status is ToolExecutionStatus.SUCCESS
+        assert invalid.status is ToolExecutionStatus.NOT_EXECUTED
+        assert invalid.error_code == "invalid_arguments"
+
+
+@pytest.mark.asyncio
+async def test_configured_terminal_plan_corruption_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    components = _configured_components(monkeypatch, tmp_path)
+    node = next(
+        node
+        for node in components.compiled_plan.nodes
+        if node.terminal_result is not None
+    )
+    assert node.terminal_result is not None
+    corrupted = components.compiled_plan.model_copy(
+        update={
+            "terminal_result_map": {
+                **components.compiled_plan.terminal_result_map,
+                node.node_id: "REVIEW",
+            }
+        }
+    )
+    executor = CompiledToolBindingExecutor(
+        plan=corrupted,
+        descriptor_snapshot=components.tool_snapshot,
+        runtime_registry=components.tool_executor._runtime_registry,
+    )
+
+    result = await executor.execute_model_tool(
+        model_tool_name=node.model_tool_name,
+        call_id="call-corrupted-terminal-map",
+        arguments={
+            "terminal_result": node.terminal_result,
+            "summary": "configured terminal",
+        },
+        context=_context(_DESCRIPTORS["submit"]),
+    )
+
+    assert result.status is ToolExecutionStatus.NOT_EXECUTED
+    assert result.error_code == "terminal_intent_invalid"
+
+
+def test_configured_terminal_disposition_does_not_infer_from_suffix() -> None:
+    assert forge_adapter._terminal_disposition("FOO_BLOCKED") == "success"
+    assert (
+        forge_adapter._terminal_disposition(
+            "BUILDER_BLOCKED",
+            legacy_blocked_suffix=True,
+        )
+        == "blocked"
+    )
 
 
 def test_executor_factory_requires_absolute_cwd_and_bash_shell_config(

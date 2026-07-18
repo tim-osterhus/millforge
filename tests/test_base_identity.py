@@ -32,10 +32,13 @@ from millforge import (
     RuntimeArtifactWriterFactory,
     SecretRef,
     SelectedOutputRequirement,
+    create_millforge_base_components,
+    create_millforge_base_live_runner,
     create_millforge_base_runner,
     describe_millforge_base,
 )
 from millforge.base import composition
+from millforge.base.harness import millforge_base_harness_source
 from millforge.compiled_plan import finalize_compiled_plan_sha256
 from millforge.model_backend import (
     AuthenticationPolicy,
@@ -45,7 +48,11 @@ from millforge.model_backend import (
 )
 from millforge.testing import FakeModelClient
 from millforge.tools.pi_compat.process import PiCompatShellConfig
-from millforge.tools.pi_compat_catalog import create_pi_compat_tool_snapshot
+from millforge.tools.pi_compat_catalog import (
+    create_pi_compat_tool_registry,
+    create_pi_compat_tool_snapshot,
+)
+from millforge.tools.pi_compat_runtime import create_pi_compat_tool_executor
 from tests.conftest import (
     FakeArtifactWriter,
     FakeCancellationResolver,
@@ -109,7 +116,12 @@ def _canonical_bytes(payload: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def _components(monkeypatch: pytest.MonkeyPatch, root: Path):
+def _components(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    *,
+    legal_terminal_results: tuple[str, ...] = ("BLOCKED", "COMPLETE", "REJECTED"),
+):
     monkeypatch.setattr(
         composition,
         "resolve_pi_compat_shell",
@@ -121,6 +133,7 @@ def _components(monkeypatch: pytest.MonkeyPatch, root: Path):
         model_profile=make_canonical_builder_profile_a(),
         cwd=root.resolve(),
         cancellation_resolver=FakeCancellationResolver(),
+        legal_terminal_results=legal_terminal_results,
         prompt_date=datetime.date(2026, 7, 15),
         home_directory=home.resolve(),
     )
@@ -146,9 +159,15 @@ def _runner(monkeypatch: pytest.MonkeyPatch, root: Path):
 def _replace_static_contract(
     monkeypatch: pytest.MonkeyPatch, index: int, value: Any
 ) -> None:
-    original = identity._static_contract()
+    original = identity._static_contract_for_terminal_results(
+        ("BLOCKED", "COMPLETE", "REJECTED")
+    )
     changed = (*original[:index], value, *original[index + 1 :])
-    monkeypatch.setattr(identity, "_static_contract", lambda: changed)
+    monkeypatch.setattr(
+        identity,
+        "_static_contract_for_terminal_results",
+        lambda _legal_terminal_results: changed,
+    )
 
 
 def _replace_provenance_hash(
@@ -564,7 +583,7 @@ def test_provenance_hashing_fails_closed_for_invalid_records(raw: bytes) -> None
 
 
 def _base_descriptor_source():
-    return identity.millforge_base_harness_source(
+    return millforge_base_harness_source(
         model_profile_id="millforge-base.descriptor",
         system_instructions="millforge-base descriptor inspection",
     )
@@ -573,7 +592,7 @@ def _base_descriptor_source():
 def _replace_descriptor_source(monkeypatch: pytest.MonkeyPatch, source: Any) -> None:
     monkeypatch.setattr(
         identity,
-        "millforge_base_harness_source",
+        "_millforge_base_harness_source_for_terminal_results",
         lambda **_kwargs: source,
     )
 
@@ -1102,7 +1121,9 @@ async def test_tampering_is_rejected_before_any_execution_side_effect(
 
 
 def test_public_signatures_expose_only_public_millforge_types() -> None:
-    assert tuple(inspect.signature(describe_millforge_base).parameters) == ()
+    assert tuple(inspect.signature(describe_millforge_base).parameters) == (
+        "legal_terminal_results",
+    )
     assert tuple(inspect.signature(create_millforge_base_runner).parameters) == (
         "components",
         "services",
@@ -1111,3 +1132,163 @@ def test_public_signatures_expose_only_public_millforge_types() -> None:
         signature = str(inspect.signature(function))
         assert "_forge" not in signature
         assert "Millrace" not in signature
+
+
+def test_lower_level_public_signatures_remain_unchanged() -> None:
+    assert tuple(inspect.signature(millforge_base_harness_source).parameters) == (
+        "model_profile_id",
+        "system_instructions",
+    )
+    assert tuple(inspect.signature(create_pi_compat_tool_registry).parameters) == ()
+    assert tuple(inspect.signature(create_pi_compat_tool_snapshot).parameters) == ()
+    executor_signature = inspect.signature(create_pi_compat_tool_executor)
+    assert tuple(executor_signature.parameters) == (
+        "plan",
+        "cwd",
+        "cancellation_resolver",
+        "shell_config",
+    )
+    assert (
+        executor_signature.parameters["plan"].kind
+        is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert executor_signature.parameters["cwd"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_configured_terminal_vocabulary_has_one_canonical_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requested = ("REJECTED", "ESCALATED", "COMPLETE", "BLOCKED")
+    expected = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=requested,
+    )
+    descriptor = describe_millforge_base(legal_terminal_results=requested)
+
+    assert components.legal_terminal_results == expected
+    assert descriptor.legal_terminal_result_ids == expected
+    assert (
+        tuple(
+            sorted(
+                node.terminal_result
+                for node in components.harness_source.graph.nodes
+                if node.terminal_result is not None
+            )
+        )
+        == expected
+    )
+    assert (
+        tuple(sorted(components.compiled_plan.terminal_result_map.values())) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "legal_terminal_results",
+    (
+        (),
+        ("COMPLETE", "COMPLETE"),
+        ("invalid",),
+        (1,),
+        tuple(f"RESULT_{index}" for index in range(65)),
+    ),
+)
+def test_configured_terminal_vocabulary_refuses_invalid_inputs(
+    legal_terminal_results: tuple[object, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        describe_millforge_base(
+            legal_terminal_results=cast(tuple[str, ...], legal_terminal_results)
+        )
+
+
+def test_configured_terminal_vocabulary_public_signatures_are_keyword_only() -> None:
+    default = ("BLOCKED", "COMPLETE", "REJECTED")
+    for function in (
+        describe_millforge_base,
+        create_millforge_base_components,
+        create_millforge_base_live_runner,
+    ):
+        parameter = inspect.signature(function).parameters["legal_terminal_results"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default == default
+    assert tuple(inspect.signature(create_millforge_base_runner).parameters) == (
+        "components",
+        "services",
+    )
+
+
+def test_default_terminal_contract_is_byte_compatible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    default = ("BLOCKED", "COMPLETE", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=default,
+    )
+    descriptor = describe_millforge_base(legal_terminal_results=default)
+
+    assert descriptor.descriptor_sha256 == (
+        "ce4f77c4644ed22b01751abffe5960fe270ba5cbebe0d0c179c55454c347b530"
+    )
+    assert descriptor.tool_catalog_sha256 == (
+        "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
+    )
+    assert {
+        (node.node_id, node.model_tool_name, node.terminal_result)
+        for node in components.compiled_plan.nodes
+        if node.terminal_result is not None
+    } == {
+        ("submit", "submit", "COMPLETE"),
+        ("block", "block", "BLOCKED"),
+        ("reject", "reject", "REJECTED"),
+    }
+
+
+def test_configured_terminal_catalog_plan_and_descriptor_agree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=vocabulary,
+    )
+    descriptor = describe_millforge_base(legal_terminal_results=vocabulary)
+
+    assert descriptor.tool_catalog_sha256 == components.tool_snapshot.snapshot_sha256
+    assert tuple(sorted(components.compiled_plan.terminal_result_map.values())) == (
+        "BLOCKED",
+        "COMPLETE",
+        "ESCALATED",
+        "REJECTED",
+    )
+    assert tuple(
+        node.model_tool_name
+        for node in components.compiled_plan.nodes
+        if node.terminal_result is not None
+    ) == (
+        "terminal_blocked",
+        "terminal_complete",
+        "terminal_escalated",
+        "terminal_rejected",
+    )
+
+
+def test_configured_terminal_vocabulary_is_order_canonical_and_digest_bound() -> None:
+    first = describe_millforge_base(
+        legal_terminal_results=("REJECTED", "ESCALATED", "COMPLETE", "BLOCKED")
+    )
+    reordered = describe_millforge_base(
+        legal_terminal_results=("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+    )
+    changed = describe_millforge_base(
+        legal_terminal_results=("BLOCKED", "COMPLETE", "REJECTED", "REVIEW")
+    )
+
+    assert first == reordered
+    assert first.tool_catalog_sha256 != changed.tool_catalog_sha256
+    assert first.descriptor_sha256 != changed.descriptor_sha256

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from millforge.compiler.catalogs import CatalogLookupClassification
@@ -11,6 +12,7 @@ from millforge.tools.pi_compat_catalog import (
     PI_COMPAT_CAPABILITY_IDS,
     PI_COMPAT_TOOL_DESCRIPTORS,
     PI_COMPAT_TOOL_VERSION,
+    _create_pi_compat_tool_snapshot_for_terminal_results,
     create_pi_compat_tool_registry,
     create_pi_compat_tool_snapshot,
 )
@@ -364,3 +366,32 @@ def test_pi_compat_catalog_is_separate_from_governed_catalog() -> None:
         )
         assert lookup.classification is CatalogLookupClassification.MISSING
         assert lookup.entry is None
+
+
+def test_configured_terminal_catalog_uses_exact_generated_identities() -> None:
+    long_result = "R" * 49
+    vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", long_result)
+    snapshot = _create_pi_compat_tool_snapshot_for_terminal_results(vocabulary)
+
+    for result_id in vocabulary:
+        slug = result_id.lower()
+        token = (
+            slug
+            if len(slug) <= 48
+            else f"{slug[:39]}_{hashlib.sha256(result_id.encode()).hexdigest()[:8]}"
+        )
+        lookup = snapshot.resolve_exact(f"builtin.pi_compat.terminal.{token}", 1)
+
+        assert lookup.classification is CatalogLookupClassification.FOUND
+        assert lookup.entry is not None
+        assert lookup.entry.implementation_id == (
+            f"impl.builtin.pi_compat.terminal.{token}.v1"
+        )
+        assert lookup.entry.model_tool_name == f"terminal_{token}"
+        assert lookup.entry.description == (
+            f"Return terminal result {result_id} with a nonblank summary."
+        )
+        assert dict(lookup.entry.input_schema["properties"]["terminal_result"]) == {
+            "type": "string",
+            "enum": (result_id,),
+        }

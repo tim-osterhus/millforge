@@ -193,3 +193,20 @@ def test_base_docs_state_the_compatible_unrestricted_surface_and_deferrals() -> 
         "Millrace default selection, external workflow mapping, and live efficacy"
         in section
     )
+
+
+def test_default_base_public_contract_is_unchanged() -> None:
+    default = ("BLOCKED", "COMPLETE", "REJECTED")
+
+    descriptor = millforge.describe_millforge_base(legal_terminal_results=default)
+    base_descriptor = millforge_base.describe_millforge_base(
+        legal_terminal_results=default
+    )
+
+    assert descriptor == base_descriptor == millforge.describe_millforge_base()
+    assert descriptor.descriptor_sha256 == (
+        "ce4f77c4644ed22b01751abffe5960fe270ba5cbebe0d0c179c55454c347b530"
+    )
+    assert descriptor.tool_catalog_sha256 == (
+        "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
+    )

@@ -42,17 +42,18 @@ from millforge.protocols import (
     RuntimeArtifactWriter,
     RuntimeClock,
 )
-from .composition import MillforgeBaseComponents, create_millforge_base_components
+from .composition import MillforgeBaseComponents, _create_millforge_base_components
 from .identity import (
     MillforgeBaseRunnerDescriptor,
     MillforgeInvocationEvidence,
     _build_invocation_evidence,
     _descriptor_agrees_with_components,
+    _describe_millforge_base,
     _has_valid_descriptor_digest,
     _has_valid_invocation_digest,
     _MILLFORGE_BASE_STAGE_IDENTITY,
-    describe_millforge_base,
 )
+from .harness import DEFAULT_BASE_TERMINAL_RESULTS, canonicalize_base_terminal_results
 from .platform import _require_supported_platform
 from .options import MillforgeBaseOptions
 
@@ -166,7 +167,7 @@ class MillforgeBaseRunner:
         _require_supported_platform()
         self._components = components
         self._services = services
-        self._descriptor = describe_millforge_base()
+        self._descriptor = _describe_millforge_base(components.legal_terminal_results)
         self._verify_component_composition()
         self._verify_identity_evidence()
 
@@ -216,7 +217,9 @@ class MillforgeBaseRunner:
     def _verify_identity_evidence(self) -> None:
         if not _has_valid_descriptor_digest(self._descriptor):
             raise MillforgeBaseBindingError("descriptor_hash")
-        current_descriptor = describe_millforge_base()
+        current_descriptor = _describe_millforge_base(
+            self._components.legal_terminal_results
+        )
         if (
             self._descriptor != current_descriptor
             or not _descriptor_agrees_with_components(
@@ -248,6 +251,14 @@ class MillforgeBaseRunner:
         metadata = self._components.metadata
         capabilities = self._components.capability_envelope
         profile = self._components.model_profile
+        terminal_results = tuple(sorted(plan.terminal_result_map.values()))
+        source_terminal_results = tuple(
+            sorted(
+                node.terminal_result
+                for node in self._components.harness_source.graph.nodes
+                if node.terminal_result is not None
+            )
+        )
         if (
             metadata.harness_id != plan.harness_id
             or metadata.compiled_sha256 != plan.compiled_sha256
@@ -259,6 +270,8 @@ class MillforgeBaseRunner:
             or tuple(grant.capability_id for grant in capabilities.grants)
             != plan.required_capabilities
             or any(grant.constraints is not None for grant in capabilities.grants)
+            or self._components.legal_terminal_results != terminal_results
+            or self._components.legal_terminal_results != source_terminal_results
         ):
             raise MillforgeBaseBindingError("backend_composition")
 
@@ -416,6 +429,7 @@ def _validate_live_profile(
 
 async def create_millforge_base_live_runner(
     *,
+    legal_terminal_results: tuple[str, ...] = DEFAULT_BASE_TERMINAL_RESULTS,
     profile_id: str,
     model_profile: ResolvedModelProfile,
     secret_ref: SecretRef,
@@ -439,6 +453,9 @@ async def create_millforge_base_live_runner(
     one logical profile and the matching immutable resolved profile are admitted.
     """
     _require_supported_platform()
+    canonical_terminal_results = canonicalize_base_terminal_results(
+        legal_terminal_results
+    )
     if not isinstance(timeouts, OpenAICompatibleTimeouts):
         raise ModelBackendConfigError("timeouts must be OpenAICompatibleTimeouts")
     if not isinstance(clock, RuntimeClock):
@@ -457,7 +474,8 @@ async def create_millforge_base_live_runner(
     )
 
     try:
-        components = create_millforge_base_components(
+        components = _create_millforge_base_components(
+            legal_terminal_results=canonical_terminal_results,
             model_profile=admitted_profile,
             cwd=cwd,
             cancellation_resolver=cancellation_resolver,

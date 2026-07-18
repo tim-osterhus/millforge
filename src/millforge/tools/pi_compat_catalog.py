@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from typing import Any
 
@@ -17,6 +18,7 @@ from millforge.tools.registry import (
 JsonObject = dict[str, Any]
 
 PI_COMPAT_TOOL_VERSION = 1
+DEFAULT_BASE_TERMINAL_RESULTS: tuple[str, ...] = ("BLOCKED", "COMPLETE", "REJECTED")
 
 PI_COMPAT_CAP_FILESYSTEM_READ = "unrestricted.filesystem.read"
 PI_COMPAT_CAP_FILESYSTEM_WRITE = "unrestricted.filesystem.write"
@@ -307,11 +309,62 @@ PI_COMPAT_TOOL_DESCRIPTORS: tuple[ToolDescriptor, ...] = (
 )
 
 
+def _configured_terminal_descriptors(
+    legal_terminal_results: tuple[str, ...],
+) -> tuple[ToolDescriptor, ...]:
+    tokens = tuple(_terminal_token(result) for result in legal_terminal_results)
+    if len(set(tokens)) != len(tokens):
+        raise ValueError("configured terminal tool identities collide")
+    return tuple(
+        _descriptor(
+            tool_id=f"builtin.pi_compat.terminal.{token}",
+            model_tool_name=f"terminal_{token}",
+            description=(
+                f"Return terminal result {result_id} with a nonblank summary."
+            ),
+            input_schema=_terminal_input_schema(result_id),
+            required_capabilities=(PI_COMPAT_CAP_TERMINAL_INTENT,),
+            side_effect_class=SideEffectClass.TERMINAL,
+            idempotency=IdempotencyClass.NON_IDEMPOTENT,
+            timeout_policy=_TERMINAL_TIMEOUT_POLICY,
+        )
+        for result_id, token in zip(legal_terminal_results, tokens, strict=True)
+    )
+
+
+def _terminal_token(result_id: str) -> str:
+    slug = result_id.lower()
+    if len(slug) <= 48:
+        return slug
+    return f"{slug[:39]}_{hashlib.sha256(result_id.encode()).hexdigest()[:8]}"
+
+
+def _descriptors_for_terminal_results(
+    legal_terminal_results: tuple[str, ...],
+) -> tuple[ToolDescriptor, ...]:
+    if legal_terminal_results == DEFAULT_BASE_TERMINAL_RESULTS:
+        return PI_COMPAT_TOOL_DESCRIPTORS
+    return (
+        *PI_COMPAT_TOOL_DESCRIPTORS[:-3],
+        *_configured_terminal_descriptors(legal_terminal_results),
+    )
+
+
 def create_pi_compat_tool_registry() -> ToolRegistry:
     """Create a registry populated only with Pi-compatible descriptors."""
 
+    return _create_pi_compat_tool_registry_for_terminal_results(
+        DEFAULT_BASE_TERMINAL_RESULTS
+    )
+
+
+def _create_pi_compat_tool_registry_for_terminal_results(
+    legal_terminal_results: tuple[str, ...],
+) -> ToolRegistry:
+    """Create a registry from already-canonical terminal configuration."""
+
     registry = ToolRegistry()
-    for descriptor in PI_COMPAT_TOOL_DESCRIPTORS:
+    for descriptor in _descriptors_for_terminal_results(legal_terminal_results):
         registry.register(descriptor)
     return registry
 
@@ -319,7 +372,19 @@ def create_pi_compat_tool_registry() -> ToolRegistry:
 def create_pi_compat_tool_snapshot() -> ToolCatalogSnapshot:
     """Create a frozen exact-version snapshot for the Pi-compatible catalog."""
 
-    return create_pi_compat_tool_registry().freeze()
+    return _create_pi_compat_tool_snapshot_for_terminal_results(
+        DEFAULT_BASE_TERMINAL_RESULTS
+    )
+
+
+def _create_pi_compat_tool_snapshot_for_terminal_results(
+    legal_terminal_results: tuple[str, ...],
+) -> ToolCatalogSnapshot:
+    """Create a frozen snapshot from already-canonical terminal configuration."""
+
+    return _create_pi_compat_tool_registry_for_terminal_results(
+        legal_terminal_results
+    ).freeze()
 
 
 __all__ = [

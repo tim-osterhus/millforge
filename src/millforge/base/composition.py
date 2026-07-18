@@ -38,9 +38,11 @@ from millforge.tools.pi_compat.process import (
 )
 from millforge.tools.pi_compat_catalog import (
     PI_COMPAT_TOOL_DESCRIPTORS,
-    create_pi_compat_tool_snapshot,
+    _create_pi_compat_tool_snapshot_for_terminal_results,
 )
-from millforge.tools.pi_compat_runtime import create_pi_compat_tool_executor
+from millforge.tools.pi_compat_runtime import (
+    _create_pi_compat_tool_executor_for_terminal_results,
+)
 
 from .context import (
     MillforgeBaseContextSnapshot,
@@ -51,7 +53,9 @@ from .harness import (
     _HARNESS_ID,
     _STAGE_KIND,
     _TOOL_PACK_ID,
-    millforge_base_harness_source,
+    DEFAULT_BASE_TERMINAL_RESULTS,
+    _millforge_base_harness_source_for_terminal_results,
+    canonicalize_base_terminal_results,
 )
 from .options import MillforgeBaseOptions
 from .platform import _require_supported_platform
@@ -168,6 +172,7 @@ class MillforgeBaseMetadata(BaseModel):
 class MillforgeBaseComponents:
     """Fully composed transient components for one base-preset invocation."""
 
+    legal_terminal_results: tuple[str, ...]
     options: MillforgeBaseOptions
     context: MillforgeBaseContextSnapshot
     prompt: MillforgeBasePromptSnapshot
@@ -272,6 +277,7 @@ def _metadata(
 
 def create_millforge_base_components(
     *,
+    legal_terminal_results: tuple[str, ...] = DEFAULT_BASE_TERMINAL_RESULTS,
     model_profile: ResolvedModelProfile,
     cwd: Path,
     cancellation_resolver: CancellationResolver,
@@ -280,6 +286,31 @@ def create_millforge_base_components(
     home_directory: Path | None = None,
 ) -> MillforgeBaseComponents:
     """Compose the unrestricted preset without making a provider request."""
+
+    return _create_millforge_base_components(
+        legal_terminal_results=canonicalize_base_terminal_results(
+            legal_terminal_results
+        ),
+        model_profile=model_profile,
+        cwd=cwd,
+        cancellation_resolver=cancellation_resolver,
+        options=options,
+        prompt_date=prompt_date,
+        home_directory=home_directory,
+    )
+
+
+def _create_millforge_base_components(
+    *,
+    legal_terminal_results: tuple[str, ...],
+    model_profile: ResolvedModelProfile,
+    cwd: Path,
+    cancellation_resolver: CancellationResolver,
+    options: MillforgeBaseOptions | None = None,
+    prompt_date: datetime.date | None = None,
+    home_directory: Path | None = None,
+) -> MillforgeBaseComponents:
+    """Compose a base preset from already-canonical terminal configuration."""
 
     _require_supported_platform()
 
@@ -315,17 +346,20 @@ def create_millforge_base_components(
         prompt_date=effective_prompt_date,
     )
     shell_config = resolve_pi_compat_shell()
-    source = millforge_base_harness_source(
+    source = _millforge_base_harness_source_for_terminal_results(
         model_profile_id=model_profile.profile_id,
         system_instructions=prompt.system_instructions,
+        legal_terminal_results=legal_terminal_results,
     )
-    tool_snapshot = create_pi_compat_tool_snapshot()
+    tool_snapshot = _create_pi_compat_tool_snapshot_for_terminal_results(
+        legal_terminal_results
+    )
     capability_envelope = _capability_envelope()
     compiled_plan = compile_harness_source_in_memory(
         request_id="millforge-base.v1",
         source=source,
         stage_kind_id=_STAGE_KIND,
-        legal_terminal_results=("COMPLETE", "BLOCKED", "REJECTED"),
+        legal_terminal_results=legal_terminal_results,
         capability_envelope=capability_envelope,
         tool_catalog=tool_snapshot,
         model_profile_catalog=_model_profile_catalog(model_profile.profile_id),
@@ -337,11 +371,12 @@ def create_millforge_base_components(
     ):
         raise RuntimeError("millforge-base capability envelope does not match its plan")
 
-    tool_executor = create_pi_compat_tool_executor(
+    tool_executor = _create_pi_compat_tool_executor_for_terminal_results(
         compiled_plan,
         cwd=resolved_cwd,
         cancellation_resolver=cancellation_resolver,
         shell_config=shell_config,
+        legal_terminal_results=legal_terminal_results,
     )
     metadata = _metadata(
         model_profile=model_profile,
@@ -353,6 +388,7 @@ def create_millforge_base_components(
         compiled_plan=compiled_plan,
     )
     return MillforgeBaseComponents(
+        legal_terminal_results=legal_terminal_results,
         options=effective_options,
         context=context,
         prompt=prompt,

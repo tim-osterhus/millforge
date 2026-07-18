@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,8 +34,9 @@ from millforge.tools.results import (
 from millforge.tools.registry import ToolDescriptor
 
 from .pi_compat_catalog import (
-    PI_COMPAT_TOOL_DESCRIPTORS,
-    create_pi_compat_tool_snapshot,
+    DEFAULT_BASE_TERMINAL_RESULTS,
+    _create_pi_compat_tool_snapshot_for_terminal_results,
+    _descriptors_for_terminal_results,
 )
 
 __all__ = ["create_pi_compat_tool_executor"]
@@ -113,13 +114,33 @@ def create_pi_compat_tool_executor(
 ) -> CompiledToolBindingExecutor:
     """Create a plan-scoped executor for the Pi-compatible tool catalog."""
 
+    return _create_pi_compat_tool_executor_for_terminal_results(
+        plan,
+        cwd=cwd,
+        cancellation_resolver=cancellation_resolver,
+        shell_config=shell_config,
+        legal_terminal_results=DEFAULT_BASE_TERMINAL_RESULTS,
+    )
+
+
+def _create_pi_compat_tool_executor_for_terminal_results(
+    plan: CompiledHarnessPlan,
+    *,
+    cwd: Path,
+    cancellation_resolver: CancellationResolver,
+    shell_config: PiCompatShellConfig | None,
+    legal_terminal_results: tuple[str, ...],
+) -> CompiledToolBindingExecutor:
+    """Create an executor from already-canonical terminal configuration."""
+
     if not cwd.is_absolute():
         raise ValueError("cwd must be absolute")
     if _plan_uses_bash(plan) and shell_config is None:
         raise ValueError("Pi-compatible bash requires a resolved shell_config")
 
     descriptors = {
-        descriptor.tool_id: descriptor for descriptor in PI_COMPAT_TOOL_DESCRIPTORS
+        descriptor.tool_id: descriptor
+        for descriptor in _descriptors_for_terminal_results(legal_terminal_results)
     }
     read = descriptors["builtin.pi_compat.read"]
     bash = descriptors["builtin.pi_compat.bash"]
@@ -128,9 +149,6 @@ def create_pi_compat_tool_executor(
     grep = descriptors["builtin.pi_compat.grep"]
     find = descriptors["builtin.pi_compat.find"]
     ls = descriptors["builtin.pi_compat.ls"]
-    submit = descriptors["builtin.pi_compat.submit"]
-    block = descriptors["builtin.pi_compat.block"]
-    reject = descriptors["builtin.pi_compat.reject"]
 
     registry = RuntimeToolRegistry()
 
@@ -256,21 +274,6 @@ def create_pi_compat_tool_executor(
             ),
         )
 
-    def submit_implementation(
-        call: ValidatedToolCall, _context: ToolExecutionContext
-    ) -> ToolExecutionResult:
-        return _terminal_result(call, submit)
-
-    def block_implementation(
-        call: ValidatedToolCall, _context: ToolExecutionContext
-    ) -> ToolExecutionResult:
-        return _terminal_result(call, block)
-
-    def reject_implementation(
-        call: ValidatedToolCall, _context: ToolExecutionContext
-    ) -> ToolExecutionResult:
-        return _terminal_result(call, reject)
-
     registry.register(read.implementation_id, read_implementation)
     registry.register(bash.implementation_id, bash_implementation)
     registry.register(edit.implementation_id, edit_implementation)
@@ -278,19 +281,35 @@ def create_pi_compat_tool_executor(
     registry.register(grep.implementation_id, grep_implementation)
     registry.register(find.implementation_id, find_implementation)
     registry.register(ls.implementation_id, ls_implementation)
-    registry.register(submit.implementation_id, submit_implementation)
-    registry.register(block.implementation_id, block_implementation)
-    registry.register(reject.implementation_id, reject_implementation)
+    for descriptor in descriptors.values():
+        if descriptor.side_effect_class.value == "terminal":
+            registry.register(
+                descriptor.implementation_id,
+                _terminal_implementation(descriptor),
+            )
 
     return CompiledToolBindingExecutor(
         plan=plan,
-        descriptor_snapshot=create_pi_compat_tool_snapshot(),
+        descriptor_snapshot=_create_pi_compat_tool_snapshot_for_terminal_results(
+            legal_terminal_results
+        ),
         runtime_registry=registry,
     )
 
 
 def _plan_uses_bash(plan: CompiledHarnessPlan) -> bool:
     return any(node.binding.tool_id == "builtin.pi_compat.bash" for node in plan.nodes)
+
+
+def _terminal_implementation(
+    descriptor: ToolDescriptor,
+) -> Callable[[ValidatedToolCall, ToolExecutionContext], ToolExecutionResult]:
+    def implementation(
+        call: ValidatedToolCall, _context: ToolExecutionContext
+    ) -> ToolExecutionResult:
+        return _terminal_result(call, descriptor)
+
+    return implementation
 
 
 def _bash_timeout_seconds(

@@ -137,7 +137,7 @@ def test_runner_creation_refuses_before_descriptor_or_component_inspection(
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         runner_module,
-        "describe_millforge_base",
+        "_describe_millforge_base",
         lambda: pytest.fail("runner creation inspected the descriptor"),
     )
 
@@ -154,7 +154,7 @@ def test_direct_runner_construction_refuses_before_component_inspection(
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         runner_module,
-        "describe_millforge_base",
+        "_describe_millforge_base",
         lambda: pytest.fail("direct construction inspected the descriptor"),
     )
 

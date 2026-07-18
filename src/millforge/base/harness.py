@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from millforge.compiler.source import HarnessSource
+from millforge.compiler.validators import validate_terminal_result, validate_unique
+from millforge.tools.pi_compat_catalog import (
+    DEFAULT_BASE_TERMINAL_RESULTS,
+    _terminal_token,
+)
 
 __all__ = ["millforge_base_harness_source"]
 
@@ -26,12 +31,62 @@ _NODES = (
 )
 
 
+def canonicalize_base_terminal_results(
+    legal_terminal_results: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Validate and sort the bounded terminal vocabulary once at the public edge."""
+
+    if not isinstance(legal_terminal_results, tuple):
+        raise ValueError("legal_terminal_results must be a tuple")
+    if not 1 <= len(legal_terminal_results) <= 64:
+        raise ValueError("legal_terminal_results must contain 1 through 64 values")
+    if any(not isinstance(result, str) for result in legal_terminal_results):
+        raise ValueError("legal_terminal_results values must be strings")
+    for result in legal_terminal_results:
+        validate_terminal_result(result)
+    validate_unique(legal_terminal_results, "legal_terminal_results")
+    return tuple(sorted(legal_terminal_results))
+
+
+def _terminal_nodes(
+    legal_terminal_results: tuple[str, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    if legal_terminal_results == DEFAULT_BASE_TERMINAL_RESULTS:
+        return _NODES[-3:]
+    tokens = tuple(_terminal_token(result) for result in legal_terminal_results)
+    if len(set(tokens)) != len(tokens):
+        raise ValueError("configured terminal tool identities collide")
+    return tuple(
+        (
+            f"terminal_{token}",
+            f"builtin.pi_compat.terminal.{token}@1",
+            result,
+        )
+        for result, token in zip(legal_terminal_results, tokens, strict=True)
+    )
+
+
 def millforge_base_harness_source(
     *,
     model_profile_id: str,
     system_instructions: str,
 ) -> HarnessSource:
     """Materialize the unrestricted preset as an ordinary harness source."""
+
+    return _millforge_base_harness_source_for_terminal_results(
+        model_profile_id=model_profile_id,
+        system_instructions=system_instructions,
+        legal_terminal_results=DEFAULT_BASE_TERMINAL_RESULTS,
+    )
+
+
+def _millforge_base_harness_source_for_terminal_results(
+    *,
+    model_profile_id: str,
+    system_instructions: str,
+    legal_terminal_results: tuple[str, ...],
+) -> HarnessSource:
+    """Materialize the preset from already-canonical terminal configuration."""
 
     return HarnessSource.model_validate(
         {
@@ -69,7 +124,10 @@ def millforge_base_harness_source(
                         "terminal_result": terminal_result,
                         "produces": (),
                     }
-                    for node_id, tool_ref, terminal_result in _NODES
+                    for node_id, tool_ref, terminal_result in (
+                        *_NODES[:-3],
+                        *_terminal_nodes(legal_terminal_results),
+                    )
                 )
             },
             "artifacts": {

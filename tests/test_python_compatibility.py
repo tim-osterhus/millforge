@@ -74,7 +74,7 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     )
     monkeypatch.setattr(
         composition,
-        "create_pi_compat_tool_executor",
+        "_create_pi_compat_tool_executor_for_terminal_results",
         lambda *_args, **_kwargs: object(),
     )
 

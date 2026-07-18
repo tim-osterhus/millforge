@@ -55,7 +55,9 @@ def _components(
     shell_config = _fake_shell_config()
     shell_resolutions: list[PiCompatShellConfig] = []
     executor_shell_configs: list[PiCompatShellConfig | None] = []
-    original_executor_factory = composition.create_pi_compat_tool_executor
+    original_executor_factory = (
+        composition._create_pi_compat_tool_executor_for_terminal_results
+    )
 
     def resolve_shell() -> PiCompatShellConfig:
         shell_resolutions.append(shell_config)
@@ -66,7 +68,11 @@ def _components(
         return original_executor_factory(*args, **kwargs)
 
     monkeypatch.setattr(composition, "resolve_pi_compat_shell", resolve_shell)
-    monkeypatch.setattr(composition, "create_pi_compat_tool_executor", create_executor)
+    monkeypatch.setattr(
+        composition,
+        "_create_pi_compat_tool_executor_for_terminal_results",
+        create_executor,
+    )
     home_directory = tmp_path / "home"
     home_directory.mkdir()
     components = create_millforge_base_components(
@@ -98,7 +104,9 @@ def test_composition_admits_model_reuses_shell_and_emits_sanitized_metadata(
         raise AssertionError("source construction must follow model admission")
 
     monkeypatch.setattr(
-        composition, "millforge_base_harness_source", source_must_not_be_built
+        composition,
+        "_millforge_base_harness_source_for_terminal_results",
+        source_must_not_be_built,
     )
     with pytest.raises(
         UnsupportedModelCapabilityError, match="supported model capabilities"

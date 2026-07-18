@@ -69,7 +69,12 @@ from tests.conftest import (
 )
 
 
-def _components(monkeypatch: pytest.MonkeyPatch, root: Path) -> MillforgeBaseComponents:
+def _components(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    *,
+    legal_terminal_results: tuple[str, ...] = ("BLOCKED", "COMPLETE", "REJECTED"),
+) -> MillforgeBaseComponents:
     monkeypatch.setattr(
         composition,
         "resolve_pi_compat_shell",
@@ -81,6 +86,7 @@ def _components(monkeypatch: pytest.MonkeyPatch, root: Path) -> MillforgeBaseCom
         model_profile=make_canonical_builder_profile_a(),
         cwd=root.resolve(),
         cancellation_resolver=FakeCancellationResolver(),
+        legal_terminal_results=legal_terminal_results,
         prompt_date=datetime.date(2026, 7, 15),
         home_directory=home.resolve(),
     )
@@ -210,6 +216,37 @@ def _terminal_response(
                 ModelToolCall(
                     call_id=f"call-{name}-{call_suffix}",
                     name=name,
+                    arguments=ParsedToolArguments(value=arguments),
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+        usage=None,
+    )
+
+
+def _configured_terminal_response(
+    model_id: str,
+    *,
+    terminal_result: str,
+    candidate: Any = _CANDIDATE_OMITTED,
+) -> ModelCompletionResponse:
+    arguments: dict[str, Any] = {
+        "terminal_result": terminal_result,
+        "summary": f"{terminal_result} summary",
+    }
+    if candidate is not _CANDIDATE_OMITTED:
+        arguments["candidate"] = candidate
+    tool_name = f"terminal_{terminal_result.lower()}"
+    return ModelCompletionResponse(
+        provider_request_id=f"provider-{tool_name}",
+        model_id=model_id,
+        message=AssistantMessage(
+            content="configured terminal",
+            tool_calls=(
+                ModelToolCall(
+                    call_id=f"call-{tool_name}",
+                    name=tool_name,
                     arguments=ParsedToolArguments(value=arguments),
                 ),
             ),
@@ -1643,3 +1680,292 @@ async def test_public_live_factory_cancellation_interrupts_blocked_model_call(
     assert result.status is ExecutionStatus.INTERRUPTED
     assert result.result_class is ExecutionResultClass.CANCELLED
     await live_runner.aclose()
+
+
+def test_runner_uses_components_terminal_vocabulary_for_descriptor_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vocabulary = ("BLOCKED", "COMPLETE", "FOO_BLOCKED", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=vocabulary,
+    )
+
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=FakeModelClient(),
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+        ),
+    )
+
+    assert runner.descriptor.legal_terminal_result_ids == vocabulary
+    assert (
+        runner.descriptor.tool_catalog_sha256
+        == components.tool_snapshot.snapshot_sha256
+    )
+
+
+def test_configured_descriptor_drift_refuses_before_model_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=vocabulary,
+    )
+    model = FakeModelClient()
+    tampered = replace(
+        components,
+        legal_terminal_results=("BLOCKED", "COMPLETE", "REJECTED", "REVIEW"),
+    )
+
+    with pytest.raises(MillforgeBaseBindingError) as caught:
+        create_millforge_base_runner(
+            components=tampered,
+            services=MillforgeBaseRuntimeServices(
+                model_client=model,
+                clock=FakeClock(),
+                cancellation_resolver=FakeCancellationResolver(),
+            ),
+        )
+
+    assert caught.value.reason == "backend_composition"
+    assert model.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_four_result_lifecycle_preserves_exact_invocation_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vocabulary = ("BLOCKED", "COMPLETE", "FOO_BLOCKED", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=vocabulary,
+    )
+
+    for terminal_result in vocabulary:
+        model = FakeModelClient(
+            responses=[
+                _configured_terminal_response(
+                    components.model_profile.profile_id,
+                    terminal_result=terminal_result,
+                )
+            ]
+        )
+        runner = create_millforge_base_runner(
+            components=components,
+            services=MillforgeBaseRuntimeServices(
+                model_client=model,
+                clock=FakeClock(monotonic_value=1.0),
+                cancellation_resolver=FakeCancellationResolver(),
+                artifact_writer_factory=cast(
+                    RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+                ),
+            ),
+        )
+        request = _request(
+            components,
+            tmp_path / terminal_result.lower(),
+            suffix=terminal_result.lower(),
+        )
+
+        evidence = runner.invocation_evidence_for(request)
+        result = await runner.execute(request)
+
+        assert evidence.descriptor_sha256 == runner.descriptor.descriptor_sha256
+        assert result.terminal_intent is not None
+        assert result.terminal_intent.terminal_result == terminal_result
+        assert (
+            result.terminal_intent.disposition
+            == {
+                "BLOCKED": "blocked",
+                "COMPLETE": "success",
+                "FOO_BLOCKED": "success",
+                "REJECTED": "rejected",
+            }[terminal_result]
+        )
+
+
+@pytest.mark.asyncio
+async def test_configured_terminal_preserves_selected_output_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+    components = _components(
+        monkeypatch,
+        tmp_path,
+        legal_terminal_results=vocabulary,
+    )
+    selected_output_schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "integer"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    required_output = SelectedOutputRequirement(
+        required=True,
+        json_schema=selected_output_schema,
+    )
+    optional_output = SelectedOutputRequirement(
+        required=False,
+        json_schema=selected_output_schema,
+    )
+    model = FakeModelClient(
+        responses=[
+            _configured_terminal_response(
+                components.model_profile.profile_id,
+                terminal_result="ESCALATED",
+                candidate={"answer": 7},
+            ),
+            _configured_terminal_response(
+                components.model_profile.profile_id,
+                terminal_result="ESCALATED",
+            ),
+            _configured_terminal_response(
+                components.model_profile.profile_id,
+                terminal_result="ESCALATED",
+            ),
+        ]
+    )
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(monotonic_value=1.0),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+            ),
+        ),
+    )
+    request = _request(components, tmp_path / "selected", suffix="selected")
+    required_request = request.model_copy(update={"selected_output": required_output})
+    optional_request = request.model_copy(update={"selected_output": optional_output})
+
+    required_evidence = runner.invocation_evidence_for(required_request)
+    optional_evidence = runner.invocation_evidence_for(optional_request)
+    no_output_evidence = runner.invocation_evidence_for(request)
+    required_result = await runner.execute(required_request)
+    optional_result = await runner.execute(optional_request)
+    no_output_result = await runner.execute(request)
+
+    assert required_result.terminal_intent is not None
+    assert required_result.terminal_intent.terminal_result == "ESCALATED"
+    assert required_result.selected_output == SelectedOutputPresent(value={"answer": 7})
+    assert optional_result.selected_output == SelectedOutputAbsent()
+    assert no_output_result.selected_output is None
+    assert no_output_result.selected_output_schema_sha256 is None
+    assert (
+        required_evidence.selected_output_schema_sha256,
+        required_evidence.selected_output_required,
+    ) == (required_output.schema_sha256, True)
+    assert (
+        optional_evidence.selected_output_schema_sha256,
+        optional_evidence.selected_output_required,
+    ) == (optional_output.schema_sha256, False)
+    assert (
+        no_output_evidence.selected_output_schema_sha256,
+        no_output_evidence.selected_output_required,
+    ) == (None, None)
+    assert required_output.schema_sha256 == optional_output.schema_sha256
+    assert required_evidence.invocation_sha256 != optional_evidence.invocation_sha256
+    assert optional_evidence.invocation_sha256 != no_output_evidence.invocation_sha256
+    required_tool, optional_tool, no_output_tool = (
+        next(tool for tool in model_request.tools if tool.name == "terminal_escalated")
+        for model_request in model.requests
+    )
+    assert (
+        required_tool.input_schema["properties"]["candidate"]
+        == required_output.json_schema
+    )
+    assert "candidate" in required_tool.input_schema["required"]
+    assert (
+        optional_tool.input_schema["properties"]["candidate"]
+        == optional_output.json_schema
+    )
+    assert "candidate" not in optional_tool.input_schema["required"]
+    assert "candidate" not in no_output_tool.input_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_live_factory_propagates_configured_terminal_vocabulary_and_closes_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_live_shell(monkeypatch)
+    vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = make_canonical_builder_profile_a()
+    secret_ref = cast(SecretRef, profile.authentication.secret_ref)
+    secret_resolver = _LiveSecretResolver(secret_ref, "sk-configured-live")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["model"] == profile.model_id
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "model": profile.model_id,
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "Escalate.",
+                            "tool_calls": [
+                                {
+                                    "id": "call-terminal-escalated",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "terminal_escalated",
+                                        "arguments": (
+                                            '{"summary":"configured live",'
+                                            '"terminal_result":"ESCALATED"}'
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+            request=request,
+        )
+
+    live_runner = await create_millforge_base_live_runner(
+        legal_terminal_results=vocabulary,
+        profile_id=profile.profile_id,
+        model_profile=profile,
+        secret_ref=secret_ref,
+        secret_resolver=secret_resolver,
+        cwd=tmp_path.resolve(),
+        clock=FakeClock(monotonic_value=1.0),
+        cancellation_resolver=FakeCancellationResolver(),
+        artifact_writer_factory=cast(
+            RuntimeArtifactWriterFactory, lambda _path: FakeArtifactWriter()
+        ),
+        timeouts=_live_timeouts(),
+        http_transport=_RecordingHttpTransport(handler),
+        prompt_date=datetime.date(2026, 7, 15),
+        home_directory=home.resolve(),
+    )
+    request = _request(
+        live_runner.components, tmp_path / "run-configured-live"
+    ).model_copy(update={"secret_refs": (secret_ref,)})
+
+    result = await live_runner.execute(request)
+    await live_runner.aclose()
+    close_task = live_runner._close_task
+    await live_runner.aclose()
+
+    assert live_runner.components.legal_terminal_results == vocabulary
+    assert live_runner.descriptor.legal_terminal_result_ids == vocabulary
+    assert result.terminal_intent is not None
+    assert result.terminal_intent.terminal_result == "ESCALATED"
+    assert close_task is not None
+    assert live_runner._close_task is close_task
