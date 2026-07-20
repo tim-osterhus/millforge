@@ -63,6 +63,7 @@ PUBLIC_EXPORTS = BASE_EXPORTS + (
     "SelectedOutputAbsent",
     "SelectedOutputPresent",
     "SelectedOutputRequirement",
+    "TerminalSelectedOutputRequirement",
     "MAX_SELECTED_OUTPUT_ARRAY_ITEMS",
     "MAX_SELECTED_OUTPUT_NESTING_DEPTH",
     "MAX_SELECTED_OUTPUT_OBJECT_PROPERTIES",
@@ -195,7 +196,7 @@ def test_base_docs_state_the_compatible_unrestricted_surface_and_deferrals() -> 
     )
 
 
-def test_default_base_public_contract_is_unchanged() -> None:
+def test_default_base_public_contract_uses_successor_identity() -> None:
     default = ("BLOCKED", "COMPLETE", "REJECTED")
 
     descriptor = millforge.describe_millforge_base(legal_terminal_results=default)
@@ -204,8 +205,13 @@ def test_default_base_public_contract_is_unchanged() -> None:
     )
 
     assert descriptor == base_descriptor == millforge.describe_millforge_base()
+    assert (
+        descriptor.schema_version,
+        descriptor.runner_version,
+        descriptor.artifact_contract_version,
+    ) == ("1.0", 2, "millforge.runtime-artifacts.v2")
     assert descriptor.descriptor_sha256 == (
-        "ce4f77c4644ed22b01751abffe5960fe270ba5cbebe0d0c179c55454c347b530"
+        "a44cc37e4ea67208e21ed3333c9807e566c81cc0fc98452fa44f1fe0da2608fb"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"

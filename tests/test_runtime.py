@@ -64,7 +64,10 @@ from millforge.contracts import (
     ModelToolCall,
     ParsedToolArguments,
     RunDirRef,
+    SelectedOutputPresent,
+    SelectedOutputRequirement,
     StageIdentity,
+    TerminalSelectedOutputRequirement,
     TerminalCertainty,
     TimeoutRef,
     TokenUsage,
@@ -2598,6 +2601,57 @@ async def test_terminal_intent_identity_mismatch_is_invalid_terminal() -> None:
     assert result.status == ExecutionStatus.FAILED
     assert result.result_class == ExecutionResultClass.TERMINAL_RESULT_INVALID
     assert result.terminal_intent is None
+    assert writer.terminal_result_calls == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_intent_refuses_selected_output_from_another_result() -> None:
+    plan = make_test_compiled_plan(
+        plan_id=VALID_PLAN_ID,
+        harness_id=VALID_HARNESS_ID,
+        harness_version=VALID_HARNESS_VERSION,
+    )
+    success = TerminalSelectedOutputRequirement(
+        terminal_result="success",
+        selected_output=SelectedOutputRequirement(
+            required=True,
+            json_schema={"const": "success"},
+        ),
+    )
+    foreign = TerminalSelectedOutputRequirement(
+        terminal_result="foreign",
+        selected_output=SelectedOutputRequirement(
+            required=True,
+            json_schema={"type": "array", "items": {"type": "integer"}},
+        ),
+    )
+    request = _valid_harness_request().model_copy(
+        update={"selected_output_requirements": (success, foreign)}
+    )
+    session_result = make_test_guarded_session_result(session_id="sess-runtime-001")
+    assert session_result.terminal_intent is not None
+    crossed_intent = session_result.terminal_intent.model_copy(
+        update={
+            "selected_output": SelectedOutputPresent(value=[1]),
+            "selected_output_schema_sha256": foreign.selected_output.schema_sha256,
+        }
+    )
+    writer = FakeArtifactWriter()
+    runtime = _build_runtime(
+        backend=_backend_with_result(
+            session_result.model_copy(update={"terminal_intent": crossed_intent})
+        ),
+        plan_loader=FakePlanLoader(plan=plan),
+        artifact_writer=writer,
+    )
+
+    result = await runtime.execute(request)
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.result_class == ExecutionResultClass.TERMINAL_RESULT_INVALID
+    assert result.terminal_intent is None
+    assert result.selected_output is None
+    assert result.selected_output_schema_sha256 is None
     assert writer.terminal_result_calls == []
 
 

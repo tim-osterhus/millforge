@@ -39,6 +39,7 @@ from millforge.compiled_plan import (
     ToolTraceIdempotency,
     ToolTraceSideEffectClass,
     canonical_json_serialize,
+    finalize_compiled_plan_sha256,
 )
 from millforge.contracts import (
     ArtifactRef,
@@ -51,7 +52,11 @@ from millforge.contracts import (
     ModelCompletionResponse,
     ModelToolCall,
     ParsedToolArguments,
+    SelectedOutputAbsent,
+    SelectedOutputPresent,
+    SelectedOutputRequirement,
     SideEffectRecord,
+    TerminalSelectedOutputRequirement,
     TimingMetadata,
     ToolExecutionContext,
     ToolExecutionResult,
@@ -193,6 +198,143 @@ def _plan(
     return make_test_compiled_plan(
         nodes=(prepare_node or _prepare_node(), terminal_node or _terminal_node())
     )
+
+
+def _four_result_plan() -> CompiledHarnessPlan:
+    terminal_results = ("ALPHA", "BETA", "DELTA", "GAMMA")
+    nodes = tuple(
+        _terminal_node().model_copy(
+            update={
+                "node_id": f"node-{index}",
+                "model_tool_name": f"terminal_{terminal_result.lower()}",
+                "description": f"Return opaque result {terminal_result}",
+                "binding": _terminal_node().binding.model_copy(
+                    update={
+                        "tool_id": f"terminal.{terminal_result.lower()}",
+                        "implementation_id": f"impl-terminal-{terminal_result.lower()}-v1",
+                    }
+                ),
+                "prerequisites": (),
+                "terminal_result": terminal_result,
+                "produced_artifact_ids": (),
+            }
+        )
+        for index, terminal_result in enumerate(terminal_results, start=1)
+    )
+    base_plan = _plan()
+    plan = base_plan.model_copy(
+        update={
+            "compiled_sha256": SHA_B,
+            "nodes": nodes,
+            "terminal_result_map": {
+                node.node_id: node.terminal_result for node in nodes
+            },
+            "artifact_policy": base_plan.artifact_policy.model_copy(
+                update={"required_by_terminal": ()}
+            ),
+        }
+    )
+    return finalize_compiled_plan_sha256(plan)
+
+
+def _four_result_requirements() -> tuple[TerminalSelectedOutputRequirement, ...]:
+    return (
+        TerminalSelectedOutputRequirement(
+            terminal_result="ALPHA",
+            selected_output=SelectedOutputRequirement(
+                required=True,
+                json_schema={
+                    "type": "object",
+                    "properties": {"alpha": {"const": "fixed"}},
+                    "required": ["alpha"],
+                    "additionalProperties": False,
+                },
+            ),
+        ),
+        TerminalSelectedOutputRequirement(
+            terminal_result="BETA",
+            selected_output=SelectedOutputRequirement(
+                required=True,
+                json_schema={"type": "array", "items": {"enum": [1, 2]}},
+            ),
+        ),
+        TerminalSelectedOutputRequirement(
+            terminal_result="GAMMA",
+            selected_output=SelectedOutputRequirement(
+                required=False,
+                json_schema={"enum": [None, "optional"]},
+            ),
+        ),
+    )
+
+
+def _four_result_session_request(plan: CompiledHarnessPlan) -> GuardedSessionRequest:
+    request = make_test_guarded_session_request()
+    execution = request.execution_request
+    compiled_harness = execution.compiled_harness.model_copy(
+        update={
+            "expected_hash": execution.compiled_harness.expected_hash.model_copy(
+                update={"digest": plan.compiled_sha256}
+            )
+        }
+    )
+    return request.model_copy(
+        update={
+            "execution_request": execution.model_copy(
+                update={
+                    "compiled_harness": compiled_harness,
+                    "selected_output_requirements": _four_result_requirements(),
+                }
+            )
+        }
+    )
+
+
+def _four_result_tool_result(
+    terminal_result: str,
+    *,
+    arguments: dict[str, Any],
+) -> ToolExecutionResult:
+    return ToolExecutionResult(
+        call_id=f"call-{terminal_result.lower()}",
+        status=ToolExecutionStatus.SUCCESS,
+        summary=f"completed {terminal_result}",
+        retryable=False,
+        side_effect_class=SideEffectClass.TERMINAL,
+        idempotency=IdempotencyClass.IDEMPOTENT,
+        side_effect_certainty=SideEffectCertainty.CONFIRMED_COMPLETE,
+        input_sha256=hashlib.sha256(
+            canonical_json_serialize(arguments).encode("utf-8")
+        ).hexdigest(),
+        timing=TimingMetadata(started_at="start", completed_at="end", duration_ms=0.0),
+    )
+
+
+def _four_result_tool_bridge(
+    terminal_result: str,
+) -> tuple[ForgeToolBridge, FakeToolExecutor]:
+    plan = _four_result_plan()
+    tool_name = f"terminal_{terminal_result.lower()}"
+    executor = FakeToolExecutor(
+        supported_tools={tool_name},
+        results={
+            f"terminal.{terminal_result.lower()}": [
+                _four_result_tool_result(
+                    terminal_result,
+                    arguments={"summary": "done"},
+                )
+            ]
+        },
+    )
+    bridge = ForgeToolBridge(
+        plan=plan,
+        session_request=_four_result_session_request(plan),
+        executor=executor,
+        cancellation_resolver=FakeCancellationResolver(),
+        clock=FakeClock(monotonic_value=1.0),
+        call_id_resolver=lambda _name, _args: f"call-{terminal_result.lower()}",
+    )
+    return bridge, executor
 
 
 def _callable(**kwargs: Any) -> dict[str, Any]:
@@ -431,6 +573,102 @@ def test_workflow_factory_maps_compiled_plan_semantics_to_private_forge() -> Non
     }
     assert workflow_input.terminal_result_by_tool == {"submit": "success"}
     assert workflow_input.cancellation_id == "cancel-001"
+
+
+@pytest.mark.asyncio
+async def test_model_bridge_scopes_selected_output_schema_to_exact_terminal_result() -> (
+    None
+):
+    plan = _four_result_plan()
+    workflow_input = ForgeWorkflowFactory(
+        {node.binding.implementation_id: _callable for node in plan.nodes}
+    ).build(plan)
+    client = FakeModelClient(responses=[_model_response(content="inspect")])
+    bridge = ForgeModelBridge(
+        model_client=client,
+        model="profile-test",
+        selected_output_requirements=_four_result_requirements(),
+        terminal_result_by_tool=workflow_input.terminal_result_by_tool,
+    )
+
+    await bridge.send(
+        [{"role": "user", "content": "run"}],
+        tools=[tool.spec for tool in workflow_input.workflow.tools.values()],
+    )
+
+    schemas = {tool.name: tool.input_schema for tool in client.requests[0].tools}
+    requirements = {
+        item.terminal_result: item.selected_output
+        for item in _four_result_requirements()
+    }
+    for terminal_result in ("ALPHA", "BETA", "GAMMA"):
+        tool_schema = schemas[f"terminal_{terminal_result.lower()}"]
+        assert (
+            tool_schema["properties"]["candidate"]
+            == requirements[terminal_result].json_schema
+        )
+        assert ("candidate" in tool_schema["required"]) is requirements[
+            terminal_result
+        ].required
+    assert "candidate" not in schemas["terminal_delta"]["properties"]
+    assert "candidate" not in schemas["terminal_delta"]["required"]
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_admits_selected_output_only_for_exact_terminal_result() -> (
+    None
+):
+    alpha_bridge, alpha_executor = _four_result_tool_bridge("ALPHA")
+    await alpha_bridge.invoke(
+        "terminal_alpha",
+        {"summary": "done", "candidate": {"alpha": "fixed"}},
+    )
+    assert alpha_bridge.terminal_intent is not None
+    assert alpha_bridge.terminal_intent.terminal_result == "ALPHA"
+    assert alpha_bridge.terminal_intent.selected_output == SelectedOutputPresent(
+        value={"alpha": "fixed"}
+    )
+    assert alpha_bridge.terminal_intent.selected_output_schema_sha256 == (
+        _four_result_requirements()[0].selected_output.schema_sha256
+    )
+    assert alpha_executor.calls[0].arguments == {"summary": "done"}
+
+    gamma_bridge, _gamma_executor = _four_result_tool_bridge("GAMMA")
+    await gamma_bridge.invoke("terminal_gamma", {"summary": "done"})
+    assert gamma_bridge.terminal_intent is not None
+    assert gamma_bridge.terminal_intent.selected_output == SelectedOutputAbsent()
+    assert gamma_bridge.terminal_intent.selected_output_schema_sha256 == (
+        _four_result_requirements()[2].selected_output.schema_sha256
+    )
+
+    delta_bridge, _delta_executor = _four_result_tool_bridge("DELTA")
+    await delta_bridge.invoke("terminal_delta", {"summary": "done"})
+    assert delta_bridge.terminal_intent is not None
+    assert delta_bridge.terminal_intent.selected_output is None
+    assert delta_bridge.terminal_intent.selected_output_schema_sha256 is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_result", "arguments"),
+    (
+        ("ALPHA", {"summary": "done", "candidate": [1]}),
+        ("BETA", {"summary": "done"}),
+        ("DELTA", {"summary": "done", "candidate": None}),
+    ),
+)
+async def test_tool_bridge_refuses_foreign_missing_or_unbound_selected_output(
+    terminal_result: str,
+    arguments: dict[str, Any],
+) -> None:
+    bridge, executor = _four_result_tool_bridge(terminal_result)
+
+    with pytest.raises(ToolResolutionError, match="selected output"):
+        await bridge.invoke(f"terminal_{terminal_result.lower()}", arguments)
+
+    executor.assert_not_called()
+    assert bridge.terminal_candidate is None
+    assert bridge.terminal_intent is None
 
 
 def test_session_input_builder_emits_two_deterministic_private_messages() -> None:

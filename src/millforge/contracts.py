@@ -131,6 +131,7 @@ _SELECTED_OUTPUT_SCHEMA_KEYWORDS = {
     "boolean": {"type"},
     "null": {"type"},
 }
+_SELECTED_OUTPUT_VALUE_CONSTRAINTS = {"const", "enum"}
 
 
 class _FrozenSelectedOutputDict(dict[str, Any]):
@@ -284,6 +285,38 @@ def _validate_selected_output_bound(
         raise ValueError(f"{maximum_key} exceeds the selected output global ceiling")
 
 
+def _normalize_selected_output_scalar(value: Any, *, field_name: str) -> JsonScalar:
+    if value is None or type(value) in {bool, int}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} contains a non-finite number")
+        return value
+    if type(value) is str:
+        if len(value) > MAX_SELECTED_OUTPUT_STRING_LENGTH:
+            raise ValueError(f"{field_name} string exceeds the string ceiling")
+        return value
+    raise ValueError(f"{field_name} must contain strict JSON scalar values")
+
+
+def _selected_output_scalar_matches_type(value: JsonScalar, schema_type: str) -> bool:
+    if schema_type == "string":
+        return isinstance(value, str)
+    if schema_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if schema_type == "boolean":
+        return isinstance(value, bool)
+    if schema_type == "null":
+        return value is None
+    return False
+
+
+def _canonical_selected_output_scalar_bytes(value: JsonScalar) -> bytes:
+    return canonical_json_serialize(value).encode("utf-8")
+
+
 def _normalize_selected_output_schema(
     schema: Any,
     *,
@@ -297,14 +330,35 @@ def _normalize_selected_output_schema(
         raise ValueError("selected output schema object keys must be strings")
 
     schema_type = schema.get("type")
-    if not isinstance(schema_type, str) or schema_type not in _SELECTED_OUTPUT_TYPES:
+    constraints = _SELECTED_OUTPUT_VALUE_CONSTRAINTS.intersection(schema)
+    if len(constraints) > 1:
+        raise ValueError("selected output schema cannot contain both const and enum")
+    if schema_type is None:
+        if len(constraints) != 1:
+            raise ValueError(
+                "selected output schema type is outside the admitted subset"
+            )
+        unsupported = set(schema) - constraints
+        if unsupported:
+            rendered = ", ".join(sorted(unsupported))
+            raise ValueError(
+                f"unsupported selected output schema keyword(s): {rendered}"
+            )
+        normalized: JsonObject = {}
+    elif not isinstance(schema_type, str) or schema_type not in _SELECTED_OUTPUT_TYPES:
         raise ValueError("selected output schema type is outside the admitted subset")
-    unsupported = set(schema) - _SELECTED_OUTPUT_SCHEMA_KEYWORDS[schema_type]
-    if unsupported:
-        rendered = ", ".join(sorted(unsupported))
-        raise ValueError(f"unsupported selected output schema keyword(s): {rendered}")
+    else:
+        unsupported = set(schema) - (
+            _SELECTED_OUTPUT_SCHEMA_KEYWORDS[schema_type]
+            | _SELECTED_OUTPUT_VALUE_CONSTRAINTS
+        )
+        if unsupported:
+            rendered = ", ".join(sorted(unsupported))
+            raise ValueError(
+                f"unsupported selected output schema keyword(s): {rendered}"
+            )
+        normalized = {"type": schema_type}
 
-    normalized: JsonObject = {"type": schema_type}
     if schema_type == "object":
         if schema.get("additionalProperties") is not False:
             raise ValueError("object schemas require additionalProperties=false")
@@ -366,6 +420,45 @@ def _normalize_selected_output_schema(
             normalized["minLength"] = schema["minLength"]
         if "maxLength" in schema:
             normalized["maxLength"] = schema["maxLength"]
+
+    if "const" in constraints:
+        const = _normalize_selected_output_scalar(
+            schema["const"], field_name="selected output const"
+        )
+        if schema_type is not None and not _selected_output_scalar_matches_type(
+            const, schema_type
+        ):
+            raise ValueError("selected output const does not satisfy schema type")
+        normalized["const"] = const
+    elif "enum" in constraints:
+        raw_enum = schema["enum"]
+        if not isinstance(raw_enum, list):
+            raise ValueError("selected output enum must be a JSON array")
+        if not 1 <= len(raw_enum) <= 64:
+            raise ValueError(
+                "selected output enum must contain between 1 and 64 values"
+            )
+        canonical_values: list[tuple[bytes, JsonScalar]] = []
+        seen: set[bytes] = set()
+        for value in raw_enum:
+            normalized_value = _normalize_selected_output_scalar(
+                value, field_name="selected output enum"
+            )
+            if schema_type is not None and not _selected_output_scalar_matches_type(
+                normalized_value, schema_type
+            ):
+                raise ValueError(
+                    "selected output enum value does not satisfy schema type"
+                )
+            canonical = _canonical_selected_output_scalar_bytes(normalized_value)
+            if canonical in seen:
+                raise ValueError("selected output enum values must be unique")
+            seen.add(canonical)
+            canonical_values.append((canonical, normalized_value))
+        normalized["enum"] = [
+            value
+            for _canonical, value in sorted(canonical_values, key=lambda item: item[0])
+        ]
     return normalized
 
 
@@ -1111,6 +1204,40 @@ class SelectedOutputRequirement(BaseModel):
         return canonical_selected_output_schema_bytes(self.json_schema)
 
 
+class TerminalSelectedOutputRequirement(BaseModel):
+    """Immutable selected-output authority for one exact terminal result."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+    )
+
+    terminal_result: str
+    selected_output: SelectedOutputRequirement
+
+    @field_validator("terminal_result")
+    @classmethod
+    def _terminal_result_is_nonblank(cls, value: str) -> str:
+        return _nonblank(value, "terminal_result")
+
+
+def _selected_output_requirements_by_terminal_result(
+    requirements: tuple[TerminalSelectedOutputRequirement, ...],
+) -> dict[str, SelectedOutputRequirement]:
+    """Return the one canonical terminal-result lookup for selected output."""
+
+    if len(requirements) > 64:
+        raise ValueError("selected output requirements exceed the 64-record ceiling")
+    lookup: dict[str, SelectedOutputRequirement] = {}
+    for item in requirements:
+        terminal_result = _nonblank(item.terminal_result, "terminal_result")
+        if terminal_result in lookup:
+            raise ValueError("selected output terminal_result values must be unique")
+        lookup[terminal_result] = item.selected_output
+    return dict(sorted(lookup.items(), key=lambda item: item[0].encode("utf-8")))
+
+
 class SelectedOutputAbsent(BaseModel):
     """Explicit absence for an admitted optional selected-output authority."""
 
@@ -1184,7 +1311,22 @@ def _selected_output_schema_error(
 ) -> str | None:
     """Return the first deterministic mismatch against the admitted subset."""
 
-    schema_type = schema["type"]
+    if "const" in schema:
+        if _canonical_selected_output_scalar_bytes(value) != (
+            _canonical_selected_output_scalar_bytes(schema["const"])
+        ):
+            return f"{path} must equal const value"
+    elif "enum" in schema:
+        candidate = _canonical_selected_output_scalar_bytes(value)
+        if all(
+            candidate != _canonical_selected_output_scalar_bytes(item)
+            for item in schema["enum"]
+        ):
+            return f"{path} must equal an enum value"
+
+    schema_type = schema.get("type")
+    if schema_type is None:
+        return None
     if schema_type == "object":
         if not isinstance(value, Mapping):
             return f"{path} must be object"
@@ -1300,11 +1442,21 @@ class HarnessExecutionRequest(BaseModel):
         description="Secret references (handles only, never values)"
     )
     model_profile: ModelProfileRef = Field(description="Model profile reference")
-    selected_output: SelectedOutputRequirement | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Optional invocation-local required/optional selected JSON output",
+    selected_output_requirements: tuple[TerminalSelectedOutputRequirement, ...] = Field(
+        default_factory=tuple,
+        max_length=64,
+        description="Terminal-result-scoped selected JSON output requirements",
     )
+
+    @field_validator("selected_output_requirements")
+    @classmethod
+    def _selected_output_requirements_are_canonical(
+        cls,
+        value: tuple[TerminalSelectedOutputRequirement, ...],
+    ) -> tuple[TerminalSelectedOutputRequirement, ...]:
+        canonical_lookup = _selected_output_requirements_by_terminal_result(value)
+        records = {item.terminal_result: item for item in value}
+        return tuple(records[terminal_result] for terminal_result in canonical_lookup)
 
     @classmethod
     def model_validate_json(

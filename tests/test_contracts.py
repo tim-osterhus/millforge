@@ -79,6 +79,7 @@ from millforge.contracts import (
     SideEffectRecord,
     StageIdentity,
     TerminalIntent,
+    TerminalSelectedOutputRequirement,
     TimingMetadata,
     TokenUsage,
     TimeoutOrigin,
@@ -90,6 +91,7 @@ from millforge.contracts import (
     SystemMessage,
     canonical_selected_output_payload_bytes,
     canonical_selected_output_schema_bytes,
+    admit_selected_output,
     parse_selected_output_payload_json,
     selected_output_schema_sha256,
     redact_diagnostic_mapping,
@@ -677,6 +679,112 @@ def test_selected_output_bounds_and_canonical_schema_contract_are_pinned() -> No
         cast(list[str], requirement.json_schema["required"]).append("note")
 
 
+def test_selected_output_const_and_enum_canonicalize_and_admit_exact_scalars() -> None:
+    typed_const = SelectedOutputRequirement(
+        required=True,
+        json_schema={"const": "ready", "type": "string"},
+    )
+    typed_enum = SelectedOutputRequirement(
+        required=True,
+        json_schema={"enum": [3, 1, 2], "type": "integer"},
+    )
+    untyped_const = SelectedOutputRequirement(
+        required=True,
+        json_schema={"const": None},
+    )
+    mixed_enum = SelectedOutputRequirement(
+        required=False,
+        json_schema={"enum": [None, "artifact"]},
+    )
+    exact_numeric_types = SelectedOutputRequirement(
+        required=True,
+        json_schema={"type": "number", "enum": [1.0, 1]},
+    )
+
+    assert typed_const.json_schema == {"type": "string", "const": "ready"}
+    assert typed_enum.json_schema == {"type": "integer", "enum": [1, 2, 3]}
+    assert untyped_const.json_schema == {"const": None}
+    assert mixed_enum.json_schema == {"enum": ["artifact", None]}
+    assert exact_numeric_types.json_schema == {
+        "type": "number",
+        "enum": [1, 1.0],
+    }
+    assert canonical_selected_output_schema_bytes(
+        {"enum": [None, "artifact"]}
+    ) == canonical_selected_output_schema_bytes({"enum": ["artifact", None]})
+
+    assert admit_selected_output(typed_const, present=True, value="ready") == (
+        SelectedOutputPresent(value="ready")
+    )
+    assert admit_selected_output(typed_enum, present=True, value=2) == (
+        SelectedOutputPresent(value=2)
+    )
+    assert admit_selected_output(untyped_const, present=True, value=None) == (
+        SelectedOutputPresent(value=None)
+    )
+    assert admit_selected_output(mixed_enum, present=True, value="artifact") == (
+        SelectedOutputPresent(value="artifact")
+    )
+    assert admit_selected_output(mixed_enum, present=True, value=None) == (
+        SelectedOutputPresent(value=None)
+    )
+    assert admit_selected_output(exact_numeric_types, present=True, value=1) == (
+        SelectedOutputPresent(value=1)
+    )
+    assert admit_selected_output(exact_numeric_types, present=True, value=1.0) == (
+        SelectedOutputPresent(value=1.0)
+    )
+    with pytest.raises(ValueError, match="const"):
+        admit_selected_output(typed_const, present=True, value="not-ready")
+    with pytest.raises(ValueError, match="enum"):
+        admit_selected_output(mixed_enum, present=True, value="foreign")
+
+
+@pytest.mark.parametrize(
+    ("json_schema", "match"),
+    (
+        ({"enum": []}, "between 1 and 64"),
+        ({"enum": [None, None]}, "unique"),
+        ({"enum": list(range(65))}, "between 1 and 64"),
+        ({"const": {"not": "a scalar"}}, "strict JSON scalar"),
+        ({"enum": [["not a scalar"]]}, "strict JSON scalar"),
+        ({"type": "integer", "const": True}, "does not satisfy schema type"),
+        (
+            {"type": "string", "enum": ["ok", None]},
+            "does not satisfy schema type",
+        ),
+        ({"const": "x", "enum": ["x"]}, "both const and enum"),
+        ({"const": "x", "minLength": 1}, "unsupported"),
+        ({"type": "string", "const": "x", "pattern": "x"}, "unsupported"),
+        ({"const": math.inf}, "non-finite"),
+        (
+            {"const": "x" * (MAX_SELECTED_OUTPUT_STRING_LENGTH + 1)},
+            "string ceiling",
+        ),
+    ),
+)
+def test_selected_output_const_and_enum_refuse_outside_bounded_scalar_subset(
+    json_schema: object,
+    match: str,
+) -> None:
+    with pytest.raises((ValidationError, ValueError), match=match):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema=cast(dict[str, Any], json_schema),
+        )
+
+
+def test_selected_output_constraints_reject_python_scalar_subclasses() -> None:
+    class StringSubclass(str):
+        pass
+
+    with pytest.raises(ValidationError, match="strict JSON scalar"):
+        SelectedOutputRequirement(
+            required=True,
+            json_schema={"const": StringSubclass("not-strict-json")},
+        )
+
+
 @pytest.mark.parametrize(
     ("json_schema", "match"),
     (
@@ -781,7 +889,14 @@ def test_selected_output_raw_json_boundaries_reject_nested_duplicate_keys(
         )
 
     request = make_canonical_builder_execution_request(tmp_path).model_copy(
-        update={"selected_output": requirement}
+        update={
+            "selected_output_requirements": (
+                millforge.TerminalSelectedOutputRequirement(
+                    terminal_result="COMPLETE",
+                    selected_output=requirement,
+                ),
+            )
+        }
     )
     encoded_request = request.model_dump_json()
     duplicate_schema = encoded_request.replace(
@@ -803,9 +918,14 @@ def test_harness_request_raw_json_rejects_duplicate_keys_beyond_selected_output(
     if with_selected_output:
         request = request.model_copy(
             update={
-                "selected_output": SelectedOutputRequirement(
-                    required=False,
-                    json_schema=_selected_record_schema(),
+                "selected_output_requirements": (
+                    millforge.TerminalSelectedOutputRequirement(
+                        terminal_result="COMPLETE",
+                        selected_output=SelectedOutputRequirement(
+                            required=False,
+                            json_schema=_selected_record_schema(),
+                        ),
+                    ),
                 )
             }
         )
@@ -877,22 +997,183 @@ def test_selected_output_payload_is_bounded_strict_json_and_null_is_present() ->
 def test_execution_request_selected_output_is_optional_and_round_trips(
     tmp_path: Path,
 ) -> None:
+    assert "TerminalSelectedOutputRequirement" in millforge.__all__
+    terminal_requirement_type = millforge.TerminalSelectedOutputRequirement
+    assert tuple(terminal_requirement_type.model_fields) == (
+        "terminal_result",
+        "selected_output",
+    )
+    assert (
+        HarnessExecutionRequest.model_fields["selected_output_requirements"].annotation
+        == (tuple[TerminalSelectedOutputRequirement, ...])
+    )
+    assert "selected_output" not in HarnessExecutionRequest.model_fields
+
     request = make_canonical_builder_execution_request(tmp_path)
-    assert request.selected_output is None
-    assert "selected_output" not in request.model_dump(mode="json")
+    assert request.selected_output_requirements == ()
+    assert request.model_dump(mode="json")["selected_output_requirements"] == []
+    assert (
+        HarnessExecutionRequest.model_validate_json(request.model_dump_json())
+        == request
+    )
 
     payload = request.model_dump(mode="json")
     payload["selected_output"] = {
         "required": False,
         "json_schema": _selected_record_schema(),
     }
+    with pytest.raises(ValidationError, match="selected_output"):
+        HarnessExecutionRequest.model_validate(payload)
+
+
+def test_execution_request_selected_output_requirements_are_canonical_and_round_trip(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    payload = request.model_dump(mode="json")
+    payload["selected_output_requirements"] = [
+        {
+            "terminal_result": "zeta",
+            "selected_output": {
+                "required": False,
+                "json_schema": {"type": "array", "items": {"type": "integer"}},
+            },
+        },
+        {
+            "terminal_result": "alpha",
+            "selected_output": {
+                "required": True,
+                "json_schema": _selected_record_schema(),
+            },
+        },
+    ]
+
     selected = HarnessExecutionRequest.model_validate(payload)
-    assert selected.selected_output is not None
-    assert selected.selected_output.required is False
+
+    assert tuple(
+        item.terminal_result for item in selected.selected_output_requirements
+    ) == ("alpha", "zeta")
+    assert selected.selected_output_requirements[0].selected_output.required is True
+    assert selected.selected_output_requirements[1].selected_output.required is False
     assert (
         HarnessExecutionRequest.model_validate_json(selected.model_dump_json())
         == selected
     )
+
+    one_payload = request.model_dump(mode="json")
+    one_payload["selected_output_requirements"] = payload[
+        "selected_output_requirements"
+    ][:1]
+    one = HarnessExecutionRequest.model_validate(one_payload)
+    assert len(one.selected_output_requirements) == 1
+    assert HarnessExecutionRequest.model_validate_json(one.model_dump_json()) == one
+
+
+@pytest.mark.parametrize("admission", ("constructor", "model_validate"))
+def test_execution_request_revalidates_nested_selected_output_requirement_instances(
+    tmp_path: Path,
+    admission: str,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    selected_output = SelectedOutputRequirement(
+        required=True,
+        json_schema={"type": "integer"},
+    )
+    false_digest = "0" * 64
+    assert false_digest != selected_output.schema_sha256
+    tampered_selected_output = selected_output.model_copy(
+        update={"schema_sha256": false_digest}
+    )
+    terminal_requirement = TerminalSelectedOutputRequirement(
+        terminal_result="alpha",
+        selected_output=selected_output,
+    ).model_copy(update={"selected_output": tampered_selected_output})
+    payload = {
+        field_name: getattr(request, field_name)
+        for field_name in HarnessExecutionRequest.model_fields
+    }
+    payload["selected_output_requirements"] = (terminal_requirement,)
+
+    with pytest.raises(ValidationError, match="schema_sha256 does not match"):
+        if admission == "constructor":
+            HarnessExecutionRequest(**payload)
+        else:
+            HarnessExecutionRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    (
+        ("blank", "terminal_result"),
+        ("duplicate", "unique"),
+        ("too_many", "64"),
+        ("malformed", "selected_output"),
+    ),
+)
+def test_execution_request_selected_output_requirement_collection_refuses_invalid(
+    tmp_path: Path,
+    case: str,
+    match: str,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    payload = request.model_dump(mode="json")
+
+    def record(terminal_result: str) -> dict[str, object]:
+        return {
+            "terminal_result": terminal_result,
+            "selected_output": {
+                "required": False,
+                "json_schema": {"type": "integer"},
+            },
+        }
+
+    if case == "blank":
+        requirements = [record(" \t")]
+    elif case == "duplicate":
+        requirements = [record("alpha"), record("alpha")]
+    elif case == "too_many":
+        exact_limit = [record(f"result-{index:02d}") for index in range(64)]
+        payload["selected_output_requirements"] = exact_limit
+        assert (
+            len(
+                HarnessExecutionRequest.model_validate(
+                    payload
+                ).selected_output_requirements
+            )
+            == 64
+        )
+        requirements = [*exact_limit, record("result-64")]
+    else:
+        requirements = [{"terminal_result": "alpha"}]
+    payload["selected_output_requirements"] = requirements
+
+    with pytest.raises(ValidationError, match=match):
+        HarnessExecutionRequest.model_validate(payload)
+
+
+def test_execution_request_selected_output_requirements_reject_duplicate_raw_keys(
+    tmp_path: Path,
+) -> None:
+    request = make_canonical_builder_execution_request(tmp_path)
+    payload = request.model_dump(mode="json")
+    payload["selected_output_requirements"] = [
+        {
+            "terminal_result": "alpha",
+            "selected_output": {
+                "required": False,
+                "json_schema": {"type": "integer"},
+            },
+        }
+    ]
+    encoded = HarnessExecutionRequest.model_validate(payload).model_dump_json()
+    duplicate_terminal_result = encoded.replace(
+        '"terminal_result":"alpha"',
+        '"terminal_result":"alpha","terminal_result":"zeta"',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="duplicate key 'terminal_result'"):
+        HarnessExecutionRequest.model_validate_json(duplicate_terminal_result)
 
 
 def test_canonical_builder_execution_request_round_trip_and_constraints(
@@ -2363,6 +2644,7 @@ def test_public_models_are_frozen_and_forbid_extras() -> None:
         DiagnosticMetadata,
         HarnessExecutionResult,
         SelectedOutputRequirement,
+        millforge.TerminalSelectedOutputRequirement,
         SelectedOutputAbsent,
         SelectedOutputPresent,
     ]

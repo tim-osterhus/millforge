@@ -7,7 +7,7 @@ import hashlib
 import json
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +29,7 @@ from millforge import (
     SelectedOutputPresent,
     SelectedOutputRequirement,
     StageIdentity,
+    TerminalSelectedOutputRequirement,
     TerminalIntent,
     TerminalResultArtifact,
     TimeoutRef,
@@ -143,6 +144,14 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         required=False,
         json_schema=selected_requirement.json_schema,
     )
+    terminal_selected_requirement = TerminalSelectedOutputRequirement(
+        terminal_result="COMPLETE",
+        selected_output=selected_requirement,
+    )
+    optional_terminal_selected_requirement = TerminalSelectedOutputRequirement(
+        terminal_result="COMPLETE",
+        selected_output=optional_selected_requirement,
+    )
     selected_stage = StageIdentity(
         plane="execution",
         node_id="millforge-base",
@@ -180,7 +189,7 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         ),
         secret_refs=(),
         model_profile=ModelProfileRef(profile_id=components.model_profile.profile_id),
-        selected_output=selected_requirement,
+        selected_output_requirements=(terminal_selected_requirement,),
     )
     selected_null = SelectedOutputPresent(value=None)
     selected_absent = SelectedOutputAbsent()
@@ -228,14 +237,14 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         descriptor,
         request_id="request-python-compatibility-v1",
         run_id="run-python-compatibility-v1",
-        selected_output=selected_requirement,
+        selected_output_requirements=(terminal_selected_requirement,),
     )
     selected_optional_evidence = _build_invocation_evidence(
         components,
         descriptor,
         request_id="request-python-compatibility-v1",
         run_id="run-python-compatibility-v1",
-        selected_output=optional_selected_requirement,
+        selected_output_requirements=(optional_terminal_selected_requirement,),
     )
 
     return {
@@ -271,6 +280,14 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         "selected_invocation_evidence_required_sha256": _sha256(
             selected_required_evidence.model_dump(mode="json")
         ),
+        "selected_output_requirements_optional_sha256": cast(
+            str,
+            selected_optional_evidence.selected_output_requirements_sha256,
+        ),
+        "selected_output_requirements_required_sha256": cast(
+            str,
+            selected_required_evidence.selected_output_requirements_sha256,
+        ),
         "selected_output_absent_sha256": _sha256(
             SelectedOutputAbsent().model_dump(mode="json")
         ),
@@ -281,6 +298,9 @@ def _compatibility_outputs(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             selected_requirement.model_dump(mode="json")
         ),
         "selected_output_schema_sha256": selected_requirement.schema_sha256,
+        "terminal_selected_output_requirement_sha256": _sha256(
+            terminal_selected_requirement.model_dump(mode="json")
+        ),
         "selected_terminal_intent_absent_sha256": _sha256(
             selected_terminal_absent.model_dump(mode="json")
         ),

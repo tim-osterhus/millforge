@@ -52,6 +52,7 @@ from millforge import (
     SelectedOutputPresent,
     SelectedOutputRequirement,
     StageIdentity,
+    TerminalSelectedOutputRequirement,
     TimeoutRef,
     create_millforge_base_live_runner,
     create_millforge_base_runner,
@@ -137,6 +138,24 @@ def _request(
 
 def _prepare_input(request: HarnessExecutionRequest) -> None:
     assert request.input_artifacts == ()
+
+
+def _with_selected_output(
+    request: HarnessExecutionRequest,
+    requirement: SelectedOutputRequirement,
+    *,
+    terminal_result: str = "COMPLETE",
+) -> HarnessExecutionRequest:
+    return request.model_copy(
+        update={
+            "selected_output_requirements": (
+                TerminalSelectedOutputRequirement(
+                    terminal_result=terminal_result,
+                    selected_output=requirement,
+                ),
+            )
+        }
+    )
 
 
 class _TaskGatedModelClient(FakeModelClient):
@@ -346,9 +365,7 @@ async def test_selected_output_null_content_corrects_then_admits(
             "additionalProperties": False,
         },
     )
-    request = _request(components, tmp_path).model_copy(
-        update={"selected_output": requirement}
-    )
+    request = _with_selected_output(_request(components, tmp_path), requirement)
     model = FakeModelClient(
         responses=[
             _terminal_response(
@@ -386,15 +403,19 @@ async def test_selected_output_null_content_corrects_then_admits(
 
     assert result.status is ExecutionStatus.COMPLETED
     assert model.call_count == 2
-    submit_tools = [
-        tool
+    terminal_tools = {
+        tool.name: tool
         for tool in model.requests[0].tools
         if tool.name in {"submit", "block", "reject"}
-    ]
-    assert len(submit_tools) == 3
-    for tool in submit_tools:
-        assert tool.input_schema["properties"]["candidate"] == requirement.json_schema
-        assert "candidate" in tool.input_schema["required"]
+    }
+    assert terminal_tools["submit"].input_schema["properties"]["candidate"] == (
+        requirement.json_schema
+    )
+    assert "candidate" in terminal_tools["submit"].input_schema["required"]
+    assert all(
+        "candidate" not in terminal_tools[name].input_schema["properties"]
+        for name in ("block", "reject")
+    )
     assert "candidate" not in runner.descriptor.model_dump_json()
     assert result.selected_output == SelectedOutputPresent(value={"answer": "ok"})
     assert result.selected_output_schema_sha256 == requirement.schema_sha256
@@ -445,15 +466,14 @@ async def test_same_runner_keeps_optional_absence_distinct_from_null_and_schema_
             ),
         ),
     )
-    absent_request = _request(components, tmp_path / "absent", suffix="absent")
-    absent_request = absent_request.model_copy(
-        update={"selected_output": optional_null}
+    absent_request = _with_selected_output(
+        _request(components, tmp_path / "absent", suffix="absent"), optional_null
     )
-    null_request = _request(components, tmp_path / "null", suffix="null").model_copy(
-        update={"selected_output": optional_null}
+    null_request = _with_selected_output(
+        _request(components, tmp_path / "null", suffix="null"), optional_null
     )
-    array_request = _request(components, tmp_path / "array", suffix="array").model_copy(
-        update={"selected_output": required_array}
+    array_request = _with_selected_output(
+        _request(components, tmp_path / "array", suffix="array"), required_array
     )
 
     absent = await runner.execute(absent_request)
@@ -582,9 +602,7 @@ async def test_selected_output_iteration_exhaustion_fails_closed_without_authori
             "additionalProperties": False,
         },
     )
-    request = _request(components, tmp_path).model_copy(
-        update={"selected_output": requirement}
-    )
+    request = _with_selected_output(_request(components, tmp_path), requirement)
     model = FakeModelClient(
         responses=[
             _terminal_response(
@@ -633,9 +651,7 @@ async def test_selected_output_null_content_malformed_arguments_exhaust_tool_bud
             "additionalProperties": False,
         },
     )
-    request = _request(components, tmp_path).model_copy(
-        update={"selected_output": requirement}
-    )
+    request = _with_selected_output(_request(components, tmp_path), requirement)
     model = FakeModelClient(
         responses=[
             _invalid_terminal_response(profile_id, call_suffix=f"invalid-{index}")
@@ -900,14 +916,16 @@ async def test_each_sequential_and_concurrent_call_gets_fresh_invocation_objects
         *,
         request_id: str,
         run_id: str,
-        selected_output: SelectedOutputRequirement | None = None,
+        selected_output_requirements: tuple[
+            TerminalSelectedOutputRequirement, ...
+        ] = (),
     ) -> MillforgeInvocationEvidence:
         evidence = build_evidence(
             evidence_components,
             descriptor,
             request_id=request_id,
             run_id=run_id,
-            selected_output=selected_output,
+            selected_output_requirements=selected_output_requirements,
         )
         invocation_evidence.append(evidence)
         return evidence
@@ -1844,8 +1862,16 @@ async def test_configured_terminal_preserves_selected_output_contract(
         ),
     )
     request = _request(components, tmp_path / "selected", suffix="selected")
-    required_request = request.model_copy(update={"selected_output": required_output})
-    optional_request = request.model_copy(update={"selected_output": optional_output})
+    required_request = _with_selected_output(
+        request,
+        required_output,
+        terminal_result="ESCALATED",
+    )
+    optional_request = _with_selected_output(
+        request,
+        optional_output,
+        terminal_result="ESCALATED",
+    )
 
     required_evidence = runner.invocation_evidence_for(required_request)
     optional_evidence = runner.invocation_evidence_for(optional_request)
@@ -1860,18 +1886,9 @@ async def test_configured_terminal_preserves_selected_output_contract(
     assert optional_result.selected_output == SelectedOutputAbsent()
     assert no_output_result.selected_output is None
     assert no_output_result.selected_output_schema_sha256 is None
-    assert (
-        required_evidence.selected_output_schema_sha256,
-        required_evidence.selected_output_required,
-    ) == (required_output.schema_sha256, True)
-    assert (
-        optional_evidence.selected_output_schema_sha256,
-        optional_evidence.selected_output_required,
-    ) == (optional_output.schema_sha256, False)
-    assert (
-        no_output_evidence.selected_output_schema_sha256,
-        no_output_evidence.selected_output_required,
-    ) == (None, None)
+    assert required_evidence.selected_output_requirements_sha256 is not None
+    assert optional_evidence.selected_output_requirements_sha256 is not None
+    assert no_output_evidence.selected_output_requirements_sha256 is None
     assert required_output.schema_sha256 == optional_output.schema_sha256
     assert required_evidence.invocation_sha256 != optional_evidence.invocation_sha256
     assert optional_evidence.invocation_sha256 != no_output_evidence.invocation_sha256
@@ -1890,6 +1907,58 @@ async def test_configured_terminal_preserves_selected_output_contract(
     )
     assert "candidate" not in optional_tool.input_schema["required"]
     assert "candidate" not in no_output_tool.input_schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_selected_output_terminal_refuses_before_model_work(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    model = FakeModelClient()
+    writer_calls: list[Path] = []
+
+    def writer_factory(path: Path) -> FakeArtifactWriter:
+        writer_calls.append(path)
+        return FakeArtifactWriter()
+
+    runner = create_millforge_base_runner(
+        components=components,
+        services=MillforgeBaseRuntimeServices(
+            model_client=model,
+            clock=FakeClock(),
+            cancellation_resolver=FakeCancellationResolver(),
+            artifact_writer_factory=cast(
+                RuntimeArtifactWriterFactory,
+                writer_factory,
+            ),
+        ),
+    )
+    requirement = TerminalSelectedOutputRequirement(
+        terminal_result="UNKNOWN",
+        selected_output=SelectedOutputRequirement(
+            required=True,
+            json_schema={"const": "unknown"},
+        ),
+    )
+    request = _request(components, tmp_path / "unknown").model_copy(
+        update={"selected_output_requirements": (requirement,)}
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_load_invocation_executor",
+        lambda: pytest.fail("executor loaded before selected output admission"),
+    )
+
+    with pytest.raises(MillforgeBaseBindingError) as evidence_error:
+        runner.invocation_evidence_for(request)
+    with pytest.raises(MillforgeBaseBindingError) as execution_error:
+        await runner.execute(request)
+
+    assert evidence_error.value.reason == "selected_output_requirements"
+    assert execution_error.value.reason == "selected_output_requirements"
+    model.assert_not_called()
+    assert writer_calls == []
 
 
 @pytest.mark.asyncio

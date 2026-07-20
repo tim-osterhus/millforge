@@ -17,6 +17,7 @@ from millforge.contracts import (
     HarnessExecutionResult,
     ModelCapabilityRequirements,
     SecretRef,
+    _selected_output_requirements_by_terminal_result,
 )
 from millforge.exceptions import (
     MillforgeBaseClosedError,
@@ -79,6 +80,7 @@ _BindingReason = Literal[
     "descriptor_composition",
     "invocation_evidence_hash",
     "invocation_evidence_composition",
+    "selected_output_requirements",
 ]
 
 _BINDING_MESSAGES: dict[_BindingReason, str] = {
@@ -92,6 +94,7 @@ _BINDING_MESSAGES: dict[_BindingReason, str] = {
     "descriptor_composition": "Millforge-base descriptor does not match its components",
     "invocation_evidence_hash": "Millforge-base invocation evidence digest is invalid",
     "invocation_evidence_composition": "Millforge-base invocation evidence does not match its components",
+    "selected_output_requirements": "Selected output requirements do not match legal terminal results",
 }
 
 
@@ -238,7 +241,7 @@ class MillforgeBaseRunner:
                 self._descriptor,
                 request_id=request.request_id,
                 run_id=request.run_id,
-                selected_output=request.selected_output,
+                selected_output_requirements=request.selected_output_requirements,
             )
         except (TypeError, ValueError):
             raise MillforgeBaseBindingError("invocation_evidence_composition") from None
@@ -294,6 +297,18 @@ class MillforgeBaseRunner:
             raise MillforgeBaseBindingError("model_profile")
         if request.capability_envelope != self._components.capability_envelope:
             raise MillforgeBaseBindingError("capability_envelope")
+        try:
+            selected_output_by_result = (
+                _selected_output_requirements_by_terminal_result(
+                    request.selected_output_requirements
+                )
+            )
+        except ValueError:
+            raise MillforgeBaseBindingError("selected_output_requirements") from None
+        if not set(selected_output_by_result).issubset(
+            self._components.legal_terminal_results
+        ):
+            raise MillforgeBaseBindingError("selected_output_requirements")
 
 
 def create_millforge_base_runner(

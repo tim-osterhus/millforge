@@ -32,6 +32,7 @@ from millforge import (
     RuntimeArtifactWriterFactory,
     SecretRef,
     SelectedOutputRequirement,
+    TerminalSelectedOutputRequirement,
     create_millforge_base_components,
     create_millforge_base_live_runner,
     create_millforge_base_runner,
@@ -89,8 +90,7 @@ EVIDENCE_FIELDS = (
     "schema_version",
     "request_id",
     "run_id",
-    "selected_output_schema_sha256",
-    "selected_output_required",
+    "selected_output_requirements_sha256",
     "descriptor_sha256",
     "compiled_plan_sha256",
     "model_profile_id",
@@ -106,7 +106,7 @@ EVIDENCE_FIELDS = (
 )
 
 
-def _canonical_bytes(payload: dict[str, Any]) -> bytes:
+def _canonical_bytes(payload: Any) -> bytes:
     return json.dumps(
         payload,
         sort_keys=True,
@@ -213,7 +213,7 @@ def test_descriptor_has_exact_contract_and_canonical_self_hash() -> None:
         "package_name": "millforge",
         "package_version": millforge.__version__,
         "runner_id": "millforge-base",
-        "runner_version": 1,
+        "runner_version": 2,
         "harness_id": "millforge.base.unrestricted_agent.v1",
         "harness_version": 1,
         "tool_pack_id": "millforge.toolpack.pi_compat.unrestricted.v1",
@@ -226,7 +226,7 @@ def test_descriptor_has_exact_contract_and_canonical_self_hash() -> None:
             "unrestricted.process.execute",
         ],
         "legal_terminal_result_ids": ["BLOCKED", "COMPLETE", "REJECTED"],
-        "artifact_contract_version": "millforge.runtime-artifacts.v1",
+        "artifact_contract_version": "millforge.runtime-artifacts.v2",
         "prompt_contract_version": "millforge-base.prompt.v1",
         "context_contract_version": "millforge-base.context.v1",
         "tool_catalog_sha256": create_pi_compat_tool_snapshot().snapshot_sha256,
@@ -462,7 +462,7 @@ def test_descriptor_inspection_avoids_preparation_and_runtime_side_effects(
         ),
         (
             "runner_version",
-            lambda monkeypatch: monkeypatch.setattr(identity, "_RUNNER_VERSION", 2),
+            lambda monkeypatch: monkeypatch.setattr(identity, "_RUNNER_VERSION", 3),
         ),
         (
             "harness_id",
@@ -651,11 +651,10 @@ def test_invocation_evidence_exact_contract_round_trip_and_self_hash(
     digest = payload.pop("invocation_sha256")
 
     assert tuple(type(evidence).model_fields) == EVIDENCE_FIELDS
-    assert evidence.schema_version == "1.2"
+    assert evidence.schema_version == "1.3"
     assert evidence.request_id == request.request_id
     assert evidence.run_id == request.run_id
-    assert "selected_output_schema_sha256" not in payload
-    assert "selected_output_required" not in payload
+    assert "selected_output_requirements_sha256" not in payload
     assert digest == hashlib.sha256(_canonical_bytes(payload)).hexdigest()
     assert (
         MillforgeInvocationEvidence.model_validate_json(evidence.model_dump_json())
@@ -665,6 +664,54 @@ def test_invocation_evidence_exact_contract_round_trip_and_self_hash(
     tampered["cwd_sha256"] = "f" * 64
     with pytest.raises(ValidationError, match="invocation_sha256"):
         MillforgeInvocationEvidence.model_validate(tampered)
+
+
+def test_successor_identity_refuses_old_selected_output_contract_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    components, runner = _runner(monkeypatch, tmp_path)
+    request = _request(components, tmp_path)
+    evidence_payload = runner.invocation_evidence_for(request).model_dump(mode="json")
+
+    old_schema = dict(evidence_payload)
+    old_schema["schema_version"] = "1.2"
+    old_schema["invocation_sha256"] = hashlib.sha256(
+        _canonical_bytes(
+            {
+                key: value
+                for key, value in old_schema.items()
+                if key != "invocation_sha256"
+            }
+        )
+    ).hexdigest()
+    with pytest.raises(ValidationError, match="schema_version"):
+        MillforgeInvocationEvidence.model_validate(old_schema)
+
+    singular_shape = dict(evidence_payload)
+    singular_shape["selected_output_schema_sha256"] = "a" * 64
+    singular_shape["selected_output_required"] = True
+    singular_shape["invocation_sha256"] = hashlib.sha256(
+        _canonical_bytes(
+            {
+                key: value
+                for key, value in singular_shape.items()
+                if key != "invocation_sha256"
+            }
+        )
+    ).hexdigest()
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        MillforgeInvocationEvidence.model_validate(singular_shape)
+
+    old_descriptor_payload = runner.descriptor.model_dump(mode="json")
+    old_descriptor_payload["runner_version"] = 1
+    old_descriptor_payload["artifact_contract_version"] = (
+        "millforge.runtime-artifacts.v1"
+    )
+    runner._descriptor = _rehash_descriptor(old_descriptor_payload)
+    with pytest.raises(MillforgeBaseBindingError) as caught:
+        runner.invocation_evidence_for(request)
+    assert caught.value.reason == "descriptor_composition"
 
 
 def test_invocation_evidence_changes_for_every_dynamic_source(
@@ -742,33 +789,59 @@ def test_invocation_evidence_changes_for_every_dynamic_source(
         ).invocation_sha256
         != original.invocation_sha256
     )
-    selected = SelectedOutputRequirement(
-        required=True,
-        json_schema={
-            "type": "object",
-            "properties": {"answer": {"type": "integer"}},
-            "required": ["answer"],
-            "additionalProperties": False,
-        },
+    selected = TerminalSelectedOutputRequirement(
+        terminal_result="COMPLETE",
+        selected_output=SelectedOutputRequirement(
+            required=True,
+            json_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "integer"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        ),
     )
     selected_evidence = identity._build_invocation_evidence(
         components,
         descriptor,
         request_id="request-evidence",
         run_id="run-evidence",
-        selected_output=selected,
+        selected_output_requirements=(selected,),
     )
-    assert selected_evidence.selected_output_schema_sha256 == selected.schema_sha256
-    assert selected_evidence.selected_output_required is True
+    expected_selected_digest = hashlib.sha256(
+        _canonical_bytes(
+            [
+                {
+                    "required": True,
+                    "schema_sha256": selected.selected_output.schema_sha256,
+                    "terminal_result": "COMPLETE",
+                }
+            ]
+        )
+    ).hexdigest()
+    assert (
+        selected_evidence.selected_output_requirements_sha256
+        == expected_selected_digest
+    )
     assert selected_evidence.invocation_sha256 != original.invocation_sha256
+    optional = selected.model_copy(
+        update={
+            "selected_output": selected.selected_output.model_copy(
+                update={"required": False}
+            )
+        }
+    )
     optional_evidence = identity._build_invocation_evidence(
         components,
         descriptor,
         request_id="request-evidence",
         run_id="run-evidence",
-        selected_output=selected.model_copy(update={"required": False}),
+        selected_output_requirements=(optional,),
     )
-    assert optional_evidence.selected_output_required is False
+    assert (
+        optional_evidence.selected_output_requirements_sha256
+        != selected_evidence.selected_output_requirements_sha256
+    )
     assert optional_evidence.invocation_sha256 != selected_evidence.invocation_sha256
     assert describe_millforge_base() == descriptor
 
@@ -779,20 +852,109 @@ def test_runner_invocation_evidence_carries_request_local_selected_authority(
 ) -> None:
     components, runner = _runner(monkeypatch, tmp_path)
     descriptor = describe_millforge_base()
-    requirement = SelectedOutputRequirement(
-        required=False,
-        json_schema={"type": "array", "items": {"type": "string"}},
+    requirement = TerminalSelectedOutputRequirement(
+        terminal_result="COMPLETE",
+        selected_output=SelectedOutputRequirement(
+            required=False,
+            json_schema={"type": "array", "items": {"type": "string"}},
+        ),
     )
     request = _request(components, tmp_path).model_copy(
-        update={"selected_output": requirement}
+        update={"selected_output_requirements": (requirement,)}
     )
 
     evidence = runner.invocation_evidence_for(request)
 
-    assert evidence.selected_output_schema_sha256 == requirement.schema_sha256
-    assert evidence.selected_output_required is False
+    assert evidence.selected_output_requirements_sha256 is not None
     assert "json_schema" not in evidence.model_dump(mode="json")
     assert describe_millforge_base() == descriptor
+
+
+def test_selected_output_requirement_collection_digest_is_canonical_and_sensitive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    components = _components(monkeypatch, tmp_path)
+    descriptor = describe_millforge_base()
+    alpha = TerminalSelectedOutputRequirement(
+        terminal_result="BLOCKED",
+        selected_output=SelectedOutputRequirement(
+            required=False,
+            json_schema={"enum": [None, "blocked"]},
+        ),
+    )
+    beta = TerminalSelectedOutputRequirement(
+        terminal_result="COMPLETE",
+        selected_output=SelectedOutputRequirement(
+            required=True,
+            json_schema={"const": "complete"},
+        ),
+    )
+
+    def evidence(
+        requirements: tuple[TerminalSelectedOutputRequirement, ...],
+    ) -> MillforgeInvocationEvidence:
+        return identity._build_invocation_evidence(
+            components,
+            descriptor,
+            request_id="request-evidence",
+            run_id="run-evidence",
+            selected_output_requirements=requirements,
+        )
+
+    ordered = evidence((alpha, beta))
+    reordered = evidence((beta, alpha))
+    expected = hashlib.sha256(
+        _canonical_bytes(
+            [
+                {
+                    "required": False,
+                    "schema_sha256": alpha.selected_output.schema_sha256,
+                    "terminal_result": "BLOCKED",
+                },
+                {
+                    "required": True,
+                    "schema_sha256": beta.selected_output.schema_sha256,
+                    "terminal_result": "COMPLETE",
+                },
+            ]
+        )
+    ).hexdigest()
+
+    assert ordered.selected_output_requirements_sha256 == expected
+    assert reordered.selected_output_requirements_sha256 == expected
+    assert reordered.invocation_sha256 == ordered.invocation_sha256
+    variants = (
+        (
+            alpha.model_copy(update={"terminal_result": "REJECTED"}),
+            beta,
+        ),
+        (
+            alpha.model_copy(
+                update={
+                    "selected_output": SelectedOutputRequirement(
+                        required=False,
+                        json_schema={"const": "different"},
+                    )
+                }
+            ),
+            beta,
+        ),
+        (
+            alpha.model_copy(
+                update={
+                    "selected_output": alpha.selected_output.model_copy(
+                        update={"required": True}
+                    )
+                }
+            ),
+            beta,
+        ),
+    )
+    assert all(
+        evidence(variant).selected_output_requirements_sha256 != expected
+        for variant in variants
+    )
 
 
 def test_model_behavior_excludes_secret_references_and_evidence_leaks_no_inputs(
@@ -1232,7 +1394,7 @@ def test_default_terminal_contract_is_byte_compatible(
     descriptor = describe_millforge_base(legal_terminal_results=default)
 
     assert descriptor.descriptor_sha256 == (
-        "ce4f77c4644ed22b01751abffe5960fe270ba5cbebe0d0c179c55454c347b530"
+        "a44cc37e4ea67208e21ed3333c9807e566c81cc0fc98452fa44f1fe0da2608fb"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"

@@ -86,11 +86,13 @@ from millforge.contracts import (
     ToolExecutionContext,
     ToolExecutionResult,
     ToolResultMessage,
+    TerminalSelectedOutputRequirement,
     TimingMetadata,
     TokenUsage,
     UserMessage,
     UsageMetadata,
     ValidatedToolCall,
+    _selected_output_requirements_by_terminal_result,
     admit_selected_output,
 )
 from millforge.exceptions import (
@@ -292,12 +294,14 @@ class ForgeGuardrailBackend:
                 model_client=self._model_client,
                 model=request.execution_request.model_profile.profile_id,
                 event_translator=event_translator,
-                selected_output=request.execution_request.selected_output,
-                terminal_tool_names=frozenset(
-                    node.model_tool_name
+                selected_output_requirements=(
+                    request.execution_request.selected_output_requirements
+                ),
+                terminal_result_by_tool={
+                    node.model_tool_name: node.terminal_result
                     for node in plan.nodes
                     if node.terminal_result is not None
-                ),
+                },
             )
             tool_bridge = ForgeToolBridge(
                 plan=plan,
@@ -964,13 +968,19 @@ class ForgeModelBridge:
         model_client: ModelClientLike,
         model: str,
         event_translator: ForgeEventTranslator | None = None,
-        selected_output: SelectedOutputRequirement | None = None,
-        terminal_tool_names: frozenset[str] = frozenset(),
+        selected_output_requirements: tuple[
+            TerminalSelectedOutputRequirement, ...
+        ] = (),
+        terminal_result_by_tool: Mapping[str, str] | None = None,
     ) -> None:
         self._model_client = model_client
         self._event_translator = event_translator
-        self._selected_output = selected_output
-        self._terminal_tool_names = terminal_tool_names
+        self._selected_output_by_terminal_result = (
+            _selected_output_requirements_by_terminal_result(
+                selected_output_requirements
+            )
+        )
+        self._terminal_result_by_tool = dict(terminal_result_by_tool or {})
         self.model = model
         self.last_usage: dict[int, ForgeTokenUsage] = {}
         self._model_calls = 0
@@ -1041,9 +1051,9 @@ class ForgeModelBridge:
                 _tool_definition_from_spec(
                     spec,
                     selected_output=(
-                        self._selected_output
-                        if spec.name in self._terminal_tool_names
-                        else None
+                        self._selected_output_by_terminal_result.get(
+                            self._terminal_result_by_tool.get(spec.name, "")
+                        )
                     ),
                 )
                 for spec in tools or ()
@@ -1205,6 +1215,11 @@ class ForgeToolBridge:
     ) -> None:
         self._plan = plan
         self._session_request = session_request
+        self._selected_output_by_terminal_result = (
+            _selected_output_requirements_by_terminal_result(
+                session_request.execution_request.selected_output_requirements
+            )
+        )
         self._executor = executor
         self._cancellation_resolver = cancellation_resolver
         self._clock = clock
@@ -1329,15 +1344,23 @@ class ForgeToolBridge:
         admitted_selected_output: SelectedOutput | None = None
         execution_args = args
         selected_output_requirement = (
-            self._session_request.execution_request.selected_output
+            self._selected_output_by_terminal_result.get(node.terminal_result)
+            if node.terminal_result is not None
+            else None
         )
-        if node.terminal_result is not None and selected_output_requirement is not None:
+        if node.terminal_result is not None:
             try:
-                admitted_selected_output = admit_selected_output(
-                    selected_output_requirement,
-                    present="candidate" in args,
-                    value=args.get("candidate"),
-                )
+                if selected_output_requirement is None:
+                    if "candidate" in args:
+                        raise ValueError(
+                            "selected output candidate is not allowed for this terminal result"
+                        )
+                else:
+                    admitted_selected_output = admit_selected_output(
+                        selected_output_requirement,
+                        present="candidate" in args,
+                        value=args.get("candidate"),
+                    )
             except ValueError as exc:
                 self._append_trace(
                     node=node,
@@ -1366,8 +1389,9 @@ class ForgeToolBridge:
                     str(exc),
                     tool_name=tool_name,
                 ) from None
-            execution_args = dict(args)
-            execution_args.pop("candidate", None)
+            if selected_output_requirement is not None:
+                execution_args = dict(args)
+                execution_args.pop("candidate", None)
 
         execution_input_sha256 = _sha256_json(execution_args)
         validated_call = ValidatedToolCall(
@@ -1657,9 +1681,10 @@ class ForgeToolBridge:
             artifact_refs=tuple(self._owned_artifacts.values()),
             selected_output=selected_output,
             selected_output_schema_sha256=(
-                self._session_request.execution_request.selected_output.schema_sha256
+                self._selected_output_by_terminal_result[
+                    node.terminal_result
+                ].schema_sha256
                 if selected_output is not None
-                and self._session_request.execution_request.selected_output is not None
                 else None
             ),
         )
@@ -1909,12 +1934,16 @@ def _request_context_payload(request: HarnessExecutionRequest) -> dict[str, Any]
         },
         "work_item_id": request.work_item_id,
     }
-    if request.selected_output is not None:
-        payload["selected_output"] = {
-            "candidate_transport": "terminal_tool_argument",
-            "required": request.selected_output.required,
-            "schema_sha256": request.selected_output.schema_sha256,
-        }
+    if request.selected_output_requirements:
+        payload["selected_output_requirements"] = [
+            {
+                "candidate_transport": "terminal_tool_argument",
+                "required": item.selected_output.required,
+                "schema_sha256": item.selected_output.schema_sha256,
+                "terminal_result": item.terminal_result,
+            }
+            for item in request.selected_output_requirements
+        ]
     return payload
 
 

@@ -39,6 +39,7 @@ from millforge.contracts import (
     TimingMetadata,
     ToolExecutionContext,
     UsageMetadata,
+    _selected_output_requirements_by_terminal_result,
     admit_selected_output,
 )
 from millforge.exceptions import (
@@ -999,7 +1000,26 @@ class DefaultHarnessRuntime:
         if terminal_intent.stage != request.stage:
             raise MillforgeConfigError("terminal_intent.stage must match request")
 
-        selected_output_requirement = request.selected_output
+        expected_terminal = plan.terminal_result_map.get(
+            terminal_intent.terminal_node_id
+        )
+        if expected_terminal is None:
+            raise MillforgeConfigError(
+                "terminal_intent.terminal_node_id is not declared by compiled plan"
+            )
+        if terminal_intent.terminal_result != expected_terminal:
+            raise MillforgeConfigError(
+                "terminal_intent.terminal_result does not match compiled plan"
+            )
+
+        try:
+            selected_output_requirement = (
+                _selected_output_requirements_by_terminal_result(
+                    request.selected_output_requirements
+                ).get(terminal_intent.terminal_result)
+            )
+        except ValueError as exc:
+            raise MillforgeConfigError(str(exc)) from None
         if selected_output_requirement is None:
             if (
                 terminal_intent.selected_output is not None
@@ -1040,18 +1060,6 @@ class DefaultHarnessRuntime:
                 raise MillforgeConfigError(
                     "terminal_intent selected output is not canonically admitted"
                 )
-
-        expected_terminal = plan.terminal_result_map.get(
-            terminal_intent.terminal_node_id
-        )
-        if expected_terminal is None:
-            raise MillforgeConfigError(
-                "terminal_intent.terminal_node_id is not declared by compiled plan"
-            )
-        if terminal_intent.terminal_result != expected_terminal:
-            raise MillforgeConfigError(
-                "terminal_intent.terminal_result does not match compiled plan"
-            )
 
     def _build_tool_execution_context(
         self,
