@@ -326,6 +326,8 @@ class ToolCall:
     tool: str
     args: Any  # may be a non-dict when malformed; ResponseValidator rejects shape
     reasoning: str | None = None
+    call_id: str | None = None
+    reasoning_content: str | None = field(default=None, repr=False)
 
 
 @dataclass

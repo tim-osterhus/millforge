@@ -22,9 +22,26 @@ from millforge._forge.adapter import (
     ForgeToolBridge,
     ForgeWorkflowFactory,
 )
-from millforge._forge.errors import NonRetryableToolError, ToolResolutionError
-from millforge._forge.context.strategies import TieredCompact
-from millforge._forge.core.messages import MessageRole, MessageType
+from millforge._forge.errors import (
+    MaxIterationsError,
+    NonRetryableToolError,
+    ToolResolutionError,
+)
+from millforge._forge.context.manager import ContextManager
+from millforge._forge.context.strategies import (
+    NoCompact,
+    TieredCompact,
+    _estimate_tokens,
+)
+from millforge._forge.core.messages import (
+    Message,
+    MessageMeta,
+    MessageRole,
+    MessageType,
+    ToolCallInfo,
+)
+from millforge._forge.core.runner import WorkflowRunner
+from millforge._forge.core.workflow import ToolCall, ToolDef, ToolSpec, Workflow
 from millforge.compiled_plan import (
     ArgumentMatch,
     CompiledHarnessNode,
@@ -64,9 +81,22 @@ from millforge.contracts import (
     TokenUsage,
 )
 from millforge.model_backend import (
+    AuthenticationPolicy,
+    AuthenticationScheme,
+    CapabilityDeclarations,
+    CapabilitySupport,
+    DefaultModelClient,
+    EndpointConfig,
     ModelProviderError,
     ModelRequestDeadlineExceededError,
     ProviderErrorCategory,
+    ReasoningMode,
+    ReasoningPolicy,
+    ResolvedModelProfile,
+    StaticModelProfileResolver,
+    StaticSecretResolver,
+    TransportRequest,
+    TransportResponse,
 )
 from millforge.exceptions import DeadlineExceededError, OperationCancelledError
 from millforge.testing import (
@@ -332,7 +362,6 @@ def _four_result_tool_bridge(
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda _name, _args: f"call-{terminal_result.lower()}",
     )
     return bridge, executor
 
@@ -364,6 +393,7 @@ def _model_response(
     tool_name: str = "prepare",
     arguments: dict[str, Any] | None = None,
     usage: TokenUsage | None = None,
+    reasoning_content: str | None = None,
 ) -> ModelCompletionResponse:
     tool_calls: tuple[ModelToolCall, ...] = ()
     finish_reason: Literal["stop", "tool_calls"] = "stop"
@@ -376,13 +406,201 @@ def _model_response(
             ),
         )
         finish_reason = "tool_calls"
+    assistant_fields: dict[str, Any] = {}
+    if reasoning_content is not None:
+        assistant_fields["reasoning_content"] = reasoning_content
     return ModelCompletionResponse(
         provider_request_id=f"provider-{call_id or 'text'}",
         model_id="profile-test",
-        message=AssistantMessage(content=content, tool_calls=tool_calls),
+        message=AssistantMessage(
+            content=content,
+            tool_calls=tool_calls,
+            **assistant_fields,
+        ),
         finish_reason=finish_reason,
         usage=usage,
     )
+
+
+class _ReasoningTransport:
+    def __init__(self, responses: list[TransportResponse]) -> None:
+        self.responses = list(responses)
+        self.requests: list[TransportRequest] = []
+
+    async def send(self, request: TransportRequest) -> TransportResponse:
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+class _ReasoningBackendClock:
+    def monotonic(self) -> float:
+        return 0.0
+
+
+def _reasoning_profile(
+    *,
+    profile_id: str = "profile.reasoning-a",
+    provider_id: str = "provider.opaque-a",
+) -> ResolvedModelProfile:
+    return ResolvedModelProfile(
+        profile_id=profile_id,
+        provider_id=provider_id,
+        model_id="model.opaque-reasoning",
+        endpoint=EndpointConfig(base_url="https://reasoning.example.test/v1"),
+        authentication=AuthenticationPolicy(scheme=AuthenticationScheme.NONE),
+        reasoning=ReasoningPolicy(
+            mode=ReasoningMode.ENABLED,
+            mode_field="thinking",
+            mode_values={ReasoningMode.ENABLED: {"type": "enabled"}},
+            tool_call_replay_field="reasoning_content",
+        ),
+        capabilities=CapabilityDeclarations(
+            support={
+                "tool_calls": CapabilitySupport.SUPPORTED,
+                "system_messages": CapabilitySupport.SUPPORTED,
+                "tool_result_messages": CapabilitySupport.SUPPORTED,
+                "parallel_tool_calls": CapabilitySupport.UNSUPPORTED,
+                "structured_output": CapabilitySupport.UNSUPPORTED,
+                "reasoning_controls": CapabilitySupport.UNSUPPORTED,
+                "usage_reporting": CapabilitySupport.UNKNOWN,
+            }
+        ),
+        source_name="reasoning-test",
+        source_digest="reasoning-test-digest",
+    )
+
+
+def _reasoning_transport_response(
+    *,
+    call_id: str,
+    tool_name: str,
+    arguments: object,
+    continuation: str,
+    content: str,
+) -> TransportResponse:
+    return TransportResponse(
+        status_code=200,
+        body={
+            "model": "model.opaque-reasoning",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": continuation,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": arguments,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+
+
+def _private_tool(
+    name: str,
+    *,
+    prerequisites: list[str] | None = None,
+) -> ToolDef:
+    def run(value: str) -> str:
+        return f"result:{name}:{value}"
+
+    return ToolDef(
+        spec=ToolSpec.from_json_schema(
+            name,
+            f"Run {name}",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+        ),
+        callable=run,
+        prerequisites=list(prerequisites or ()),
+    )
+
+
+def _private_workflow(
+    *,
+    required_steps: list[str] | None = None,
+    include_dependent: bool = False,
+) -> Workflow:
+    tools = {
+        "work": _private_tool("work"),
+        "finish": _private_tool("finish"),
+    }
+    if include_dependent:
+        tools["dependent"] = _private_tool(
+            "dependent",
+            prerequisites=["work"],
+        )
+    return Workflow(
+        name="opaque-workflow",
+        description="Reasoning replay test workflow",
+        tools=tools,
+        required_steps=list(required_steps or ()),
+        terminal_tool="finish",
+        system_prompt_template="system instructions",
+    )
+
+
+def _reasoning_stack(
+    responses: list[TransportResponse],
+    *,
+    profile: ResolvedModelProfile | None = None,
+) -> tuple[ForgeModelBridge, _ReasoningTransport]:
+    resolved_profile = profile or _reasoning_profile()
+    transport = _ReasoningTransport(responses)
+    client = DefaultModelClient(
+        profile_resolver=StaticModelProfileResolver(
+            {resolved_profile.profile_id: resolved_profile}
+        ),
+        secret_resolver=StaticSecretResolver({}),
+        transport=transport,
+        clock=_ReasoningBackendClock(),
+    )
+    return (
+        ForgeModelBridge(
+            model_client=client,
+            model=resolved_profile.profile_id,
+        ),
+        transport,
+    )
+
+
+def _expected_tool_call_message(
+    *,
+    call_id: str,
+    tool_name: str,
+    continuation: str,
+    content: str,
+    arguments: str = '{"value":"same"}',
+) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                },
+            }
+        ],
+        "reasoning_content": continuation,
+    }
 
 
 def _tool_result(
@@ -517,7 +735,6 @@ def _tool_bridge(
     executor: FakeToolExecutor | None = None,
     cancellation_resolver: FakeCancellationResolver | None = None,
     monotonic_value: float = 1.0,
-    call_id: str = "call-prepare",
 ) -> ForgeToolBridge:
     return ForgeToolBridge(
         plan=plan or _plan(),
@@ -526,7 +743,6 @@ def _tool_bridge(
         or FakeToolExecutor(supported_tools={"prepare", "submit"}, results={}),
         cancellation_resolver=cancellation_resolver or FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=monotonic_value),
-        call_id_resolver=lambda _name, _args: call_id,
     )
 
 
@@ -622,6 +838,7 @@ async def test_tool_bridge_admits_selected_output_only_for_exact_terminal_result
     await alpha_bridge.invoke(
         "terminal_alpha",
         {"summary": "done", "candidate": {"alpha": "fixed"}},
+        call_id="call-alpha",
     )
     assert alpha_bridge.terminal_intent is not None
     assert alpha_bridge.terminal_intent.terminal_result == "ALPHA"
@@ -634,7 +851,9 @@ async def test_tool_bridge_admits_selected_output_only_for_exact_terminal_result
     assert alpha_executor.calls[0].arguments == {"summary": "done"}
 
     gamma_bridge, _gamma_executor = _four_result_tool_bridge("GAMMA")
-    await gamma_bridge.invoke("terminal_gamma", {"summary": "done"})
+    await gamma_bridge.invoke(
+        "terminal_gamma", {"summary": "done"}, call_id="call-gamma"
+    )
     assert gamma_bridge.terminal_intent is not None
     assert gamma_bridge.terminal_intent.selected_output == SelectedOutputAbsent()
     assert gamma_bridge.terminal_intent.selected_output_schema_sha256 == (
@@ -642,7 +861,9 @@ async def test_tool_bridge_admits_selected_output_only_for_exact_terminal_result
     )
 
     delta_bridge, _delta_executor = _four_result_tool_bridge("DELTA")
-    await delta_bridge.invoke("terminal_delta", {"summary": "done"})
+    await delta_bridge.invoke(
+        "terminal_delta", {"summary": "done"}, call_id="call-delta"
+    )
     assert delta_bridge.terminal_intent is not None
     assert delta_bridge.terminal_intent.selected_output is None
     assert delta_bridge.terminal_intent.selected_output_schema_sha256 is None
@@ -664,7 +885,11 @@ async def test_tool_bridge_refuses_foreign_missing_or_unbound_selected_output(
     bridge, executor = _four_result_tool_bridge(terminal_result)
 
     with pytest.raises(ToolResolutionError, match="selected output"):
-        await bridge.invoke(f"terminal_{terminal_result.lower()}", arguments)
+        await bridge.invoke(
+            f"terminal_{terminal_result.lower()}",
+            arguments,
+            call_id=f"call-{terminal_result.lower()}",
+        )
 
     executor.assert_not_called()
     assert bridge.terminal_candidate is None
@@ -1399,10 +1624,7 @@ async def test_model_bridge_translates_private_forge_request_once_and_tracks_usa
     assert tool_result_message.tool_name == "prepare"
     assert response[0].tool == "prepare"
     assert response[0].args == {"path": "input.txt"}
-    assert (
-        bridge.resolve_tool_call_id("prepare", {"path": "input.txt"})
-        == "model-call-001"
-    )
+    assert response[0].call_id == "model-call-001"
     assert bridge.last_usage[0].total_tokens == 12
     assert [event.event_type for event in bridge.events] == [
         SessionEventType.MODEL_REQUEST_STARTED,
@@ -1412,6 +1634,500 @@ async def test_model_bridge_translates_private_forge_request_once_and_tracks_usa
     assert bridge.events[0].fields[0].value == 3
     assert bridge.events[1].fields[0].key == "tool_call_count"
     assert bridge.events[1].fields[0].value == 1
+
+
+@pytest.mark.asyncio
+async def test_three_requests_replay_two_tool_turn_continuations_and_provider_ids_in_order() -> (
+    None
+):
+    bridge, transport = _reasoning_stack(
+        [
+            _reasoning_transport_response(
+                call_id="provider-call-001",
+                tool_name="work",
+                arguments='{"value":"same"}',
+                continuation="continuation one λ",
+                content="ordinary one",
+            ),
+            _reasoning_transport_response(
+                call_id="provider-call-002",
+                tool_name="work",
+                arguments='{"value":"same"}',
+                continuation="continuation two 雪",
+                content="ordinary two",
+            ),
+            _reasoning_transport_response(
+                call_id="provider-call-003",
+                tool_name="finish",
+                arguments='{"value":"done"}',
+                continuation="terminal continuation",
+                content="ordinary terminal",
+            ),
+        ]
+    )
+    runner = WorkflowRunner(
+        bridge,
+        ContextManager(NoCompact(), budget_tokens=100_000),
+        max_iterations=3,
+    )
+
+    result = await runner.run(_private_workflow(), "run")
+
+    assert result == "result:finish:done"
+    assert len(transport.requests) == 3
+    initial_messages = [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "run"},
+    ]
+    first_turn = _expected_tool_call_message(
+        call_id="provider-call-001",
+        tool_name="work",
+        continuation="continuation one λ",
+        content="ordinary one",
+    )
+    first_result = {
+        "role": "tool",
+        "tool_call_id": "provider-call-001",
+        "name": "work",
+        "content": "result:work:same",
+    }
+    second_turn = _expected_tool_call_message(
+        call_id="provider-call-002",
+        tool_name="work",
+        continuation="continuation two 雪",
+        content="ordinary two",
+    )
+    second_result = {
+        "role": "tool",
+        "tool_call_id": "provider-call-002",
+        "name": "work",
+        "content": "result:work:same",
+    }
+    first_body = transport.requests[0].body
+    assert transport.requests[1].body == {
+        **first_body,
+        "messages": [*initial_messages, first_turn, first_result],
+    }
+    assert transport.requests[2].body == {
+        **first_body,
+        "messages": [
+            *initial_messages,
+            first_turn,
+            first_result,
+            second_turn,
+            second_result,
+        ],
+    }
+    assert [request.profile.provider_id for request in transport.requests] == [
+        "provider.opaque-a",
+        "provider.opaque-a",
+        "provider.opaque-a",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_sequential_tool_calls_do_not_cross_associate_continuation() -> (
+    None
+):
+    client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="ordinary first",
+                call_id="provider-repeat-1",
+                arguments={"path": "same.txt"},
+                reasoning_content="repeat continuation first",
+            ),
+            _model_response(
+                content="ordinary second",
+                call_id="provider-repeat-2",
+                arguments={"path": "same.txt"},
+                reasoning_content="repeat continuation second",
+            ),
+        ]
+    )
+    bridge = ForgeModelBridge(model_client=client, model="profile-test")
+
+    first = await bridge.send([{"role": "user", "content": "first"}])
+    second = await bridge.send([{"role": "user", "content": "second"}])
+
+    assert first == [
+        ToolCall(
+            tool="prepare",
+            args={"path": "same.txt"},
+            reasoning="ordinary first",
+            call_id="provider-repeat-1",
+            reasoning_content="repeat continuation first",
+        )
+    ]
+    assert second == [
+        ToolCall(
+            tool="prepare",
+            args={"path": "same.txt"},
+            reasoning="ordinary second",
+            call_id="provider-repeat-2",
+            reasoning_content="repeat continuation second",
+        )
+    ]
+    assert not hasattr(bridge, "_pending_call_ids")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "first_tool", "first_arguments", "workflow", "expected_error"),
+    (
+        (
+            "malformed_args",
+            "work",
+            "not-json",
+            _private_workflow(),
+            "[ToolArgValidationError] Tool call to 'work' had malformed arguments. "
+            "Got args='not-json' (type: str). Required: args must be a JSON object "
+            "(dict). Re-emit the tool call with args as an object — {} for no-arg "
+            'tools or {"key": value} otherwise.',
+        ),
+        (
+            "malformed_args_empty",
+            "work",
+            "",
+            _private_workflow(),
+            "[ToolArgValidationError] Tool call to 'work' had malformed arguments. "
+            "Got args='' (type: str). Required: args must be a JSON object "
+            "(dict). Re-emit the tool call with args as an object — {} for no-arg "
+            'tools or {"key": value} otherwise.',
+        ),
+        (
+            "unknown_tool",
+            "missing",
+            '{"value":"same"}',
+            _private_workflow(),
+            "[UnknownTool] Tool 'missing' does not exist. Available tools: work, "
+            "finish. Call one of them.",
+        ),
+        (
+            "prerequisite",
+            "dependent",
+            '{"value":"same"}',
+            _private_workflow(include_dependent=True),
+            "[PrerequisiteError] You cannot call dependent yet. You must first "
+            "call: work. Call the prerequisite tool now.",
+        ),
+        (
+            "premature_terminal",
+            "finish",
+            '{"value":"same"}',
+            _private_workflow(required_steps=["work"]),
+            "[StepEnforcementError] You cannot call finish yet. You must first "
+            "complete these required steps: work. Call one of them now.",
+        ),
+    ),
+)
+async def test_each_tool_error_and_enforcement_retry_replays_exact_continuation_and_call_id(
+    case: str,
+    first_tool: str,
+    first_arguments: object,
+    workflow: Workflow,
+    expected_error: str,
+) -> None:
+    second_tool = "work" if case == "premature_terminal" else "finish"
+    bridge, transport = _reasoning_stack(
+        [
+            _reasoning_transport_response(
+                call_id=f"provider-{case}-1",
+                tool_name=first_tool,
+                arguments=first_arguments,
+                continuation=f"continuation {case}",
+                content=f"ordinary {case}",
+            ),
+            _reasoning_transport_response(
+                call_id=f"provider-{case}-2",
+                tool_name=second_tool,
+                arguments='{"value":"done"}',
+                continuation=f"continuation {case} second",
+                content=f"ordinary {case} second",
+            ),
+        ]
+    )
+    runner = WorkflowRunner(
+        bridge,
+        ContextManager(NoCompact(), budget_tokens=100_000),
+        max_iterations=2,
+    )
+
+    if case == "premature_terminal":
+        with pytest.raises(MaxIterationsError):
+            await runner.run(workflow, "run")
+    else:
+        await runner.run(workflow, "run")
+
+    assert len(transport.requests) == 2
+    expected_arguments = (
+        first_arguments
+        if isinstance(first_arguments, str)
+        else json.dumps(first_arguments)
+    )
+    expected_messages = [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "run"},
+        _expected_tool_call_message(
+            call_id=f"provider-{case}-1",
+            tool_name=first_tool,
+            continuation=f"continuation {case}",
+            content=f"ordinary {case}",
+            arguments=expected_arguments,
+        ),
+        {
+            "role": "tool",
+            "tool_call_id": f"provider-{case}-1",
+            "name": first_tool,
+            "content": expected_error,
+        },
+    ]
+    assert transport.requests[1].body == {
+        **transport.requests[0].body,
+        "messages": expected_messages,
+    }
+
+
+def test_both_estimators_count_continuation_and_compaction_preserves_complete_turns() -> (
+    None
+):
+    continuation = "c" * 80
+    replay_turn = Message(
+        role=MessageRole.ASSISTANT,
+        content="",
+        metadata=MessageMeta(MessageType.TOOL_CALL, step_index=0),
+        tool_calls=[
+            ToolCallInfo(name="work", args={"value": "same"}, call_id="call-1")
+        ],
+        reasoning_content=continuation,
+    )
+    result = Message(
+        role=MessageRole.TOOL,
+        content="result",
+        metadata=MessageMeta(MessageType.TOOL_RESULT, step_index=0),
+        tool_name="work",
+        tool_call_id="call-1",
+    )
+    assert _estimate_tokens([replay_turn]) == len(continuation) // 4
+    assert (
+        ContextManager(NoCompact(), budget_tokens=100).estimate_tokens([replay_turn])
+        == len(continuation) // 4
+    )
+
+    messages = [
+        Message(
+            MessageRole.SYSTEM,
+            "system",
+            MessageMeta(MessageType.SYSTEM_PROMPT),
+        ),
+        Message(MessageRole.USER, "user", MessageMeta(MessageType.USER_INPUT)),
+        Message(
+            MessageRole.ASSISTANT,
+            "ordinary",
+            MessageMeta(MessageType.REASONING, step_index=0),
+        ),
+        replay_turn,
+        result,
+        Message(
+            MessageRole.ASSISTANT,
+            "recent",
+            MessageMeta(MessageType.TEXT_RESPONSE, step_index=1),
+        ),
+    ]
+    compacted = TieredCompact(keep_recent=1)._phase3(messages, eligible_end=5)
+
+    assert all(message.metadata.step_index != 0 for message in compacted)
+    assert compacted == [messages[0], messages[1], messages[5]]
+
+
+def test_compaction_preserves_tool_result_pairing_fields_for_correction_records() -> (
+    None
+):
+    continuation = "private continuation"
+    call = Message(
+        role=MessageRole.ASSISTANT,
+        content="ordinary",
+        metadata=MessageMeta(MessageType.TOOL_CALL, step_index=0),
+        tool_calls=[
+            ToolCallInfo(name="work", args={"value": "same"}, call_id="call-1")
+        ],
+        reasoning_content=continuation,
+    )
+    correction = Message(
+        role=MessageRole.TOOL,
+        content="x" * 500,
+        metadata=MessageMeta(
+            MessageType.RETRY_NUDGE,
+            step_index=0,
+            original_type=MessageType.TOOL_RESULT,
+        ),
+        tool_name="work",
+        tool_call_id="call-1",
+    )
+    phase_one = TieredCompact()._phase1(
+        [
+            Message(
+                MessageRole.SYSTEM,
+                "system",
+                MessageMeta(MessageType.SYSTEM_PROMPT),
+            ),
+            Message(MessageRole.USER, "user", MessageMeta(MessageType.USER_INPUT)),
+            call,
+            correction,
+        ],
+        eligible_end=4,
+    )
+
+    assert phase_one[2] is call
+    compacted_result = phase_one[3]
+    assert compacted_result.role is MessageRole.TOOL
+    assert compacted_result.tool_call_id == "call-1"
+    assert compacted_result.tool_name == "work"
+    assert compacted_result.metadata == correction.metadata
+    assert compacted_result.content.startswith("x" * 200)
+    assert continuation == phase_one[2].reasoning_content
+
+
+@pytest.mark.asyncio
+async def test_reasoning_continuation_never_enters_events_evidence_or_diagnostics() -> (
+    None
+):
+    continuation = "raw private reasoning that must stay out"
+    response = _model_response(
+        content="ordinary",
+        call_id="provider-private-1",
+        arguments={"path": "input.txt"},
+        reasoning_content=continuation,
+    )
+    translator = ForgeEventTranslator(
+        session_request=make_test_guarded_session_request(),
+        clock=FakeClock(monotonic_value=2.0),
+    )
+    bridge = ForgeModelBridge(
+        model_client=FakeModelClient(responses=[response]),
+        model="profile-test",
+        event_translator=translator,
+    )
+
+    calls = await bridge.send([{"role": "user", "content": "run"}])
+
+    assert continuation not in repr(response.message)
+    assert continuation not in repr(calls[0])
+    assert continuation not in json.dumps(
+        [event.model_dump(mode="json") for event in bridge.events]
+    )
+    diagnostic = ModelProviderError(
+        category=ProviderErrorCategory.MALFORMED_RESPONSE,
+        message="reasoning continuation is malformed",
+        retryable=False,
+    )
+    assert continuation not in str(diagnostic)
+    assert all(
+        continuation not in json.dumps(event.model_dump(mode="json"))
+        for event in translator.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_reasoning_continuation_cannot_cross_profile_session_or_client() -> None:
+    first_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="first ordinary",
+                call_id="first-call",
+                arguments={"path": "same.txt"},
+                reasoning_content="first continuation",
+            ),
+            _model_response(content="first final"),
+        ]
+    )
+    second_client = FakeModelClient(
+        responses=[
+            _model_response(
+                content="second ordinary",
+                call_id="second-call",
+                arguments={"path": "same.txt"},
+                reasoning_content="second continuation",
+            ),
+            _model_response(content="second final"),
+        ]
+    )
+    first_bridge = ForgeModelBridge(
+        model_client=first_client,
+        model="profile.first",
+    )
+    second_bridge = ForgeModelBridge(
+        model_client=second_client,
+        model="profile.second",
+    )
+
+    await first_bridge.send([{"role": "user", "content": "first"}])
+    await second_bridge.send([{"role": "user", "content": "second"}])
+    await first_bridge.send(
+        [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "first ordinary",
+                "reasoning_content": "first continuation",
+                "tool_calls": [
+                    {
+                        "id": "first-call",
+                        "function": {
+                            "name": "prepare",
+                            "arguments": {"path": "same.txt"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "first-call",
+                "tool_name": "prepare",
+                "content": "first result",
+            },
+        ]
+    )
+    await second_bridge.send(
+        [
+            {"role": "user", "content": "second"},
+            {
+                "role": "assistant",
+                "content": "second ordinary",
+                "reasoning_content": "second continuation",
+                "tool_calls": [
+                    {
+                        "id": "second-call",
+                        "function": {
+                            "name": "prepare",
+                            "arguments": {"path": "same.txt"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "second-call",
+                "tool_name": "prepare",
+                "content": "second result",
+            },
+        ]
+    )
+
+    first_dump = first_client.requests[1].model_dump(mode="json")
+    second_dump = second_client.requests[1].model_dump(mode="json")
+    assert first_client.requests[1].model_profile_id == "profile.first"
+    assert second_client.requests[1].model_profile_id == "profile.second"
+    assert "first continuation" in json.dumps(first_dump)
+    assert "second continuation" not in json.dumps(first_dump)
+    assert "second continuation" in json.dumps(second_dump)
+    assert "first continuation" not in json.dumps(second_dump)
+    fresh_client = FakeModelClient(responses=[_model_response(content="fresh")])
+    fresh_bridge = ForgeModelBridge(model_client=fresh_client, model="profile.first")
+    await fresh_bridge.send([{"role": "user", "content": "fresh session"}])
+    assert "continuation" not in json.dumps(
+        fresh_client.requests[0].model_dump(mode="json")
+    )
 
 
 @pytest.mark.asyncio
@@ -1457,10 +2173,7 @@ async def test_model_bridge_preserves_invalid_tool_arguments_as_malformed() -> N
     assert client.call_count == 1
     assert response[0].tool == "prepare"
     assert response[0].args == '{"path":'
-    assert (
-        bridge.resolve_tool_call_id("prepare", {"_invalid_arguments": "invalid_json"})
-        is None
-    )
+    assert response[0].call_id == "model-call-invalid"
 
 
 @pytest.mark.asyncio
@@ -1506,8 +2219,7 @@ async def test_model_bridge_rejects_parallel_tool_calls_before_tool_dispatch() -
         )
 
     assert client.call_count == 1
-    assert bridge.resolve_tool_call_id("prepare", {"path": "a.txt"}) is None
-    assert bridge.resolve_tool_call_id("prepare", {"path": "b.txt"}) is None
+    assert not hasattr(bridge, "_pending_call_ids")
 
 
 @pytest.mark.asyncio
@@ -1604,21 +2316,22 @@ async def test_tool_bridge_uses_owned_history_for_terminal_acceptance() -> None:
             ],
         },
     )
-    call_ids = {
-        ("prepare", "input.txt"): "call-prepare",
-        ("submit", "input.txt"): "call-submit",
-    }
     bridge = ForgeToolBridge(
         plan=plan,
         session_request=session_request,
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda name, args: call_ids[(name, args["path"])],
     )
 
-    assert await bridge.invoke("prepare", {"path": "input.txt"}) == "prepared"
-    assert await bridge.invoke("submit", {"path": "input.txt"}) == _artifact_output()
+    assert (
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
+        == "prepared"
+    )
+    assert (
+        await bridge.invoke("submit", {"path": "input.txt"}, call_id="call-submit")
+        == _artifact_output()
+    )
 
     assert executor.call_count == 2
     assert [call.id for call in executor.calls] == ["call-prepare", "call-submit"]
@@ -1670,12 +2383,15 @@ async def test_tool_bridge_accepts_canonical_builder_fake_terminal_path(
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda name, _args: f"call-{name}",
     )
 
-    await bridge.invoke("inspect_request", {})
-    await bridge.invoke("read_plan", {})
-    await bridge.invoke("read_file", {"path": BUILDER_WORKSPACE_PATH})
+    await bridge.invoke("inspect_request", {}, call_id="call-inspect_request")
+    await bridge.invoke("read_plan", {}, call_id="call-read_plan")
+    await bridge.invoke(
+        "read_file",
+        {"path": BUILDER_WORKSPACE_PATH},
+        call_id="call-read_file",
+    )
     await bridge.invoke(
         "apply_patch",
         {
@@ -1683,20 +2399,26 @@ async def test_tool_bridge_accepts_canonical_builder_fake_terminal_path(
             "expected_text": BUILDER_WORKSPACE_INITIAL,
             "replacement_text": BUILDER_WORKSPACE_FIXED,
         },
+        call_id="call-apply_patch",
     )
-    await bridge.invoke("read_diff", {})
-    await bridge.invoke("run_validator", {"validator": "unit"})
+    await bridge.invoke("read_diff", {}, call_id="call-read_diff")
+    await bridge.invoke(
+        "run_validator", {"validator": "unit"}, call_id="call-run_validator"
+    )
     await bridge.invoke(
         "write_patch_summary",
         {"summary": "fixed add", "changed_files": [BUILDER_WORKSPACE_PATH]},
+        call_id="call-write_patch_summary",
     )
     await bridge.invoke(
         "write_validation_results",
         {"validator": "unit", "passed": True, "summary": "unit passed"},
+        call_id="call-write_validation_results",
     )
     await bridge.invoke(
         "submit_patch",
         {"summary_artifact_ids": ["patch_summary.json", "validation_results.json"]},
+        call_id="call-submit_patch",
     )
 
     assert executor.call_count == 9
@@ -1761,10 +2483,12 @@ async def test_tool_bridge_forwards_runtime_owned_tool_execution_context(
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=12.5),
-        call_id_resolver=lambda _name, _args: "call-prepare",
     )
 
-    assert await bridge.invoke("prepare", {"path": "input.txt"}) == "prepared"
+    assert (
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
+        == "prepared"
+    )
 
     assert executor.contexts[0].workspace_root == trusted_workspace
     assert executor.contexts[0].artifact_root == trusted_artifact_root
@@ -1787,11 +2511,10 @@ async def test_tool_bridge_rejects_terminal_without_owned_required_history() -> 
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda _name, _args: "call-submit",
     )
 
     with pytest.raises(ToolResolutionError):
-        await bridge.invoke("submit", {"path": "input.txt"})
+        await bridge.invoke("submit", {"path": "input.txt"}, call_id="call-submit")
 
     assert executor.call_count == 0
     assert bridge.terminal_intent is None
@@ -1824,11 +2547,10 @@ async def test_tool_bridge_denies_capability_without_executor_call() -> None:
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda _name, _args: "call-prepare",
     )
 
     with pytest.raises(ToolResolutionError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 0
     assert bridge.tool_trace[0].capability_decisions[0].decision.value == "denied"
@@ -1848,11 +2570,10 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
         executor=executor,
         cancellation_resolver=FakeCancellationResolver(is_cancelled=True),
         clock=FakeClock(monotonic_value=1.0),
-        call_id_resolver=lambda _name, _args: "call-prepare",
     )
 
     with pytest.raises(OperationCancelledError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 0
     assert bridge.tool_trace[0].execution_status.value == "cancelled"
@@ -1945,7 +2666,7 @@ async def test_tool_bridge_records_failed_executor_outcomes_without_terminal_acc
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(expected_exception):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == expected_status
@@ -1963,7 +2684,7 @@ async def test_tool_bridge_records_policy_denial_without_executor_call() -> None
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(ToolResolutionError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 0
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.NOT_EXECUTED
@@ -1981,7 +2702,7 @@ async def test_tool_bridge_records_binding_defect_trace_before_raising() -> None
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.HARD_FAILURE
@@ -2016,7 +2737,7 @@ async def test_tool_bridge_validates_owned_result_identity_and_input_hash(
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.HARD_FAILURE
@@ -2038,7 +2759,7 @@ async def test_tool_bridge_records_output_hash_defect_trace_before_raising() -> 
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.HARD_FAILURE
@@ -2077,7 +2798,7 @@ async def test_tool_bridge_preserves_result_owned_trace_metadata() -> None:
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     trace = bridge.tool_trace[0]
     assert trace.execution_status == ToolExecutionStatus.AMBIGUOUS
@@ -2118,7 +2839,7 @@ async def test_tool_bridge_records_mutating_failure_before_side_effect() -> None
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     trace = bridge.tool_trace[0]
     assert trace.execution_status == ToolExecutionStatus.HARD_FAILURE
@@ -2159,7 +2880,7 @@ async def test_tool_bridge_records_mutating_failure_after_side_effect() -> None:
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(NonRetryableToolError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     trace = bridge.tool_trace[0]
     assert trace.execution_status == ToolExecutionStatus.AMBIGUOUS
@@ -2185,7 +2906,7 @@ async def test_tool_bridge_records_implementation_defect_trace_before_reraising(
     bridge = _tool_bridge(executor=executor)
 
     with pytest.raises(RuntimeError):
-        await bridge.invoke("prepare", {"path": "input.txt"})
+        await bridge.invoke("prepare", {"path": "input.txt"}, call_id="call-prepare")
 
     assert executor.call_count == 1
     assert bridge.tool_trace[0].execution_status == ToolExecutionStatus.HARD_FAILURE

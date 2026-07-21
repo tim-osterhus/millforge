@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -20,7 +21,7 @@ from millforge._forge.core.messages import (
     MessageRole,
     MessageType,
 )
-from millforge._forge.core.workflow import TextResponse, Workflow
+from millforge._forge.core.workflow import TextResponse, ToolCall, Workflow
 from millforge._forge.errors import (
     MaxIterationsError,
     NonRetryableToolError,
@@ -61,6 +62,7 @@ class WorkflowRunner:
         retry_nudge: Callable[[str], str] | str | None = None,
         max_premature_attempts: int = 3,
         max_prereq_violations: int = 2,
+        tool_call_invoker: Callable[[ToolCall], Awaitable[Any] | Any] | None = None,
     ):
         """
         Args:
@@ -100,6 +102,7 @@ class WorkflowRunner:
         self.rescue_enabled = rescue_enabled
         self.max_premature_attempts = max_premature_attempts
         self.max_prereq_violations = max_prereq_violations
+        self.tool_call_invoker = tool_call_invoker
         if isinstance(retry_nudge, str):
             self._retry_nudge_fn: Callable[[str], str] | None = (
                 lambda _raw, _msg=retry_nudge: _msg
@@ -278,6 +281,7 @@ class WorkflowRunner:
                         "",
                         MessageMeta(MessageType.TOOL_CALL, step_index=iteration),
                         tool_calls=tc_infos,
+                        reasoning_content=tool_calls[0].reasoning_content,
                     )
                 )
                 nudge = step_check.nudge
@@ -333,6 +337,7 @@ class WorkflowRunner:
                         "",
                         MessageMeta(MessageType.TOOL_CALL, step_index=iteration),
                         tool_calls=tc_infos,
+                        reasoning_content=tool_calls[0].reasoning_content,
                     )
                 )
                 nudge = prereq_check.nudge
@@ -377,6 +382,7 @@ class WorkflowRunner:
                     "",
                     MessageMeta(MessageType.TOOL_CALL, step_index=iteration),
                     tool_calls=tc_infos,
+                    reasoning_content=tool_calls[0].reasoning_content,
                 )
             )
 
@@ -388,7 +394,11 @@ class WorkflowRunner:
                 tc_id = call_ids[i]
                 fn = workflow.get_callable(tc.tool)
                 try:
-                    if asyncio.iscoroutinefunction(fn):
+                    if self.tool_call_invoker is not None:
+                        result_val = self.tool_call_invoker(tc)
+                        if inspect.isawaitable(result_val):
+                            result_val = await result_val
+                    elif inspect.iscoroutinefunction(fn):
                         result_val = await fn(**tc.args)
                     else:
                         result_val = fn(**tc.args)

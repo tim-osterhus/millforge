@@ -46,6 +46,7 @@ from millforge.model_backend import (
     AuthenticationScheme,
     CapabilitySupport,
     ReasoningMode,
+    ReasoningPolicy,
 )
 from millforge.testing import FakeModelClient
 from millforge.tools.pi_compat.process import PiCompatShellConfig
@@ -1162,6 +1163,39 @@ def test_model_behavior_hash_ignores_source_diagnostics_and_secret_references() 
     assert identity._model_behavior_sha256(changed_secret) == original
 
 
+def test_replay_field_changes_behavior_hash_and_forge_provenance_changes_descriptor() -> (
+    None
+):
+    profile = make_canonical_builder_profile_a()
+    legacy_hash = identity._model_behavior_sha256(profile)
+    replay_profile = profile.model_copy(
+        update={
+            "reasoning": ReasoningPolicy(
+                mode=ReasoningMode.ENABLED,
+                mode_field="thinking",
+                mode_values={ReasoningMode.ENABLED: {"type": "enabled"}},
+                tool_call_replay_field="reasoning_content",
+            )
+        }
+    )
+
+    assert legacy_hash == (
+        "312ea21de480cb8221ea4329d169031e106118c546b365d912e6f5090fdbc0e7"
+    )
+    assert identity._model_behavior_sha256(replay_profile) != legacy_hash
+    descriptor = describe_millforge_base()
+    assert descriptor.forge_provenance_sha256 != (
+        "239da2e99f843bd29a5ccc5fda8ffbfbb635b94c0e1dc077b67cd031ddd2dd48"
+    )
+    assert descriptor.descriptor_sha256 != (
+        "a44cc37e4ea67208e21ed3333c9807e566c81cc0fc98452fa44f1fe0da2608fb"
+    )
+    assert descriptor.schema_version == "1.0"
+    assert descriptor.runner_version == 2
+    assert descriptor.context_contract_version == "millforge-base.context.v1"
+    assert descriptor.artifact_contract_version == "millforge.runtime-artifacts.v2"
+
+
 def test_runner_descriptor_is_read_only_and_request_evidence_is_stateless(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1394,7 +1428,7 @@ def test_default_terminal_contract_is_byte_compatible(
     descriptor = describe_millforge_base(legal_terminal_results=default)
 
     assert descriptor.descriptor_sha256 == (
-        "a44cc37e4ea67208e21ed3333c9807e566c81cc0fc98452fa44f1fe0da2608fb"
+        "bb083b6b65a455624032add007ccfb4a7c3ec2c32e664ebc0f4cbcbd2e86abf4"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"

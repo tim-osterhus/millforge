@@ -117,11 +117,13 @@ def _build_tool_call_infos(
     tool_calls: list[ToolCall],
     tool_call_counter: int,
 ) -> tuple[list[ToolCallInfo], int]:
-    """Assign call IDs to tool calls, returning infos and updated counter."""
+    """Retain provider call IDs and assign IDs only to provider-less calls."""
     tc_infos = []
     for tc in tool_calls:
-        tc_id = f"call_{tool_call_counter:09d}"
-        tool_call_counter += 1
+        tc_id = tc.call_id
+        if tc_id is None:
+            tc_id = f"call_{tool_call_counter:09d}"
+            tool_call_counter += 1
         tc_infos.append(ToolCallInfo(name=tc.tool, args=tc.args, call_id=tc_id))
     return tc_infos, tool_call_counter
 
@@ -377,6 +379,7 @@ async def run_inference(
                 "",
                 MessageMeta(MessageType.TOOL_CALL, step_index=step_index),
                 tool_calls=tc_infos,
+                reasoning_content=tool_calls[0].reasoning_content,
             )
             messages.append(tc_msg)
             new_messages.append(tc_msg)

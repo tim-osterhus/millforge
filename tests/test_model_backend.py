@@ -140,6 +140,90 @@ def _profile() -> ResolvedModelProfile:
     )
 
 
+def _replay_profile(
+    *,
+    mode: ReasoningMode = ReasoningMode.ENABLED,
+    success_body_limit_bytes: int = 4 * 1024 * 1024,
+    provider_id: str = "opaque-provider-a",
+) -> ResolvedModelProfile:
+    return _profile().model_copy(
+        update={
+            "provider_id": provider_id,
+            "reasoning": ReasoningPolicy(
+                mode=mode,
+                mode_field="thinking",
+                mode_values={mode: {"type": "enabled"}},
+                tool_call_replay_field="reasoning_content",
+            ),
+            "transport": _profile().transport.model_copy(
+                update={"success_body_limit_bytes": success_body_limit_bytes}
+            ),
+        }
+    )
+
+
+def _reasoning_tool_call(call_id: str = "provider-call-1") -> ModelToolCall:
+    return ModelToolCall(
+        call_id=call_id,
+        name="lookup",
+        arguments=ParsedToolArguments(value={"city": "Hilo"}),
+    )
+
+
+def _raw_reasoning_response(
+    reasoning_content: object = "exact continuation",
+    *,
+    include_reasoning_content: bool = True,
+    call_id: str = "provider-call-1",
+) -> TransportResponse:
+    message: dict[str, object] = {
+        "role": "assistant",
+        "content": "ordinary assistant content",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": '{"city":"Hilo"}',
+                },
+            }
+        ],
+    }
+    if include_reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    return TransportResponse(
+        status_code=200,
+        body={
+            "model": "gpt-test",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": message,
+                }
+            ],
+        },
+    )
+
+
+def _normalized_reasoning_response(
+    value: object = "exact continuation",
+) -> ModelCompletionResponse:
+    message = AssistantMessage.model_construct(
+        content="ordinary assistant content",
+        tool_calls=(_reasoning_tool_call(),),
+        reasoning_content=value,
+    )
+    return ModelCompletionResponse.model_construct(
+        provider_request_id="provider-normalized-1",
+        model_id="gpt-test",
+        message=message,
+        finish_reason="tool_calls",
+        usage=None,
+        provider_metadata=None,
+    )
+
+
 def _live_env(name: str) -> str:
     value = os.environ.get(name)
     if value is None or not value.strip():
@@ -1203,6 +1287,284 @@ async def test_default_model_client_maps_reasoning_without_owned_field_leakage()
     assert body["reasoning_effort_level"] == "medium"
     assert "reasoning_mode" not in body
     assert "reasoning_effort" not in body
+
+
+@pytest.mark.asyncio
+async def test_reasoning_policy_replay_field_requires_enabled_or_required_mapped_mode() -> (
+    None
+):
+    for mode in (ReasoningMode.ENABLED, ReasoningMode.REQUIRED):
+        for mode_field, mode_values in (
+            (None, {mode: "on"}),
+            ("   ", {mode: "on"}),
+            ("thinking", {}),
+        ):
+            with pytest.raises(ValidationError, match="replay|mapping|wire"):
+                ReasoningPolicy(
+                    mode=mode,
+                    mode_field=mode_field,
+                    mode_values=mode_values,
+                    tool_call_replay_field="reasoning_content",
+                )
+        assert (
+            ReasoningPolicy(
+                mode=mode,
+                mode_field="thinking",
+                mode_values={mode: "on"},
+                tool_call_replay_field="reasoning_content",
+            ).tool_call_replay_field
+            == "reasoning_content"
+        )
+
+    with pytest.raises(ValidationError, match="replay|enabled|required"):
+        ReasoningPolicy(
+            mode=ReasoningMode.DISABLED,
+            tool_call_replay_field="reasoning_content",
+        )
+    with pytest.raises(ValidationError, match="literal|reasoning_content"):
+        ReasoningPolicy(
+            mode=ReasoningMode.ENABLED,
+            mode_field="thinking",
+            mode_values={ReasoningMode.ENABLED: "on"},
+            tool_call_replay_field="provider_state",  # type: ignore[arg-type]
+        )
+
+    invalid_runtime_policy = ReasoningPolicy.model_construct(
+        mode=ReasoningMode.REQUIRED,
+        effort=None,
+        mode_field=None,
+        effort_field=None,
+        mode_values={},
+        effort_values={},
+        tool_call_replay_field="reasoning_content",
+    )
+    profile = _profile().model_copy(update={"reasoning": invalid_runtime_policy})
+    secret_resolver = _RecordingSecretResolver({"openai-key": "sk-real-secret"})
+    client, transport = _client(
+        profile=profile,
+        secret_resolver=secret_resolver,
+    )
+
+    with pytest.raises(ModelBackendConfigError, match="reasoning|replay|mapping"):
+        await client.complete(_request(secret_refs=(_secret(),)))
+
+    assert secret_resolver.resolved == []
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_reasoning_tool_response_preserves_content_calls_and_continuation() -> (
+    None
+):
+    continuation = "  exact λ continuation\n"
+    profile = _replay_profile(provider_id="opaque-provider-replay")
+    client, transport = _client(
+        profile=profile,
+        response=_raw_reasoning_response(continuation),
+    )
+
+    response = await client.complete(_request(secret_refs=(_secret(),)))
+
+    assert transport.requests[0].profile.provider_id == "opaque-provider-replay"
+    assert response.content == "ordinary assistant content"
+    assert response.tool_calls == (_reasoning_tool_call(),)
+    assert response.message.reasoning_content == continuation
+    assert (
+        AssistantMessage.model_validate(
+            response.message.model_dump(mode="json")
+        ).reasoning_content
+        == continuation
+    )
+    assert "reasoning_content" not in AssistantMessage(content="legacy").model_dump(
+        mode="json"
+    )
+    assert continuation not in repr(response.message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "include"),
+    (
+        (None, False),
+        (None, True),
+        ("", True),
+        (" \n\t", True),
+        (42, True),
+        ("12345", True),
+    ),
+)
+async def test_required_reasoning_continuation_refuses_malformed_provider_response(
+    value: object,
+    include: bool,
+) -> None:
+    profile = _replay_profile(success_body_limit_bytes=4)
+    client, _ = _client(
+        profile=profile,
+        response=_raw_reasoning_response(
+            value,
+            include_reasoning_content=include,
+        ),
+    )
+
+    with pytest.raises(ModelProviderError) as exc_info:
+        await client.complete(_request(secret_refs=(_secret(),)))
+
+    assert exc_info.value.category is ProviderErrorCategory.MALFORMED_RESPONSE
+    assert str(value) not in str(exc_info.value) or value in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_raw_and_normalized_responses_share_reasoning_replay_admission_matrix() -> (
+    None
+):
+    malformed_values: tuple[tuple[object, bool], ...] = (
+        (None, False),
+        (None, True),
+        ("", True),
+        ("   ", True),
+        (7, True),
+        ("12345", True),
+    )
+    profile = _replay_profile(success_body_limit_bytes=4)
+
+    for value, include in malformed_values:
+        raw_client, _ = _client(
+            profile=profile,
+            response=_raw_reasoning_response(
+                value,
+                include_reasoning_content=include,
+            ),
+        )
+        normalized = _normalized_reasoning_response(value)
+        if not include:
+            object.__delattr__(normalized.message, "reasoning_content")
+        normalized_client, _ = _client(
+            profile=profile,
+            response=TransportResponse(
+                status_code=200,
+                normalized_response=normalized,
+            ),
+        )
+        for client in (raw_client, normalized_client):
+            with pytest.raises(ModelProviderError) as exc_info:
+                await client.complete(_request(secret_refs=(_secret(),)))
+            assert exc_info.value.category is ProviderErrorCategory.MALFORMED_RESPONSE
+
+    for transport_response in (
+        _raw_reasoning_response("discard me"),
+        TransportResponse(
+            status_code=200,
+            normalized_response=_normalized_reasoning_response("discard me"),
+        ),
+    ):
+        client, _ = _client(response=transport_response)
+        response = await client.complete(_request(secret_refs=(_secret(),)))
+        assert response.message.reasoning_content is None
+        assert "reasoning_content" not in response.message.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_replay_preflight_refuses_incomplete_or_reordered_call_result_history() -> (
+    None
+):
+    first_call = _reasoning_tool_call("provider-call-1")
+    second_call = _reasoning_tool_call("provider-call-2").model_copy(
+        update={"name": "forecast"}
+    )
+    replay_turn = AssistantMessage(
+        content="ordinary",
+        reasoning_content="private continuation",
+        tool_calls=(first_call, second_call),
+    )
+    first_result = ToolResultMessage(
+        tool_call_id=first_call.call_id,
+        tool_name=first_call.name,
+        content="first",
+    )
+    second_result = ToolResultMessage(
+        tool_call_id=second_call.call_id,
+        tool_name=second_call.name,
+        content="second",
+    )
+    corrupt_histories = (
+        (
+            AssistantMessage.model_construct(
+                role="assistant",
+                content="duplicate provider call IDs",
+                reasoning_content="private continuation",
+                tool_calls=(first_call, first_call),
+            ),
+            first_result,
+            first_result,
+        ),
+        (replay_turn, first_result),
+        (replay_turn, first_result, first_result, second_result),
+        (replay_turn, second_result, first_result),
+        (
+            replay_turn,
+            first_result,
+            ToolResultMessage.model_construct(
+                role="tool",
+                tool_call_id=second_call.call_id,
+                tool_name="wrong-name",
+                content="second",
+            ),
+        ),
+        (
+            replay_turn,
+            first_result,
+            AssistantMessage(content="too early"),
+            second_result,
+        ),
+        (
+            ToolResultMessage.model_construct(
+                role="tool",
+                tool_call_id="orphan",
+                tool_name="lookup",
+                content="orphan",
+            ),
+        ),
+        (
+            AssistantMessage(
+                content="missing continuation",
+                tool_calls=(first_call,),
+            ),
+            first_result,
+        ),
+    )
+
+    for messages in corrupt_histories:
+        secret_resolver = _RecordingSecretResolver({"openai-key": "sk-real-secret"})
+        client, transport = _client(
+            profile=_replay_profile(),
+            secret_resolver=secret_resolver,
+        )
+        request = _request(secret_refs=(_secret(),)).model_copy(
+            update={"messages": messages}
+        )
+        with pytest.raises(ModelBackendConfigError, match="replay|tool|result"):
+            await client.complete(request)
+        assert secret_resolver.resolved == []
+        assert transport.requests == []
+
+    secret_resolver = _RecordingSecretResolver({"openai-key": "sk-real-secret"})
+    client, transport = _client(secret_resolver=secret_resolver)
+    unselected_request = _request(secret_refs=(_secret(),)).model_copy(
+        update={
+            "messages": (
+                AssistantMessage(
+                    content="ordinary",
+                    reasoning_content="must not pass through",
+                    tool_calls=(first_call,),
+                ),
+                first_result,
+            )
+        }
+    )
+    with pytest.raises(ModelBackendConfigError, match="reasoning|replay"):
+        await client.complete(unselected_request)
+    assert secret_resolver.resolved == []
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

@@ -3,12 +3,61 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 
-from millforge._forge.core.messages import Message, MessageType
+from millforge._forge.core.messages import Message, MessageRole, MessageType
 
 
 def _estimate_tokens(messages: list[Message]) -> int:
-    return sum(len(m.content) for m in messages) // 4
+    return (
+        sum(
+            len(message.content) + len(message.reasoning_content or "")
+            for message in messages
+        )
+        // 4
+    )
+
+
+def _replay_steps(
+    messages: list[Message],
+    eligible_end: int,
+) -> tuple[set[int], set[int]]:
+    replay_steps: set[int] = set()
+    complete_steps: set[int] = set()
+    for index, message in enumerate(messages[:eligible_end]):
+        step = message.metadata.step_index
+        if (
+            index < 2
+            or step is None
+            or not message.tool_calls
+            or message.reasoning_content is None
+        ):
+            continue
+        replay_steps.add(step)
+        step_messages = [
+            item
+            for item in messages[2:eligible_end]
+            if item.metadata.step_index == step
+        ]
+        call_messages = [item for item in step_messages if item.tool_calls]
+        if len(call_messages) != 1:
+            continue
+        call_message = call_messages[0]
+        call_index = step_messages.index(call_message)
+        results = [
+            item
+            for item in step_messages[call_index + 1 :]
+            if item.role is MessageRole.TOOL
+        ]
+        calls = call_message.tool_calls or []
+        if len(results) != len(calls):
+            continue
+        if all(
+            result.tool_call_id == call.call_id and result.tool_name == call.name
+            for call, result in zip(calls, results, strict=True)
+        ):
+            complete_steps.add(step)
+    return replay_steps, complete_steps
 
 
 class CompactStrategy(ABC):
@@ -208,23 +257,31 @@ class TieredCompact(CompactStrategy):
     def _phase1(self, messages: list[Message], eligible_end: int) -> list[Message]:
         """Drop nudges/retries and truncate tool_results outside keep_recent."""
         result: list[Message] = []
+        replay_steps, _ = _replay_steps(messages, eligible_end)
         for i, msg in enumerate(messages):
             if 2 <= i < eligible_end:
-                if msg.metadata.type in (
-                    MessageType.STEP_NUDGE,
-                    MessageType.PREREQUISITE_NUDGE,
-                    MessageType.RETRY_NUDGE,
+                replay_result = (
+                    msg.metadata.step_index in replay_steps
+                    and msg.role is MessageRole.TOOL
+                )
+                if (
+                    msg.metadata.type
+                    in (
+                        MessageType.STEP_NUDGE,
+                        MessageType.PREREQUISITE_NUDGE,
+                        MessageType.RETRY_NUDGE,
+                    )
+                    and not replay_result
                 ):
                     continue
-                if msg.metadata.type == MessageType.TOOL_RESULT:
+                if msg.metadata.type == MessageType.TOOL_RESULT or replay_result:
                     if len(msg.content) > self.TRUNCATE_CHARS:
                         kept = msg.content[: self.TRUNCATE_CHARS]
                         removed = len(msg.content) - self.TRUNCATE_CHARS
                         result.append(
-                            Message(
-                                role=msg.role,
+                            replace(
+                                msg,
                                 content=f"{kept}\n[Truncated — {removed} chars removed]",
-                                metadata=msg.metadata,
                             )
                         )
                         continue
@@ -234,8 +291,15 @@ class TieredCompact(CompactStrategy):
     def _phase2(self, messages: list[Message], eligible_end: int) -> list[Message]:
         """Phase 1 + drop tool_results entirely. Reasoning and text preserved."""
         result: list[Message] = []
+        replay_steps, complete_steps = _replay_steps(messages, eligible_end)
         for i, msg in enumerate(messages):
             if 2 <= i < eligible_end:
+                step = msg.metadata.step_index
+                if step in complete_steps:
+                    continue
+                if step in replay_steps:
+                    result.append(msg)
+                    continue
                 if msg.metadata.type in (
                     MessageType.STEP_NUDGE,
                     MessageType.PREREQUISITE_NUDGE,
@@ -249,8 +313,15 @@ class TieredCompact(CompactStrategy):
     def _phase3(self, messages: list[Message], eligible_end: int) -> list[Message]:
         """Phase 2 + drop reasoning and text_response. Tool_call skeleton only."""
         result: list[Message] = []
+        replay_steps, complete_steps = _replay_steps(messages, eligible_end)
         for i, msg in enumerate(messages):
             if 2 <= i < eligible_end:
+                step = msg.metadata.step_index
+                if step in complete_steps:
+                    continue
+                if step in replay_steps:
+                    result.append(msg)
+                    continue
                 if msg.metadata.type in (
                     MessageType.STEP_NUDGE,
                     MessageType.PREREQUISITE_NUDGE,

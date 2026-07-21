@@ -33,6 +33,7 @@ from pydantic import (
     Field,
     StrictBool,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -2025,16 +2026,24 @@ class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     tool_calls: Tuple[ModelToolCall, ...] = Field(default_factory=tuple)
+    reasoning_content: str | None = Field(default=None, repr=False)
 
     @property
     def kind(self) -> str:
         """Compatibility accessor; ``role`` is the serialized discriminator."""
         return self.role
 
-    @field_validator("content")
+    @field_validator("content", "reasoning_content")
     @classmethod
-    def _content_nonblank(cls, value: str | None) -> str | None:
-        return None if value is None else _nonblank(value, "content")
+    def _content_nonblank(cls, value: str | None, info: Any) -> str | None:
+        return None if value is None else _nonblank(value, info.field_name)
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_reasoning_content(self, handler: Any) -> dict[str, Any]:
+        payload = handler(self)
+        if self.reasoning_content is None:
+            payload.pop("reasoning_content", None)
+        return payload
 
     @model_validator(mode="after")
     def _assistant_has_content_or_tools(self) -> AssistantMessage:

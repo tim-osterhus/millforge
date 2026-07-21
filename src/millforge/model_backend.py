@@ -16,11 +16,18 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol, TypeAlias, cast, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, TypeAlias, cast, runtime_checkable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from millforge.contracts import (
     AssistantMessage,
@@ -38,6 +45,7 @@ from millforge.contracts import (
     SamplingRequest,
     SecretRef,
     TokenUsage,
+    ToolResultMessage,
     redact_diagnostic_mapping,
     redact_diagnostic_text,
     redact_diagnostic_value,
@@ -487,6 +495,7 @@ class ReasoningPolicy(BaseModel):
     effort_field: str | None = None
     mode_values: dict[ReasoningMode, JsonValue] = Field(default_factory=dict)
     effort_values: dict[ReasoningEffort, JsonValue] = Field(default_factory=dict)
+    tool_call_replay_field: Literal["reasoning_content"] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -546,7 +555,23 @@ class ReasoningPolicy(BaseModel):
                 raise ValueError("reasoning effort needs a configured wire field")
             if self.effort not in self.effort_values:
                 raise ValueError("reasoning effort needs a configured wire value")
+        if self.tool_call_replay_field is not None:
+            if self.mode not in (ReasoningMode.ENABLED, ReasoningMode.REQUIRED):
+                raise ValueError(
+                    "reasoning replay requires enabled or required reasoning"
+                )
+            if self.mode_field is None or not self.mode_field.strip():
+                raise ValueError("reasoning replay needs a configured wire field")
+            if self.mode not in self.mode_values:
+                raise ValueError("reasoning replay needs a configured wire value")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_replay_field(self, handler: Any) -> dict[str, Any]:
+        payload = handler(self)
+        if self.tool_call_replay_field is None:
+            payload.pop("tool_call_replay_field", None)
+        return payload
 
 
 class CapabilityDeclarations(BaseModel):
@@ -1358,9 +1383,16 @@ def build_transport_body(
     maximum_output_tokens: int | None,
 ) -> JsonObject:
     """Build the provider-neutral request body consumed by private transports."""
+    _validate_reasoning_replay_history(profile, request.messages)
     body: JsonObject = {
         "model": profile.model_id,
-        "messages": [_message_payload(message) for message in request.messages],
+        "messages": [
+            _message_payload(
+                message,
+                replay_field=profile.reasoning.tool_call_replay_field,
+            )
+            for message in request.messages
+        ],
         "stream": False,
     }
     if request.tools:
@@ -1389,10 +1421,22 @@ def build_transport_body(
 
 def validate_reasoning_policy(policy: ReasoningPolicy) -> None:
     """Reject un-mappable required reasoning before secret resolution and HTTP."""
-    if policy.mode is not ReasoningMode.REQUIRED:
-        return
-    if policy.mode_field is None or policy.mode not in policy.mode_values:
+    if policy.mode is ReasoningMode.REQUIRED and (
+        policy.mode_field is None or policy.mode not in policy.mode_values
+    ):
         raise ModelBackendConfigError("required reasoning has no faithful mapping")
+    if policy.tool_call_replay_field is None:
+        return
+    if policy.mode not in (ReasoningMode.ENABLED, ReasoningMode.REQUIRED):
+        raise ModelBackendConfigError(
+            "reasoning replay requires enabled or required reasoning"
+        )
+    if (
+        policy.mode_field is None
+        or not policy.mode_field.strip()
+        or policy.mode not in policy.mode_values
+    ):
+        raise ModelBackendConfigError("reasoning replay has no faithful mapping")
 
 
 def _add_reasoning_controls(
@@ -1454,7 +1498,11 @@ def _append_header(headers: dict[str, str], name: str, value: str) -> None:
     headers[name] = value
 
 
-def _message_payload(message: ModelMessage) -> JsonObject:
+def _message_payload(
+    message: ModelMessage,
+    *,
+    replay_field: Literal["reasoning_content"] | None,
+) -> JsonObject:
     if message.role == "assistant":
         payload: JsonObject = {"role": "assistant"}
         if message.content is not None:
@@ -1471,6 +1519,8 @@ def _message_payload(message: ModelMessage) -> JsonObject:
                 }
                 for call in message.tool_calls
             ]
+        if replay_field is not None and message.reasoning_content is not None:
+            payload[replay_field] = message.reasoning_content
         return payload
     if message.role == "tool":
         return {
@@ -1480,6 +1530,81 @@ def _message_payload(message: ModelMessage) -> JsonObject:
             "content": message.content,
         }
     return {"role": message.role, "content": message.content}
+
+
+def _validate_reasoning_replay_history(
+    profile: ResolvedModelProfile,
+    messages: tuple[ModelMessage, ...],
+) -> None:
+    replay_field = profile.reasoning.tool_call_replay_field
+    if replay_field is None:
+        if any(
+            isinstance(message, AssistantMessage)
+            and message.reasoning_content is not None
+            for message in messages
+        ):
+            raise ModelBackendConfigError(
+                "reasoning continuation requires a selected replay field"
+            )
+        return
+
+    pending: tuple[ModelToolCall, ...] = ()
+    pending_index = 0
+    seen_call_ids: set[str] = set()
+    for message in messages:
+        if pending:
+            if not isinstance(message, ToolResultMessage):
+                raise ModelBackendConfigError(
+                    "reasoning replay tool results are incomplete"
+                )
+            expected = pending[pending_index]
+            if (
+                message.tool_call_id != expected.call_id
+                or message.tool_name != expected.name
+            ):
+                raise ModelBackendConfigError(
+                    "reasoning replay tool results are not in call order"
+                )
+            pending_index += 1
+            if pending_index == len(pending):
+                pending = ()
+                pending_index = 0
+            continue
+
+        if isinstance(message, ToolResultMessage):
+            raise ModelBackendConfigError("reasoning replay tool result is orphaned")
+        if not isinstance(message, AssistantMessage):
+            continue
+        if message.reasoning_content is not None:
+            _validate_outbound_reasoning_content(profile, message.reasoning_content)
+        if not message.tool_calls:
+            continue
+        if message.reasoning_content is None:
+            raise ModelBackendConfigError(
+                "reasoning replay tool call is missing continuation"
+            )
+        for call in message.tool_calls:
+            if call.call_id in seen_call_ids:
+                raise ModelBackendConfigError(
+                    "reasoning replay tool-call IDs are duplicated"
+                )
+            seen_call_ids.add(call.call_id)
+        pending = message.tool_calls
+
+    if pending:
+        raise ModelBackendConfigError("reasoning replay tool results are incomplete")
+
+
+def _validate_outbound_reasoning_content(
+    profile: ResolvedModelProfile,
+    value: object,
+) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ModelBackendConfigError("reasoning replay continuation is malformed")
+    if len(value.encode("utf-8")) > profile.transport.success_body_limit_bytes:
+        raise ModelBackendConfigError(
+            "reasoning replay continuation exceeded configured limit"
+        )
 
 
 def _tool_arguments_json(call: ModelToolCall) -> str:
@@ -1506,9 +1631,20 @@ def normalize_transport_response(
 ) -> ModelCompletionResponse:
     """Return only owned response data from a transport response."""
     if response.normalized_response is not None:
-        normalized = ModelCompletionResponse.model_validate(
-            response.normalized_response.model_dump()
+        source = response.normalized_response
+        reasoning_content = _admit_response_reasoning_content(
+            profile,
+            getattr(source.message, "reasoning_content", None),
+            has_tool_calls=bool(source.message.tool_calls),
         )
+        source = source.model_copy(
+            update={
+                "message": source.message.model_copy(
+                    update={"reasoning_content": reasoning_content}
+                )
+            }
+        )
+        normalized = ModelCompletionResponse.model_validate(source.model_dump())
         if normalized.model_id != profile.model_id:
             raise ModelProviderError(
                 category=ProviderErrorCategory.MALFORMED_RESPONSE,
@@ -1547,9 +1683,15 @@ def _normalize_openai_chat_body(
     content = message.get("content")
     if content is not None and not isinstance(content, str):
         raise _malformed_response("provider response content is malformed")
+    tool_calls = _normalize_tool_calls(message.get("tool_calls", ()))
     assistant = AssistantMessage(
         content=content,
-        tool_calls=_normalize_tool_calls(message.get("tool_calls", ())),
+        tool_calls=tool_calls,
+        reasoning_content=_admit_response_reasoning_content(
+            profile,
+            message.get("reasoning_content"),
+            has_tool_calls=bool(tool_calls),
+        ),
     )
     finish_reason = _FINISH_REASON_MAP.get(str(choice.get("finish_reason")), "unknown")
     usage = _normalize_usage(body.get("usage"))
@@ -1563,6 +1705,23 @@ def _normalize_openai_chat_body(
         ),
         usage=usage,
     )
+
+
+def _admit_response_reasoning_content(
+    profile: ResolvedModelProfile,
+    value: object,
+    *,
+    has_tool_calls: bool,
+) -> str | None:
+    if profile.reasoning.tool_call_replay_field is None or not has_tool_calls:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise _malformed_response("provider reasoning continuation is malformed")
+    if len(value.encode("utf-8")) > profile.transport.success_body_limit_bytes:
+        raise _malformed_response(
+            "provider reasoning continuation exceeded configured limit"
+        )
+    return value
 
 
 def _normalize_tool_calls(value: object) -> tuple[ModelToolCall, ...]:

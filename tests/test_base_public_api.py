@@ -211,7 +211,7 @@ def test_default_base_public_contract_uses_successor_identity() -> None:
         descriptor.artifact_contract_version,
     ) == ("1.0", 2, "millforge.runtime-artifacts.v2")
     assert descriptor.descriptor_sha256 == (
-        "a44cc37e4ea67208e21ed3333c9807e566c81cc0fc98452fa44f1fe0da2608fb"
+        "bb083b6b65a455624032add007ccfb4a7c3ec2c32e664ebc0f4cbcbd2e86abf4"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"

@@ -191,6 +191,36 @@
       "private_destination": "src/millforge/_forge/core/__init__.py",
       "edit_category": "private_subset_safety_patch",
       "patch_reason": "Convert the curated core package export to a lazy WorkflowRunner lookup so the reduced private subset remains importable when callers import context or workflow modules directly."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/workflow.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Carry exact provider tool-call IDs and optional non-repr reasoning continuation on the private ToolCall handoff without a signature-keyed identity cache."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/messages.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Retain and serialize typed reasoning continuation on its assistant tool-call message while preserving exact malformed string arguments during retry reconstruction."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/inference.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Preserve provider tool-call IDs and reasoning continuation across inference validation retries instead of regenerating provider call identity."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/runner.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Preserve reasoning continuation on tool, prerequisite, and premature-terminal retry turns and hand exact provider call identity directly to Millforge tool execution."
+    },
+    {
+      "private_destination": "src/millforge/_forge/context/manager.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Count retained provider reasoning continuation in the existing fallback context token estimator."
+    },
+    {
+      "private_destination": "src/millforge/_forge/context/strategies.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Count reasoning continuation, preserve pairing fields during result truncation, and compact completed replay-bearing tool turns atomically."
     }
   ],
   "excluded_upstream_paths": [

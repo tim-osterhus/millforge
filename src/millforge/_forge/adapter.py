@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -309,7 +308,6 @@ class ForgeGuardrailBackend:
                 executor=self._tool_executor,
                 cancellation_resolver=self._cancellation_resolver,
                 clock=self._clock,
-                call_id_resolver=model_bridge.resolve_tool_call_id,
             )
             workflow_input = ForgeWorkflowFactory(
                 {
@@ -334,6 +332,11 @@ class ForgeGuardrailBackend:
                 max_prereq_violations=workflow_input.runner_options.max_prereq_violations,
                 stream=False,
                 on_message=_runner_message_observer(event_translator),
+                tool_call_invoker=lambda call: tool_bridge.invoke(
+                    call.tool,
+                    call.args,
+                    call_id=call.call_id,
+                ),
             )
             initial_messages = ForgeSessionInputBuilder().build(plan, request)
             await runner.run(
@@ -989,7 +992,6 @@ class ForgeModelBridge:
         self._provider_reported = False
         self._in_model_call = False
         self._model_exception_seen = False
-        self._pending_call_ids: dict[tuple[str, str], deque[str]] = defaultdict(deque)
         self._model_turn = 0
 
     @property
@@ -1109,12 +1111,14 @@ class ForgeModelBridge:
         calls: list[ToolCall] = []
         for call in response.tool_calls:
             args = _parsed_model_tool_args(call)
-            if isinstance(args, dict):
-                self._pending_call_ids[_tool_call_signature(call.name, args)].append(
-                    call.call_id
-                )
             calls.append(
-                ToolCall(tool=call.name, args=args, reasoning=response.content)
+                ToolCall(
+                    tool=call.name,
+                    args=args,
+                    reasoning=response.content,
+                    call_id=call.call_id,
+                    reasoning_content=response.message.reasoning_content,
+                )
             )
         return calls
 
@@ -1144,14 +1148,6 @@ class ForgeModelBridge:
 
     async def aclose(self) -> None:
         return None
-
-    def resolve_tool_call_id(
-        self, tool_name: str, args: Mapping[str, Any]
-    ) -> str | None:
-        queue = self._pending_call_ids.get(_tool_call_signature(tool_name, args))
-        if not queue:
-            return None
-        return queue.popleft()
 
     def _request_id(self, model_turn: int) -> str:
         if self._event_translator is None:
@@ -1211,7 +1207,6 @@ class ForgeToolBridge:
         executor: ToolExecutorLike,
         cancellation_resolver: CancellationResolverLike,
         clock: RuntimeClockLike,
-        call_id_resolver: Callable[[str, Mapping[str, Any]], str | None] | None = None,
     ) -> None:
         self._plan = plan
         self._session_request = session_request
@@ -1223,7 +1218,6 @@ class ForgeToolBridge:
         self._executor = executor
         self._cancellation_resolver = cancellation_resolver
         self._clock = clock
-        self._call_id_resolver = call_id_resolver
         self._nodes_by_tool = {node.model_tool_name: node for node in plan.nodes}
         self._owned_successes: dict[
             str, tuple[ToolExecutionResult, dict[str, Any]]
@@ -1263,12 +1257,18 @@ class ForgeToolBridge:
 
         return _callable
 
-    async def invoke(self, tool_name: str, arguments: Mapping[str, Any]) -> str:
+    async def invoke(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        *,
+        call_id: str | None = None,
+    ) -> str:
         node = self._nodes_by_tool.get(tool_name)
         if node is None:
             raise NonRetryableToolError(f"Tool {tool_name!r} is outside compiled plan")
         args = dict(arguments)
-        call_id = self._resolve_call_id(tool_name, args)
+        call_id = self._resolve_call_id(call_id)
         input_sha256 = _sha256_json(args)
         self._append_event(
             SessionEventType.TOOL_STARTED,
@@ -1577,11 +1577,9 @@ class ForgeToolBridge:
             )
         return _model_visible_tool_content(result)
 
-    def _resolve_call_id(self, tool_name: str, args: Mapping[str, Any]) -> str:
-        if self._call_id_resolver is not None:
-            resolved = self._call_id_resolver(tool_name, args)
-            if resolved is not None:
-                return resolved
+    def _resolve_call_id(self, call_id: str | None) -> str:
+        if call_id is not None:
+            return call_id
         call_id = f"bridge_call_{self._bridge_call_counter:09d}"
         self._bridge_call_counter += 1
         return call_id
@@ -1983,6 +1981,11 @@ def _model_message_from_private(message: Mapping[str, Any]) -> ModelMessage:
         return AssistantMessage(
             content=assistant_content,
             tool_calls=tuple(tool_calls),
+            reasoning_content=(
+                str(message["reasoning_content"])
+                if message.get("reasoning_content") is not None
+                else None
+            ),
         )
     if role == "tool":
         return ToolResultMessage(
@@ -2076,10 +2079,6 @@ def _parsed_model_tool_args(call: ModelToolCall) -> Any:
     if isinstance(call.arguments, ParsedToolArguments):
         return dict(call.arguments.value)
     return call.arguments.raw
-
-
-def _tool_call_signature(tool_name: str, args: Mapping[str, Any]) -> tuple[str, str]:
-    return tool_name, canonical_json_serialize(dict(args))
 
 
 def _sha256_json(value: Any) -> str:

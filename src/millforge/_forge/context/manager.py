@@ -105,7 +105,13 @@ class ContextManager:
         """Return actual token count if available, else char/4 heuristic."""
         if self._last_known_tokens is not None:
             return self._last_known_tokens
-        return sum(len(m.content) for m in messages) // 4
+        return (
+            sum(
+                len(message.content) + len(message.reasoning_content or "")
+                for message in messages
+            )
+            // 4
+        )
 
     def check_thresholds(self, messages: list[Message]) -> str | None:
         """Check context thresholds and return an optional warning to inject.

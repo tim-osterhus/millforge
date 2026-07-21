@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -48,7 +48,7 @@ class ToolCallInfo:
     """One tool call within an assistant message."""
 
     name: str
-    args: dict[str, Any]
+    args: Any
     call_id: str
 
 
@@ -69,6 +69,7 @@ class Message:
     tool_call_id: str | None = None
     # Assistant tool-call list (length >= 1 when present)
     tool_calls: list[ToolCallInfo] | None = None
+    reasoning_content: str | None = field(default=None, repr=False)
 
     def to_api_dict(self, format: str = "ollama") -> dict[str, Any]:
         """Serialize for LLM API. Strips metadata.
@@ -82,22 +83,31 @@ class Message:
         if self.tool_calls is not None:
             tc_list: list[dict[str, Any]] = []
             for tc in self.tool_calls:
-                args: Any = tc.args or {}
+                args: Any = {} if tc.args is None else tc.args
                 tc_entry: dict[str, Any] = {
                     "function": {
                         "name": tc.name,
-                        "arguments": json.dumps(args) if format == "openai" else args,
+                        "arguments": (
+                            args
+                            if format == "openai" and isinstance(args, str)
+                            else json.dumps(args)
+                            if format == "openai"
+                            else args
+                        ),
                     },
                 }
                 if format == "openai":
                     tc_entry["type"] = "function"
                     tc_entry["id"] = tc.call_id
                 tc_list.append(tc_entry)
-            return {
+            payload = {
                 "role": self.role.value,
                 "content": self.content,
                 "tool_calls": tc_list,
             }
+            if self.reasoning_content is not None:
+                payload["reasoning_content"] = self.reasoning_content
+            return payload
         d: dict[str, Any] = {"role": self.role.value, "content": self.content}
         if self.tool_name is not None:
             if format == "openai":
