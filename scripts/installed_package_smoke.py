@@ -29,6 +29,7 @@ from millforge import (
     MillforgeBaseOptions,
     ModelProfileRef,
     OpenAICompatibleTimeouts,
+    RequestOptionAllowlist,
     ResolvedModelProfile,
     ResolvedSecret,
     RunDirRef,
@@ -107,6 +108,9 @@ def _model_profile(secret_ref: SecretRef) -> ResolvedModelProfile:
                 "tool_result_messages": CapabilitySupport.SUPPORTED,
             }
         ),
+        request_options=RequestOptionAllowlist(
+            allowed_options=("parallel_tool_calls",),
+        ),
         timeout_seconds=30,
         source_digest="installed-package-smoke-v2",
     )
@@ -123,6 +127,7 @@ class _FakeOpenAITransport:
         self.request_count += 1
         body = json.loads(request.content)
         assert body["model"] == "fake-tool-model"
+        assert body["parallel_tool_calls"] is False
         assert request.url == "https://models.invalid/v1/chat/completions"
         assert request.headers["authorization"] == f"Bearer {_RAW_SECRET}"
 
