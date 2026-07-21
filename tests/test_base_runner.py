@@ -43,8 +43,10 @@ from millforge import (
     ModelToolCall,
     OpenAICompatibleTimeouts,
     ParsedToolArguments,
+    RequestOptionAllowlist,
     RunDirRef,
     RuntimeArtifactWriterFactory,
+    ResolvedModelProfile,
     ResolvedSecret,
     SecretRef,
     SecretResolutionError,
@@ -1380,6 +1382,16 @@ def _live_timeouts() -> OpenAICompatibleTimeouts:
     )
 
 
+def _live_model_profile() -> ResolvedModelProfile:
+    return make_canonical_builder_profile_a().model_copy(
+        update={
+            "request_options": RequestOptionAllowlist(
+                allowed_options=("parallel_tool_calls",),
+            )
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_public_live_factory_completes_offline_traversal_and_closes_once(
     monkeypatch: pytest.MonkeyPatch,
@@ -1389,7 +1401,7 @@ async def test_public_live_factory_completes_offline_traversal_and_closes_once(
     (tmp_path / "note.txt").write_text("offline proof\n", encoding="utf-8")
     home = tmp_path / "home"
     home.mkdir()
-    profile = make_canonical_builder_profile_a()
+    profile = _live_model_profile()
     secret_ref = cast(SecretRef, profile.authentication.secret_ref)
     raw_secret = "sk-live-factory-secret"
     secret_resolver = _LiveSecretResolver(secret_ref, raw_secret)
@@ -1400,6 +1412,7 @@ async def test_public_live_factory_completes_offline_traversal_and_closes_once(
         response_count += 1
         body = json.loads(request.content)
         assert body["model"] == profile.model_id
+        assert body["parallel_tool_calls"] is False
         assert request.headers["authorization"] == f"Bearer {raw_secret}"
         assert request.extensions["timeout"] == {
             "connect": 2,
@@ -1507,7 +1520,7 @@ async def test_public_live_factory_accepts_mock_transport_without_secret_probe(
     _patch_live_shell(monkeypatch)
     home = tmp_path / "home"
     home.mkdir()
-    profile = make_canonical_builder_profile_a()
+    profile = _live_model_profile()
     secret_ref = cast(SecretRef, profile.authentication.secret_ref)
     secret_resolver = _ConstructionFailingSecretResolver()
     mock_transport = _RecordingMockTransport(
@@ -1576,7 +1589,7 @@ async def test_live_factory_rejects_identity_and_cleans_partial_owned_resources(
     _patch_live_shell(monkeypatch)
     home = tmp_path / "home"
     home.mkdir()
-    profile = make_canonical_builder_profile_a()
+    profile = _live_model_profile()
     secret_ref = cast(SecretRef, profile.authentication.secret_ref)
     raw_secret = "sk-partial-failure-secret"
     secret_resolver = _LiveSecretResolver(secret_ref, raw_secret)
@@ -1652,7 +1665,7 @@ async def test_public_live_factory_cancellation_interrupts_blocked_model_call(
     _patch_live_shell(monkeypatch)
     home = tmp_path / "home"
     home.mkdir()
-    profile = make_canonical_builder_profile_a()
+    profile = _live_model_profile()
     secret_ref = cast(SecretRef, profile.authentication.secret_ref)
     secret_resolver = _LiveSecretResolver(secret_ref, "sk-cancelled-secret")
     token = _TriggerCancellationToken()
@@ -1969,12 +1982,14 @@ async def test_live_factory_propagates_configured_terminal_vocabulary_and_closes
     vocabulary = ("BLOCKED", "COMPLETE", "ESCALATED", "REJECTED")
     home = tmp_path / "home"
     home.mkdir()
-    profile = make_canonical_builder_profile_a()
+    profile = _live_model_profile()
     secret_ref = cast(SecretRef, profile.authentication.secret_ref)
     secret_resolver = _LiveSecretResolver(secret_ref, "sk-configured-live")
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert json.loads(request.content)["model"] == profile.model_id
+        body = json.loads(request.content)
+        assert body["model"] == profile.model_id
+        assert body["parallel_tool_calls"] is False
         return httpx.Response(
             200,
             headers={"content-type": "application/json"},

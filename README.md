@@ -169,6 +169,7 @@ from millforge import (
     CapabilitySupport,
     EndpointConfig,
     OpenAICompatibleTimeouts,
+    RequestOptionAllowlist,
     ResolvedModelProfile,
     SecretRef,
     create_millforge_base_live_runner,
@@ -190,6 +191,9 @@ profile = ResolvedModelProfile(
             "system_messages": CapabilitySupport.SUPPORTED,
             "tool_result_messages": CapabilitySupport.SUPPORTED,
         }
+    ),
+    request_options=RequestOptionAllowlist(
+        allowed_options=("parallel_tool_calls",),
     ),
     timeout_seconds=90,
     source_digest="caller-profile-v1",

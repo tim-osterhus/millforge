@@ -1062,6 +1062,7 @@ class ForgeModelBridge:
             ),
             sampling_overrides=SamplingRequest(),
             maximum_output_tokens_override=None,
+            request_options={"parallel_tool_calls": False},
             deadline=self._deadline(),
             cancellation=self._cancellation(),
             secret_refs=(

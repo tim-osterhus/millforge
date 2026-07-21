@@ -84,6 +84,7 @@ from millforge.exceptions import (
 from millforge.model_backend import (
     DefaultModelClient,
     OpenAIChatCompletionsTransport,
+    RequestOptionAllowlist,
     ResolvedModelProfile,
     StaticModelProfileResolver,
     StaticSecretResolver,
@@ -531,6 +532,13 @@ async def _execute_canonical_builder_http_profile(
     *,
     plan: CompiledHarnessPlan | None = None,
 ) -> tuple[HarnessExecutionResult, list[dict[str, Any]], BuilderFakeToolExecutor, Path]:
+    profile = profile.model_copy(
+        update={
+            "request_options": RequestOptionAllowlist(
+                allowed_options=("parallel_tool_calls",),
+            )
+        }
+    )
     plan = plan or make_canonical_builder_compiled_plan()
     request = make_canonical_builder_execution_request(tmp_path, plan=plan).model_copy(
         update={"secret_refs": (profile.authentication.secret_ref,)}
@@ -543,6 +551,7 @@ async def _execute_canonical_builder_http_profile(
         sequence = len(seen) + 1
         tool_name, arguments = calls[sequence - 1]
         body = json.loads(http_request.content)
+        assert body["parallel_tool_calls"] is False
         headers = dict(http_request.headers)
         seen.append({"url": str(http_request.url), "headers": headers, "body": body})
 

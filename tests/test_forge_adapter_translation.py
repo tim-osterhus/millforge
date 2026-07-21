@@ -87,11 +87,13 @@ from millforge.model_backend import (
     CapabilitySupport,
     DefaultModelClient,
     EndpointConfig,
+    ModelBackendConfigError,
     ModelProviderError,
     ModelRequestDeadlineExceededError,
     ProviderErrorCategory,
     ReasoningMode,
     ReasoningPolicy,
+    RequestOptionAllowlist,
     ResolvedModelProfile,
     StaticModelProfileResolver,
     StaticSecretResolver,
@@ -464,6 +466,9 @@ def _reasoning_profile(
                 "reasoning_controls": CapabilitySupport.UNSUPPORTED,
                 "usage_reporting": CapabilitySupport.UNKNOWN,
             }
+        ),
+        request_options=RequestOptionAllowlist(
+            allowed_options=("parallel_tool_calls",),
         ),
         source_name="reasoning-test",
         source_digest="reasoning-test-digest",
@@ -1594,6 +1599,7 @@ async def test_model_bridge_translates_private_forge_request_once_and_tracks_usa
     assert request.required_capabilities.usage_reporting is False
     assert request.required_capabilities.system_messages is True
     assert request.required_capabilities.tool_result_messages is True
+    assert request.request_options == {"parallel_tool_calls": False}
     assert request.sampling_overrides.temperature is None
     assert request.deadline == translator._session_request.deadline
     assert request.cancellation == session_request.cancellation
@@ -1634,6 +1640,40 @@ async def test_model_bridge_translates_private_forge_request_once_and_tracks_usa
     assert bridge.events[0].fields[0].value == 3
     assert bridge.events[1].fields[0].key == "tool_call_count"
     assert bridge.events[1].fields[0].value == 1
+
+
+@pytest.mark.asyncio
+async def test_model_bridge_refuses_unallowlisted_serial_tool_call_option_before_transport() -> (
+    None
+):
+    profile = _reasoning_profile().model_copy(
+        update={"request_options": RequestOptionAllowlist()}
+    )
+    bridge, transport = _reasoning_stack(
+        [
+            _reasoning_transport_response(
+                call_id="provider-call-unreachable",
+                tool_name="prepare",
+                arguments='{"path":"input.txt"}',
+                continuation="unreachable",
+                content="unreachable",
+            )
+        ],
+        profile=profile,
+    )
+    spec = (
+        ForgeWorkflowFactory(
+            {"impl-prepare-v1": _callable, "impl-submit-v1": _callable}
+        )
+        .build(_plan())
+        .workflow.tools["prepare"]
+        .spec
+    )
+
+    with pytest.raises(ModelBackendConfigError, match="parallel_tool_calls"):
+        await bridge.send([{"role": "user", "content": "run"}], tools=[spec])
+
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

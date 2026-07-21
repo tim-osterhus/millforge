@@ -158,6 +158,11 @@
   ],
   "private_behavior_patches": [
     {
+      "private_destination": "src/millforge/_forge/adapter.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Project the bridge's serial tool-call requirement into provider-neutral model requests as parallel_tool_calls=false while retaining the runtime refusal guard if a provider still returns multiple calls."
+    },
+    {
       "private_destination": "src/millforge/_forge/core/runner.py",
       "edit_category": "private_behavior_patch",
       "patch_reason": "Expose max_premature_attempts and max_prereq_violations on WorkflowRunner.__init__ and pass them to StepEnforcer so Millforge adapter policy can tune guarded-loop violation budgets without modifying unrelated runner behavior."
