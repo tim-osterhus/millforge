@@ -2673,6 +2673,19 @@ async def test_tool_bridge_handles_cancellation_before_executor_call() -> None:
         (
             _tool_result(
                 "call-prepare",
+                "choose a different correction",
+                status=ToolExecutionStatus.SOFT_FAILURE,
+                error_code="soft_no_same_call_retry",
+                retryable=False,
+            ),
+            ToolExecutionStatus.SOFT_FAILURE,
+            ToolResolutionError,
+            "soft_no_same_call_retry",
+            SessionEventType.TOOL_FAILED,
+        ),
+        (
+            _tool_result(
+                "call-prepare",
                 "hard stop",
                 status=ToolExecutionStatus.HARD_FAILURE,
                 error_code="hard",

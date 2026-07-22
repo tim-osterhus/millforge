@@ -1549,7 +1549,10 @@ class ForgeToolBridge:
                 code=result.error_code,
             )
             message = _failure_message(result)
-            if result.retryable:
+            if (
+                result.status is ToolExecutionStatus.SOFT_FAILURE
+                or result.retryable
+            ):
                 raise ToolResolutionError(
                     message,
                     tool_name=tool_name,

@@ -1428,7 +1428,7 @@ def test_default_terminal_contract_is_byte_compatible(
     descriptor = describe_millforge_base(legal_terminal_results=default)
 
     assert descriptor.descriptor_sha256 == (
-        "ed9b82df02523614af7bfd11c16ce235f2ca08378569423eb2f4744557aa94e9"
+        "dc67d572eb9c934e6acf0f073f27ff19eb3f3da6d46beab91a1cccce2640b981"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"

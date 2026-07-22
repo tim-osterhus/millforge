@@ -163,6 +163,11 @@
       "patch_reason": "Project the bridge's serial tool-call requirement into provider-neutral model requests as parallel_tool_calls=false. If a provider still returns a batch, preserve it for the private batch-aware runner, which executes each tool call serially."
     },
     {
+      "private_destination": "src/millforge/_forge/adapter.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "Treat soft tool failures as model-correctable even when repeating the same call is unsafe. ToolExecutionResult.retryable controls same-call replay safety; it does not prevent the model from issuing a different corrective call."
+    },
+    {
       "private_destination": "src/millforge/_forge/core/runner.py",
       "edit_category": "private_behavior_patch",
       "patch_reason": "Expose max_premature_attempts and max_prereq_violations on WorkflowRunner.__init__ and pass them to StepEnforcer so Millforge adapter policy can tune guarded-loop violation budgets without modifying unrelated runner behavior."
