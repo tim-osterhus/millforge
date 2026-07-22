@@ -2217,49 +2217,77 @@ async def test_model_bridge_preserves_invalid_tool_arguments_as_malformed() -> N
 
 
 @pytest.mark.asyncio
-async def test_model_bridge_rejects_parallel_tool_calls_before_tool_dispatch() -> None:
+async def test_model_returned_tool_batch_executes_serially() -> None:
+    execution_order: list[str] = []
+    active_invocations = 0
+    maximum_active_invocations = 0
     client = FakeModelClient(
         responses=[
             ModelCompletionResponse(
-                provider_request_id="provider-parallel",
+                provider_request_id="provider-batch",
                 model_id="profile-test",
                 message=AssistantMessage(
-                    content="parallel",
+                    content="serial batch",
                     tool_calls=(
                         ModelToolCall(
                             call_id="model-call-001",
-                            name="prepare",
-                            arguments=ParsedToolArguments(value={"path": "a.txt"}),
+                            name="work",
+                            arguments=ParsedToolArguments(value={"value": "a"}),
                         ),
                         ModelToolCall(
                             call_id="model-call-002",
-                            name="prepare",
-                            arguments=ParsedToolArguments(value={"path": "b.txt"}),
+                            name="work",
+                            arguments=ParsedToolArguments(value={"value": "b"}),
                         ),
                     ),
                 ),
                 finish_reason="tool_calls",
-            )
+            ),
+            ModelCompletionResponse(
+                provider_request_id="provider-terminal",
+                model_id="profile-test",
+                message=AssistantMessage(
+                    content="finish",
+                    tool_calls=(
+                        ModelToolCall(
+                            call_id="model-call-003",
+                            name="finish",
+                            arguments=ParsedToolArguments(value={"value": "done"}),
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
         ]
-    )
-    spec = (
-        ForgeWorkflowFactory(
-            {"impl-prepare-v1": _callable, "impl-submit-v1": _callable}
-        )
-        .build(_plan())
-        .workflow.tools["prepare"]
-        .spec
     )
     bridge = ForgeModelBridge(model_client=client, model="profile-test")
 
-    with pytest.raises(ForgeBridgeError, match="parallel tool calls"):
-        await bridge.send(
-            [{"role": "user", "content": "run"}],
-            tools=[spec],
+    async def invoke(call: ToolCall) -> str:
+        nonlocal active_invocations, maximum_active_invocations
+        active_invocations += 1
+        maximum_active_invocations = max(
+            maximum_active_invocations,
+            active_invocations,
         )
+        execution_order.append(call.tool)
+        await asyncio.sleep(0)
+        active_invocations -= 1
+        return f"result:{call.tool}:{call.args['value']}"
 
-    assert client.call_count == 1
-    assert not hasattr(bridge, "_pending_call_ids")
+    result = await WorkflowRunner(
+        bridge,
+        ContextManager(NoCompact(), budget_tokens=100_000),
+        max_iterations=2,
+        tool_call_invoker=invoke,
+    ).run(
+        _private_workflow(required_steps=["work"]),
+        "run",
+    )
+
+    assert result == "result:finish:done"
+    assert execution_order == ["work", "work", "finish"]
+    assert maximum_active_invocations == 1
+    assert client.call_count == 2
 
 
 @pytest.mark.asyncio

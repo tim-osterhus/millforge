@@ -1684,6 +1684,8 @@ def _normalize_openai_chat_body(
     if content is not None and not isinstance(content, str):
         raise _malformed_response("provider response content is malformed")
     tool_calls = _normalize_tool_calls(message.get("tool_calls", ()))
+    if content == "" and tool_calls:
+        content = None
     assistant = AssistantMessage(
         content=content,
         tool_calls=tool_calls,

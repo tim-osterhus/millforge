@@ -1104,11 +1104,6 @@ class ForgeModelBridge:
         self._store_usage(response.usage)
         if not response.tool_calls:
             return TextResponse(response.content or "")
-        if (
-            not request.required_capabilities.parallel_tool_calls
-            and len(response.tool_calls) > 1
-        ):
-            raise ForgeBridgeError("ForgeModelBridge rejects parallel tool calls")
         calls: list[ToolCall] = []
         for call in response.tool_calls:
             args = _parsed_model_tool_args(call)

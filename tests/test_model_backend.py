@@ -1910,6 +1910,63 @@ async def test_default_model_client_rejects_overflowed_tool_argument_number() ->
 
 
 @pytest.mark.asyncio
+async def test_tool_only_provider_response_normalizes_empty_content_to_absent() -> None:
+    client, _ = _client(
+        response=TransportResponse(
+            status_code=200,
+            body={
+                "model": "gpt-test",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"candidate":"alpha"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+    )
+
+    response = await client.complete(_request(secret_refs=(_secret(),)))
+
+    assert response.content is None
+    assert response.tool_calls[0].name == "lookup"
+
+
+@pytest.mark.asyncio
+async def test_empty_provider_response_without_tool_calls_is_refused() -> None:
+    client, _ = _client(
+        response=TransportResponse(
+            status_code=200,
+            body={
+                "model": "gpt-test",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": ""},
+                    }
+                ],
+            },
+        )
+    )
+
+    with pytest.raises(ValidationError, match="content"):
+        await client.complete(_request(secret_refs=(_secret(),)))
+
+
+@pytest.mark.asyncio
 async def test_default_model_client_rejects_malformed_provider_response() -> None:
     client, _ = _client(
         response=TransportResponse(
