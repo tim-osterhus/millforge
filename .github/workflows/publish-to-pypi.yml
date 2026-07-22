@@ -1,0 +1,96 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - v0.1.0
+
+jobs:
+  build:
+    if: github.ref == 'refs/tags/v0.1.0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Sync locked test environment
+        run: uv sync --frozen --extra dev
+      - name: Test tag checkout
+        run: uv run python -m pytest -m "not live_model_backend"
+      - name: Build distributions
+        run: uv build
+      - name: Smoke installed distributions
+        run: uv run python scripts/ci_package_smoke.py dist
+      - name: Verify reviewed distributions
+        shell: bash
+        run: |
+          expected=(
+            "millforge-0.1.0-py3-none-any.whl"
+            "millforge-0.1.0.tar.gz"
+          )
+          mapfile -t actual < <(
+            find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) \
+              -printf '%f\n' | sort
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          if [[ "${actual[*]}" != "${expected_sorted[*]}" ]]; then
+            printf 'unexpected distribution set: %s\n' "${actual[*]}" >&2
+            exit 1
+          fi
+          cat > dist/SHA256SUMS <<'EOF'
+          d9c6f73b4616f120f66aff2bd06138ac5cd0b5c44aac878961dabea404c540d5  millforge-0.1.0-py3-none-any.whl
+          e029a2f19fb2396754833841927cf98c4e45d34290c4050c0569e960f0025f2f  millforge-0.1.0.tar.gz
+          EOF
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+      - name: Upload reviewed distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pypi-distributions
+          if-no-files-found: error
+          path: |
+            dist/millforge-0.1.0-py3-none-any.whl
+            dist/millforge-0.1.0.tar.gz
+            dist/SHA256SUMS
+
+  publish:
+    if: github.ref == 'refs/tags/v0.1.0'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download reviewed distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pypi-distributions
+          path: dist
+      - name: Recheck reviewed distributions
+        shell: bash
+        run: |
+          expected=(
+            "SHA256SUMS"
+            "millforge-0.1.0-py3-none-any.whl"
+            "millforge-0.1.0.tar.gz"
+          )
+          mapfile -t actual < <(find dist -maxdepth 1 -type f -printf '%f\n' | sort)
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          if [[ "${actual[*]}" != "${expected_sorted[*]}" ]]; then
+            printf 'unexpected downloaded file set: %s\n' "${actual[*]}" >&2
+            exit 1
+          fi
+          cat > expected-SHA256SUMS <<'EOF'
+          d9c6f73b4616f120f66aff2bd06138ac5cd0b5c44aac878961dabea404c540d5  millforge-0.1.0-py3-none-any.whl
+          e029a2f19fb2396754833841927cf98c4e45d34290c4050c0569e960f0025f2f  millforge-0.1.0.tar.gz
+          EOF
+          cmp --silent expected-SHA256SUMS dist/SHA256SUMS
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          rm expected-SHA256SUMS
+          rm dist/SHA256SUMS
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247
+        with:
+          packages-dir: dist/

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import email.policy
+import json
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +38,16 @@ EXPECTED_PERSON = {"name": "Tim Osterhus", "email": "tim@millrace.ai"}
 EXPECTED_URLS = {
     "Homepage": "https://github.com/tim-osterhus/millforge",
     "Repository": "https://github.com/tim-osterhus/millforge",
+}
+EXPECTED_DESCRIPTOR_SHA256 = (
+    "dc67d572eb9c934e6acf0f073f27ff19eb3f3da6d46beab91a1cccce2640b981"
+)
+EXPECTED_SELECTED_OUTPUT_REQUIREMENTS_SHA256 = (
+    "9b99f70aa6f8e99930fe00865da605001a0207592b0b44d98239ab999e8009b0"
+)
+EXPECTED_SELECTED_OUTPUT_SCHEMA_SHA256 = {
+    "BLOCKED": "b7162fa77b72a2b6243eefede444a2dac2cecb9fa3676fd403fe149bf8a23559",
+    "COMPLETE": "3247892e7214a387e48649af88525522c650614ef6fc9bb8d675a43f4899bb7a",
 }
 UPSTREAM_NOTICE_PATHS = (
     "millforge/_forge/LICENSE",
@@ -146,6 +158,61 @@ def built_distributions(tmp_path_factory: pytest.TempPathFactory) -> BuiltDistri
         wheel_names=wheel_names,
         sdist_names=sdist_names,
     )
+
+
+@pytest.fixture(scope="module")
+def installed_release_smoke_evidence(
+    built_distributions: BuiltDistributions,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, dict[str, Any]]:
+    root = tmp_path_factory.mktemp("installed-release-smoke")
+    evidence: dict[str, dict[str, Any]] = {}
+    for artifact_kind, package in (
+        ("wheel", built_distributions.wheel),
+        ("sdist", built_distributions.sdist),
+    ):
+        environment = root / f"{artifact_kind}-env"
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(environment)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        python = environment / (
+            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        )
+        subprocess.run(
+            [str(python), "-m", "pip", "install", str(package)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        process_environment = dict(os.environ)
+        process_environment.pop("PYTHONHOME", None)
+        process_environment.pop("PYTHONPATH", None)
+        process_environment["PYTHONNOUSERSITE"] = "1"
+        completed = subprocess.run(
+            [
+                str(python),
+                "-I",
+                str(INSTALLED_SMOKE),
+                "0.1.0",
+                ">=3.11",
+                "--release-evidence",
+            ],
+            cwd=root,
+            env=process_environment,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stderr == ""
+        evidence[artifact_kind] = json.loads(completed.stdout)
+    return evidence
 
 
 def test_project_metadata_declares_supported_distribution_contract() -> None:
@@ -401,3 +468,131 @@ def test_distribution_metadata_contains_no_secret_shaped_values(
     ):
         serialized = metadata.as_string(policy=email.policy.default)
         assert not any(pattern.search(serialized) for pattern in SECRET_SHAPED_PATTERNS)
+
+
+def test_wheel_and_sdist_installed_smoke_preserves_frozen_release_identity(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        identity = evidence["release_evidence"]["identity"]
+        assert evidence["version"] == "0.1.0"
+        assert evidence["requires_python"] == ">=3.11"
+        assert identity == {
+            "context_contract_version": "millforge-base.context.v1",
+            "descriptor_sha256": EXPECTED_DESCRIPTOR_SHA256,
+            "distribution": "millforge",
+            "legal_terminal_results": ["BLOCKED", "COMPLETE", "REJECTED"],
+            "prompt_contract_version": "millforge-base.prompt.v1",
+            "runner_id": "millforge-base",
+            "runner_version": 2,
+            "version": "0.1.0",
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_preserves_distinct_terminal_result_selected_output_schemas(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        outputs = evidence["release_evidence"]["selected_outputs"]
+        assert outputs["COMPLETE"] == {
+            "schema_sha256": EXPECTED_SELECTED_OUTPUT_SCHEMA_SHA256["COMPLETE"],
+            "selected_output": {"present": True, "value": {"answer": 42}},
+        }
+        assert outputs["BLOCKED"] == {
+            "schema_sha256": EXPECTED_SELECTED_OUTPUT_SCHEMA_SHA256["BLOCKED"],
+            "selected_output": {"present": True, "value": ["operator", "input"]},
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_preserves_schema_less_terminal_result(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        schema_less = evidence["release_evidence"]["schema_less_terminal_result"]
+        assert schema_less == {
+            "execution_status": "completed",
+            "selected_output": None,
+            "selected_output_schema_sha256": None,
+            "terminal_result": "REJECTED",
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_refuses_crossed_terminal_result_selected_output(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        refusal = evidence["release_evidence"]["crossed_result_refusal"]
+        assert refusal == {
+            "correction_observed": True,
+            "rejected_call_id": "call-crossed",
+            "terminal_result": "COMPLETE",
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_preserves_selected_output_evidence_digest(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        assert (
+            evidence["release_evidence"]["selected_output_requirements_sha256"]
+            == EXPECTED_SELECTED_OUTPUT_REQUIREMENTS_SHA256
+        )
+
+
+def test_wheel_and_sdist_installed_smoke_preserves_required_reasoning_continuation(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        continuation = evidence["release_evidence"]["reasoning_continuation"]
+        assert continuation == {
+            "provider_tool_call_id": "call-reasoning-read",
+            "replayed": True,
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_allows_correction_after_nonreplayable_soft_failure(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        correction = evidence["release_evidence"]["soft_failure_correction"]
+        assert correction == {
+            "corrective_call_id": "call-corrective-read",
+            "failed_execution_trace_records": 1,
+            "failed_call_id": "call-missing-read",
+            "failed_call_replayed": False,
+            "subsequent_request_history": [
+                {"assistant_call_records": 1, "tool_result_records": 1},
+                {"assistant_call_records": 1, "tool_result_records": 1},
+            ],
+            "terminal_result": "COMPLETE",
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_executes_multiple_tool_calls_in_order_with_parallel_disabled(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        serial = evidence["release_evidence"]["serial_tool_calls"]
+        assert serial == {
+            "parallel_tool_calls": False,
+            "provider_call_order": ["call-serial-first", "call-serial-second"],
+            "tool_result_order": ["call-serial-first", "call-serial-second"],
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_normalizes_blank_content_for_valid_tool_calls(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        assert evidence["release_evidence"]["blank_content_with_tool_calls"] == {
+            "normalized_to_absent": True,
+        }
+
+
+def test_wheel_and_sdist_installed_smoke_refuses_blank_content_without_tool_calls(
+    installed_release_smoke_evidence: dict[str, dict[str, Any]],
+) -> None:
+    for evidence in installed_release_smoke_evidence.values():
+        assert evidence["release_evidence"]["blank_content_without_tool_calls"] == {
+            "refused": True,
+        }
