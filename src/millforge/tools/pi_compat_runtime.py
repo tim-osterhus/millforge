@@ -288,13 +288,22 @@ def _create_pi_compat_tool_executor_for_terminal_results(
                 _terminal_implementation(descriptor),
             )
 
-    return CompiledToolBindingExecutor(
+    executor = CompiledToolBindingExecutor(
         plan=plan,
         descriptor_snapshot=_create_pi_compat_tool_snapshot_for_terminal_results(
             legal_terminal_results
         ),
         runtime_registry=registry,
     )
+    # Private source-owned closures, not a caller profile or descriptor claim.
+    executor._native_stock = (
+        cwd.resolve(),
+        {
+            read.implementation_id: read_implementation,
+            write.implementation_id: write_implementation,
+        },
+    )
+    return executor
 
 
 def _plan_uses_bash(plan: CompiledHarnessPlan) -> bool:

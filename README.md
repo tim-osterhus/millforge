@@ -468,7 +468,7 @@ Emitted plan bytes are canonical compact UTF-8 JSON with one trailing newline
 and are published under the admitted output directory as relative
 `<url-escaped-harness-id>@<harness-version>.<compiled-sha256>.compiled.json`
 paths, for example
-`compiled/millforge.test.golden.compiler.v1@1.1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52.compiled.json`.
+`compiled/millforge.test.golden.compiler.v1@1.1bb70758643835c979eced465ee3a323986ec51ea03b2ee34d72cb860c5a3befd.compiled.json`.
 Diagnostics remain request-addressed and use request-only,
 source-document-hash plus request-hash, or compiled-digest plus request-hash
 path forms such as

@@ -7,10 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "publish-to-pypi.yml"
 
-WHEEL = "millforge-0.1.0-py3-none-any.whl"
-SDIST = "millforge-0.1.0.tar.gz"
-WHEEL_SHA256 = "d9c6f73b4616f120f66aff2bd06138ac5cd0b5c44aac878961dabea404c540d5"
-SDIST_SHA256 = "e029a2f19fb2396754833841927cf98c4e45d34290c4050c0569e960f0025f2f"
+WHEEL = "millforge-0.1.1-py3-none-any.whl"
+SDIST = "millforge-0.1.1.tar.gz"
+WHEEL_SHA256 = "54f9be66cc703a9253b19c0b0439ca08d1802fd2bd1f7af926b041d8b0f663e3"
+SDIST_SHA256 = "8507a43a26e1dcda2e2bc0763362441f0d37325b876de28a85d60ff64da98c22"
 ACTION_PINS = {
     "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
     "astral-sh/setup-uv": "d0cc045d04ccac9d8b7881df0226f9e82c39688e",
@@ -52,8 +52,8 @@ def test_release_workflow_verifies_reviewed_artifact_manifest_before_upload_and_
     assert checkout < sync < tests < build < package_smoke < verify < upload_in_build
 
     build_verify = build_job[verify:upload_in_build]
-    assert '"millforge-0.1.0-py3-none-any.whl"' in build_verify
-    assert '"millforge-0.1.0.tar.gz"' in build_verify
+    assert '"millforge-0.1.1-py3-none-any.whl"' in build_verify
+    assert '"millforge-0.1.1.tar.gz"' in build_verify
     assert (
         "find dist -maxdepth 1 -type f \\( -name '*.whl' -o -name '*.tar.gz' \\)"
         in build_verify
@@ -72,8 +72,8 @@ def test_release_workflow_verifies_reviewed_artifact_manifest_before_upload_and_
         )
     ]
     assert '"SHA256SUMS"' in publish_verify
-    assert '"millforge-0.1.0-py3-none-any.whl"' in publish_verify
-    assert '"millforge-0.1.0.tar.gz"' in publish_verify
+    assert '"millforge-0.1.1-py3-none-any.whl"' in publish_verify
+    assert '"millforge-0.1.1.tar.gz"' in publish_verify
     assert "find dist -maxdepth 1 -type f -printf '%f\\n' | sort" in publish_verify
     assert 'if [[ "${actual[*]}" != "${expected_sorted[*]}" ]]; then' in (
         publish_verify
@@ -119,10 +119,10 @@ def test_release_workflow_refuses_unsafe_publication_surfaces() -> None:
         re.MULTILINE,
     )
 
-    assert "refs/tags/v0.1.0" in workflow
-    assert re.search(r"tags:\s*\n\s*- v0\.1\.0\s*$", workflow, re.MULTILINE)
-    assert build_job.count("if: github.ref == 'refs/tags/v0.1.0'") == 1
-    assert publish_job.count("if: github.ref == 'refs/tags/v0.1.0'") == 1
+    assert "refs/tags/v0.1.1" in workflow
+    assert re.search(r"tags:\s*\n\s*- v0\.1\.1\s*$", workflow, re.MULTILINE)
+    assert build_job.count("if: github.ref == 'refs/tags/v0.1.1'") == 1
+    assert publish_job.count("if: github.ref == 'refs/tags/v0.1.1'") == 1
     assert "environment: pypi" in publish_job
     assert "permissions:" not in workflow_header
     assert build_permissions is not None

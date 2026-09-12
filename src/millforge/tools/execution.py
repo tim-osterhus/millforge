@@ -115,16 +115,20 @@ class CompiledToolBindingExecutor:
         self._runtime_registry = runtime_registry
         self._trace_records: list[Any] = []
         self._next_sequence = 1
+        self._native_stock: tuple[Any, ...] | None = None
 
     def fork_for_invocation(self) -> CompiledToolBindingExecutor:
         """Create an executor with identical bindings and fresh trace state."""
-        return CompiledToolBindingExecutor(
+        fork = CompiledToolBindingExecutor(
             plan=self._plan,
             descriptor_snapshot=self._descriptor_snapshot,
             runtime_registry=self._runtime_registry,
             connector_admission_snapshot=self._connector_admission_snapshot,
             connector_broker=self._connector_broker,
         )
+
+        fork._native_stock = self._native_stock
+        return fork
 
     def supports_tool(self, name: str) -> bool:
         node = self._node_by_model_name.get(name)
@@ -261,6 +265,54 @@ class CompiledToolBindingExecutor:
         )
 
     async def execute(
+        self,
+        call: ValidatedToolCall,
+        context: ToolExecutionContext,
+        prerequisite_results: Mapping[str, ToolExecutionResult] | None = None,
+        model_turn: int = 0,
+        model_tool_name: str | None = None,
+        session_id: str | None = None,
+    ) -> ToolExecutionResult:
+        from millforge.pause_control import (
+            CURRENT_CONTROL,
+            local_file_supported,
+            native_effect,
+        )
+
+        control = CURRENT_CONTROL.get()
+        stock = self._native_stock
+        implementation = self._runtime_registry.resolve(call.binding.implementation_id)
+        supported = False
+        if control is not None and stock is not None:
+            root, bindings = stock
+            expected = bindings.get(call.binding.implementation_id)
+            tool_id = call.binding.tool_id
+            supported = (
+                expected is not None
+                and implementation is expected
+                and tool_id in {"builtin.pi_compat.read", "builtin.pi_compat.write"}
+                and root == control.root
+                and local_file_supported(
+                    root, call.arguments.get("path"), writing=tool_id.endswith(".write")
+                )
+            )
+        async with native_effect("tool", supported=supported):
+            result = await self._execute_uncontrolled(
+                call,
+                context,
+                prerequisite_results,
+                model_turn,
+                model_tool_name,
+                session_id,
+            )
+            if (
+                control is not None
+                and result.side_effect_certainty.value == "completion_unknown"
+            ):
+                control.invalidate("tool_completion_unknown")
+            return result
+
+    async def _execute_uncontrolled(
         self,
         call: ValidatedToolCall,
         context: ToolExecutionContext,

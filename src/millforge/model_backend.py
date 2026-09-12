@@ -977,6 +977,7 @@ class OpenAIChatCompletionsTransport:
             raise ModelBackendConfigError(
                 "configure either explicit timeouts or timeout_seconds, not both"
             )
+        self._native_owned = http_transport is None
         self._timeouts = timeouts or OpenAICompatibleTimeouts.uniform(
             60.0 if timeout_seconds is None else timeout_seconds
         )
@@ -1150,6 +1151,22 @@ class DefaultModelClient:
             await result
 
     async def complete(
+        self, request: ModelCompletionRequest
+    ) -> ModelCompletionResponse:
+        from millforge.pause_control import native_effect
+
+        stock = (
+            type(self) is DefaultModelClient
+            and type(self._transport) is OpenAIChatCompletionsTransport
+        )
+        async with native_effect(
+            "model",
+            supported=stock
+            and cast(OpenAIChatCompletionsTransport, self._transport)._native_owned,
+        ):
+            return await self._complete_uncontrolled(request)
+
+    async def _complete_uncontrolled(
         self, request: ModelCompletionRequest
     ) -> ModelCompletionResponse:
         """Resolve backend policy, call transport once, and normalize the response."""
@@ -1599,7 +1616,7 @@ def _validate_outbound_reasoning_content(
     profile: ResolvedModelProfile,
     value: object,
 ) -> None:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         raise ModelBackendConfigError("reasoning replay continuation is malformed")
     if len(value.encode("utf-8")) > profile.transport.success_body_limit_bytes:
         raise ModelBackendConfigError(
@@ -1717,7 +1734,7 @@ def _admit_response_reasoning_content(
 ) -> str | None:
     if profile.reasoning.tool_call_replay_field is None or not has_tool_calls:
         return None
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         raise _malformed_response("provider reasoning continuation is malformed")
     if len(value.encode("utf-8")) > profile.transport.success_body_limit_bytes:
         raise _malformed_response(

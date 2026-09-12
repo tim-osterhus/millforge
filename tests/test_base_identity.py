@@ -1428,7 +1428,7 @@ def test_default_terminal_contract_is_byte_compatible(
     descriptor = describe_millforge_base(legal_terminal_results=default)
 
     assert descriptor.descriptor_sha256 == (
-        "dc67d572eb9c934e6acf0f073f27ff19eb3f3da6d46beab91a1cccce2640b981"
+        "3008a290d3d481d7b6ee34bcfd050e43fa230d06f2a85727cb2209daa23fa7e0"
     )
     assert descriptor.tool_catalog_sha256 == (
         "5de78f0943c5ef169f971651fd3220308b2dee2fae9641919c262824cc92808a"
@@ -1442,6 +1442,31 @@ def test_default_terminal_contract_is_byte_compatible(
         ("block", "block", "BLOCKED"),
         ("reject", "reject", "REJECTED"),
     }
+
+
+def test_historical_descriptor_reconstruction_is_provenance_bound() -> None:
+    descriptor = describe_millforge_base()
+
+    assert descriptor.forge_provenance_sha256 == (
+        "524964e3a510eb91955b334a04ba0a1987eda5356081ec3515128e77e282c39b"
+    )
+    assert descriptor.descriptor_sha256 == (
+        "3008a290d3d481d7b6ee34bcfd050e43fa230d06f2a85727cb2209daa23fa7e0"
+    )
+
+    historical_payload = descriptor.model_dump(mode="json")
+    historical_payload["package_version"] = "0.1.0"
+    historical_payload["forge_provenance_sha256"] = (
+        "ccd55be6b0a2b367d841ef69a26f4effaaadaadc9f0a7604243375dc6f58fa91"
+    )
+    historical_payload.pop("descriptor_sha256")
+    historical_descriptor_sha256 = hashlib.sha256(
+        _canonical_bytes(historical_payload)
+    ).hexdigest()
+
+    assert historical_descriptor_sha256 == (
+        "dc67d572eb9c934e6acf0f073f27ff19eb3f3da6d46beab91a1cccce2640b981"
+    )
 
 
 def test_configured_terminal_catalog_plan_and_descriptor_agree(

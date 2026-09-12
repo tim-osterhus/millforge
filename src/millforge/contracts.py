@@ -2033,7 +2033,7 @@ class AssistantMessage(BaseModel):
         """Compatibility accessor; ``role`` is the serialized discriminator."""
         return self.role
 
-    @field_validator("content", "reasoning_content")
+    @field_validator("content")
     @classmethod
     def _content_nonblank(cls, value: str | None, info: Any) -> str | None:
         return None if value is None else _nonblank(value, info.field_name)

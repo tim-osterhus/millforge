@@ -44,10 +44,10 @@ from tests.compiler.conftest import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EXPECTED_GOLDEN_COMPILED_SHA256 = (
-    "1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52"
+    "bb70758643835c979eced465ee3a323986ec51ea03b2ee34d72cb860c5a3befd"
 )
 EXPECTED_GOLDEN_COMPILED_BYTES_SHA256 = (
-    "0149933a3971fa1fdec513e81b19b712fb38332a8a50dac561f5fc7101ddc610"
+    "e69edd595b052d6afd0aec8be3e8880c4e0e49333c07802c900315dc6498ce14"
 )
 
 
@@ -121,8 +121,8 @@ REPRESENTATIVE_COMPILED_FIXTURES: tuple[RepresentativeCompiledFixture, ...] = (
         harness_id="millforge.test.representative.simple.v1",
         legal_terminal_results=("BUILDER_COMPLETE",),
         source_sha256="cff26dee6692c2059385c24934042c51eb8719c638f578a6b869fca21cc627f2",
-        compiled_sha256="29e604298ecf09500b092ff95a3ad96686a386c52bb2e3c4819a54d83454d78b",
-        compiled_byte_sha256="90deb0edaf767a95a7bfa2080624abc7fdd19fffca34f4776accc7a1c4f9f82f",
+        compiled_sha256="6fe29caecbded52cd97ab4bc7c0b998a3cb3ef78cbf68d88d014cfcd75a8cb64",
+        compiled_byte_sha256="73df41e5a75656dbb3c56c8a3f03a3cfd19835e1467c24fd8e95c92b0fa35a8b",
         compiled_byte_size=2527,
         stage_kind_ids=("builder",),
         node_ids=("collect_context", "complete"),
@@ -146,8 +146,8 @@ REPRESENTATIVE_COMPILED_FIXTURES: tuple[RepresentativeCompiledFixture, ...] = (
         harness_id="millforge.test.representative.blocked.v1",
         legal_terminal_results=("BLOCKED",),
         source_sha256="b1fcca877db492fa8fa5ad834e9507546bc033d42c21278d93b9ce8195665318",
-        compiled_sha256="9a68e99b7ce3185bd6a88724f40c4875ce5f4bd3836b691824e3564f42f58f4c",
-        compiled_byte_sha256="45d16f1bbf8be7cfcae054deeac02f25bc6d08646dc6ed7f3688b91a5485e28e",
+        compiled_sha256="70f286e1492d0af8541b052a7ba1fe5b2da3aef10f2644dd649d1c0bf33d3c47",
+        compiled_byte_sha256="135fdb18d8e4bf4fd2604672cc20965849269826ba8951cdd746d1a7372c4f8d",
         compiled_byte_size=3322,
         stage_kind_ids=("builder", "checker"),
         node_ids=("blocked", "collect_context", "write_failure_report"),

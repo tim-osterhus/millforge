@@ -338,6 +338,16 @@ class ForgeGuardrailBackend:
                     call_id=call.call_id,
                 ),
             )
+            from millforge.pause_control import CURRENT_CONTROL
+
+            control = CURRENT_CONTROL.get()
+            if control is not None:
+
+                def preempt() -> None:
+                    self._check_cancelled(token)
+                    self._check_remaining_deadline(request)
+
+                control.ready(request.session_id, preempt)
             initial_messages = ForgeSessionInputBuilder().build(plan, request)
             await runner.run(
                 workflow_input.workflow,

@@ -40,7 +40,7 @@ EXPECTED_URLS = {
     "Repository": "https://github.com/tim-osterhus/millforge",
 }
 EXPECTED_DESCRIPTOR_SHA256 = (
-    "dc67d572eb9c934e6acf0f073f27ff19eb3f3da6d46beab91a1cccce2640b981"
+    "3008a290d3d481d7b6ee34bcfd050e43fa230d06f2a85727cb2209daa23fa7e0"
 )
 EXPECTED_SELECTED_OUTPUT_REQUIREMENTS_SHA256 = (
     "9b99f70aa6f8e99930fe00865da605001a0207592b0b44d98239ab999e8009b0"
@@ -198,7 +198,7 @@ def installed_release_smoke_evidence(
                 str(python),
                 "-I",
                 str(INSTALLED_SMOKE),
-                "0.1.0",
+                "0.1.1",
                 ">=3.11",
                 "--release-evidence",
             ],
@@ -475,7 +475,7 @@ def test_wheel_and_sdist_installed_smoke_preserves_frozen_release_identity(
 ) -> None:
     for evidence in installed_release_smoke_evidence.values():
         identity = evidence["release_evidence"]["identity"]
-        assert evidence["version"] == "0.1.0"
+        assert evidence["version"] == "0.1.1"
         assert evidence["requires_python"] == ">=3.11"
         assert identity == {
             "context_contract_version": "millforge-base.context.v1",
@@ -485,7 +485,7 @@ def test_wheel_and_sdist_installed_smoke_preserves_frozen_release_identity(
             "prompt_contract_version": "millforge-base.prompt.v1",
             "runner_id": "millforge-base",
             "runner_version": 2,
-            "version": "0.1.0",
+            "version": "0.1.1",
         }
 
 

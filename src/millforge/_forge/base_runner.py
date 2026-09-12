@@ -24,6 +24,7 @@ from millforge.protocols import (
     RuntimeClock,
 )
 from millforge.runtime import DefaultHarnessRuntime
+from millforge.pause_control import CURRENT_CONTROL, NativePauseControl
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,9 @@ class _LazyRuntimeArtifactWriter:
         self._error: Exception | None = None
 
     def _resolve(self) -> RuntimeArtifactWriter:
+        control = CURRENT_CONTROL.get()
+        if control is not None:
+            control.invalidate("finalizing")
         if self._error is not None:
             raise self._error
         if self._writer is None:
@@ -92,6 +96,7 @@ async def execute_base_invocation(
     clock: RuntimeClock,
     cancellation_resolver: CancellationResolver,
     artifact_writer_factory: Callable[[Path], RuntimeArtifactWriter],
+    control: NativePauseControl | None = None,
 ) -> HarnessExecutionResult:
     """Build and execute one fresh private adapter graph."""
     try:
@@ -116,6 +121,10 @@ async def execute_base_invocation(
             clock=clock,
             cancellation_resolver=cancellation_resolver,
         )
-        return await runtime.execute(request)
+        token = CURRENT_CONTROL.set(control)
+        try:
+            return await runtime.execute(request)
+        finally:
+            CURRENT_CONTROL.reset(token)
     except ForgeError:
         raise BackendTranslationError("Private Forge backend failed") from None

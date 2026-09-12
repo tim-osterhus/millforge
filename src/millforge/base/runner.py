@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from millforge.pause_control import (
+    NativePauseControl,
+    NativeClock,
+    NativeCancellationResolver,
+    NativeEnvironmentSecretResolver,
+)
+
 import asyncio
 import datetime
 from dataclasses import dataclass
@@ -143,6 +150,7 @@ class _BaseInvocationExecutor(Protocol):
         clock: RuntimeClock,
         cancellation_resolver: CancellationResolver,
         artifact_writer_factory: RuntimeArtifactWriterFactory,
+        control: NativePauseControl | None = None,
     ) -> HarnessExecutionResult: ...
 
 
@@ -159,7 +167,7 @@ class MillforgeBaseRunner:
     outside this facade.
     """
 
-    __slots__ = ("_components", "_descriptor", "_services")
+    __slots__ = ("_components", "_descriptor", "_services", "_control")
 
     def __init__(
         self,
@@ -170,6 +178,7 @@ class MillforgeBaseRunner:
         _require_supported_platform()
         self._components = components
         self._services = services
+        self._control: NativePauseControl | None = None
         self._descriptor = _describe_millforge_base(components.legal_terminal_results)
         self._verify_component_composition()
         self._verify_identity_evidence()
@@ -215,6 +224,7 @@ class MillforgeBaseRunner:
             clock=self._services.clock,
             cancellation_resolver=self._services.cancellation_resolver,
             artifact_writer_factory=self._services.artifact_writer_factory,
+            control=self._control,
         )
 
     def _verify_identity_evidence(self) -> None:
@@ -341,6 +351,10 @@ class MillforgeBaseLiveRunner:
         self._model_client = model_client
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
+
+    @property
+    def native_control(self) -> NativePauseControl | None:
+        return self._runner._control
 
     @property
     def components(self) -> MillforgeBaseComponents:
@@ -529,6 +543,20 @@ async def create_millforge_base_live_runner(
                 clock=clock,
                 cancellation_resolver=cancellation_resolver,
                 artifact_writer_factory=artifact_writer_factory,
+            ),
+        )
+        from urllib.parse import urlsplit
+
+        endpoint = urlsplit(admitted_profile.endpoint.chat_completions_url)
+        runner._control = NativePauseControl(
+            cwd,
+            eligible=(
+                type(clock) is NativeClock
+                and type(cancellation_resolver) is NativeCancellationResolver
+                and type(secret_resolver) is NativeEnvironmentSecretResolver
+                and http_transport is None
+                and artifact_writer_factory is default_runtime_artifact_writer_factory
+                and endpoint.hostname in {"127.0.0.1", "localhost", "::1"}
             ),
         )
         return MillforgeBaseLiveRunner(runner=runner, model_client=model_client)

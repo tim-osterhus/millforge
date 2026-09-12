@@ -231,6 +231,21 @@
       "private_destination": "src/millforge/_forge/context/strategies.py",
       "edit_category": "private_behavior_patch",
       "patch_reason": "Count reasoning continuation, preserve pairing fields during result truncation, and compact completed replay-bearing tool turns atomically."
+    },
+    {
+      "private_destination": "src/millforge/_forge/core/runner.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "CORE-I01E: park the actual invocation at each guarded-loop iteration and before each tool-batch member. Native pause success requires this parked checkpoint, not zero effect counters alone."
+    },
+    {
+      "private_destination": "src/millforge/_forge/adapter.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "CORE-I01E: bind the actual native session and invocation to the owned cooperative gate and retain existing cancellation and deadline checks."
+    },
+    {
+      "private_destination": "src/millforge/_forge/base_runner.py",
+      "edit_category": "private_behavior_patch",
+      "patch_reason": "CORE-I01E: carry the actual invocation gate through ContextVar and durably invalidate a held witness before finalization artifact writer effects."
     }
   ],
   "excluded_upstream_paths": [

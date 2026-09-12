@@ -1382,13 +1382,69 @@ async def test_reasoning_tool_response_preserves_content_calls_and_continuation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("continuation", ("", " \n\t"))
+async def test_reasoning_continuation_admission_preserves_exact_empty_and_whitespace(
+    continuation: str,
+) -> None:
+    profile = _replay_profile()
+    transport_responses = (
+        _raw_reasoning_response(continuation),
+        TransportResponse(
+            status_code=200,
+            normalized_response=_normalized_reasoning_response(continuation),
+        ),
+    )
+
+    for transport_response in transport_responses:
+        client, _ = _client(profile=profile, response=transport_response)
+
+        response = await client.complete(_request(secret_refs=(_secret(),)))
+
+        assert response.message.reasoning_content == continuation
+        assert response.message.model_dump(mode="json")["reasoning_content"] == (
+            continuation
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuation", ("", " \n\t"))
+async def test_reasoning_replay_serializes_exact_empty_or_whitespace_on_next_request(
+    continuation: str,
+) -> None:
+    profile = _replay_profile()
+    client, transport = _client(profile=profile)
+    call = _reasoning_tool_call()
+    request = _request(secret_refs=(_secret(),)).model_copy(
+        update={
+            "messages": (
+                UserMessage(content="hello"),
+                AssistantMessage(
+                    content="ordinary",
+                    tool_calls=(call,),
+                    reasoning_content=continuation,
+                ),
+                ToolResultMessage(
+                    tool_call_id=call.call_id,
+                    tool_name=call.name,
+                    content="result",
+                ),
+            )
+        }
+    )
+
+    await client.complete(request)
+
+    assert transport.requests[0].body["messages"][1]["reasoning_content"] == (
+        continuation
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("value", "include"),
     (
         (None, False),
         (None, True),
-        ("", True),
-        (" \n\t", True),
         (42, True),
         ("12345", True),
     ),
@@ -1420,8 +1476,6 @@ async def test_raw_and_normalized_responses_share_reasoning_replay_admission_mat
     malformed_values: tuple[tuple[object, bool], ...] = (
         (None, False),
         (None, True),
-        ("", True),
-        ("   ", True),
         (7, True),
         ("12345", True),
     )

@@ -201,6 +201,11 @@ class WorkflowRunner:
         iteration = 0
 
         while iteration < self.max_iterations:
+            from millforge.pause_control import CURRENT_CONTROL
+
+            native_control = CURRENT_CONTROL.get()
+            if native_control is not None:
+                await native_control.checkpoint()
             # 3.0 — Check for cancellation
             if cancel_event is not None and cancel_event.is_set():
                 raise WorkflowCancelledError(
@@ -391,6 +396,8 @@ class WorkflowRunner:
             last_error: tuple[str, Exception] | None = None
             terminal_result = None
             for i, tc in enumerate(tool_calls):
+                if native_control is not None:
+                    await native_control.checkpoint()
                 tc_id = call_ids[i]
                 fn = workflow.get_callable(tc.tool)
                 try:

@@ -96,7 +96,7 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "300d4655196b4d421a85969d4d381c07df70de9f92e12ee695a2f06ff04487b1"
         ),
         compiled_sha256=(
-            "1d65583fe8bd8379d95f889fe0e889d9ee28ada85d912db9188191eb73bddc52"
+            "bb70758643835c979eced465ee3a323986ec51ea03b2ee34d72cb860c5a3befd"
         ),
     ),
     RepresentativeServiceFixture(
@@ -112,7 +112,7 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "cff26dee6692c2059385c24934042c51eb8719c638f578a6b869fca21cc627f2"
         ),
         compiled_sha256=(
-            "29e604298ecf09500b092ff95a3ad96686a386c52bb2e3c4819a54d83454d78b"
+            "6fe29caecbded52cd97ab4bc7c0b998a3cb3ef78cbf68d88d014cfcd75a8cb64"
         ),
     ),
     RepresentativeServiceFixture(
@@ -128,7 +128,7 @@ REPRESENTATIVE_SERVICE_FIXTURES: tuple[RepresentativeServiceFixture, ...] = (
             "b1fcca877db492fa8fa5ad834e9507546bc033d42c21278d93b9ce8195665318"
         ),
         compiled_sha256=(
-            "9a68e99b7ce3185bd6a88724f40c4875ce5f4bd3836b691824e3564f42f58f4c"
+            "70f286e1492d0af8541b052a7ba1fe5b2da3aef10f2644dd649d1c0bf33d3c47"
         ),
     ),
 )

@@ -1766,6 +1766,57 @@ async def test_three_requests_replay_two_tool_turn_continuations_and_provider_id
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("continuation", ("", " \n\t"))
+async def test_two_turn_bridge_replays_exact_empty_or_whitespace_continuation(
+    continuation: str,
+) -> None:
+    bridge, transport = _reasoning_stack(
+        [
+            _reasoning_transport_response(
+                call_id="provider-call-empty",
+                tool_name="work",
+                arguments='{"value":"same"}',
+                continuation=continuation,
+                content="ordinary first",
+            ),
+            _reasoning_transport_response(
+                call_id="provider-call-finish",
+                tool_name="finish",
+                arguments='{"value":"done"}',
+                continuation="terminal continuation",
+                content="ordinary terminal",
+            ),
+        ]
+    )
+    runner = WorkflowRunner(
+        bridge,
+        ContextManager(NoCompact(), budget_tokens=100_000),
+        max_iterations=2,
+    )
+
+    result = await runner.run(_private_workflow(), "run")
+
+    assert result == "result:finish:done"
+    assert len(transport.requests) == 2
+    assert transport.requests[1].body["messages"] == [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "run"},
+        _expected_tool_call_message(
+            call_id="provider-call-empty",
+            tool_name="work",
+            continuation=continuation,
+            content="ordinary first",
+        ),
+        {
+            "role": "tool",
+            "tool_call_id": "provider-call-empty",
+            "name": "work",
+            "content": "result:work:same",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_repeated_sequential_tool_calls_do_not_cross_associate_continuation() -> (
     None
 ):
