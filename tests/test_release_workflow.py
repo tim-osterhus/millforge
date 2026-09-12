@@ -16,7 +16,7 @@ ACTION_PINS = {
     "astral-sh/setup-uv": "d0cc045d04ccac9d8b7881df0226f9e82c39688e",
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-    "pypa/gh-action-pypi-publish": ("ba38be9e461d3875417946c167d0b5f3d385a247"),
+    "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33"),
 }
 
 
@@ -121,8 +121,21 @@ def test_release_workflow_refuses_unsafe_publication_surfaces() -> None:
 
     assert "refs/tags/v0.1.1" in workflow
     assert re.search(r"tags:\s*\n\s*- v0\.1\.1\s*$", workflow, re.MULTILINE)
-    assert build_job.count("if: github.ref == 'refs/tags/v0.1.1'") == 1
-    assert publish_job.count("if: github.ref == 'refs/tags/v0.1.1'") == 1
+    for job in (build_job, publish_job):
+        assert "(github.event_name == 'push' && github.ref == 'refs/tags/v0.1.1')" in job
+        assert (
+            "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')"
+            in job
+        )
+    assert "  workflow_dispatch:\n" in workflow_header
+    assert "inputs:" not in workflow_header
+    assert "ref: refs/tags/v0.1.1" in build_job
+    assert "persist-credentials: false" in build_job
+    assert (
+        'run: test "$(git rev-parse HEAD)" = 704ffaa019ea21c923afb20d809d7ef08adf756d'
+        in build_job
+    )
+    assert "needs: build" in publish_job
     assert "environment: pypi" in publish_job
     assert "permissions:" not in workflow_header
     assert build_permissions is not None
@@ -137,7 +150,6 @@ def test_release_workflow_refuses_unsafe_publication_surfaces() -> None:
         "repository_dispatch:",
         "schedule:",
         "workflow_call:",
-        "workflow_dispatch:",
     ):
         assert forbidden_trigger not in lowered
     assert "skip-existing" not in lowered
