@@ -15,6 +15,8 @@ The qualified effect scope includes owned model HTTP requests and stock `read`
 and `write` on ordinary files within the resolved local workspace. Runtime path
 checks exclude symlinks, escaping paths, devices, FIFOs, nonlocal filesystems and
 unproved filesystem paths from native qualification. The executor verifies the actual stock bindings.
+The filesystem observer admits only local macOS APFS/HFS volumes. Other
+platforms retain ordinary execution but cannot admit this native pause profile.
 These checks do not create a general filesystem sandbox.
 
 Eligibility, native control reservation and effect entry share the invocation's

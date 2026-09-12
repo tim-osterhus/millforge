@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -147,6 +148,16 @@ async def test_actual_native_started_hold_same_invocation(tmp_path, monkeypatch,
         assert not task.done(), task.result()
         assert (tmp_path / "before.txt").read_text() == "before"
         before = control.snapshot()
+        if sys.platform != "darwin":
+            assert not before["eligible"]
+            with pytest.raises(RuntimeError, match="native_profile_unqualified"):
+                with control.reservation(P, "runs.pause", None):
+                    pytest.fail("unsupported filesystem admitted native pause")
+            result = await asyncio.wait_for(task, 10)
+            assert result.status.value == "completed", result
+            assert (tmp_path / "after.txt").read_text() == "after"
+            assert server.count == 4
+            return
         with control.reservation(P, "runs.pause", None):
             control.accept("pause", "d1", "runs.pause", "pause-id")
         if delay > 5:

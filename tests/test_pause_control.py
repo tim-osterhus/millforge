@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 
 import pytest
 
@@ -123,7 +124,7 @@ def test_actual_path_scope(tmp_path, kind):
     elif kind == "directory":
         path.mkdir()
     assert local_file_supported(tmp_path, str(path), writing=True) == (
-        kind in {"regular", "new"}
+        sys.platform == "darwin" and kind in {"regular", "new"}
     )
 
 
