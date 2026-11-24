@@ -11,7 +11,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{name = "Tim Osterhus", email = "tim@millrace.ai"}]
 maintainers = [{name = "Tim Osterhus", email = "tim@millrace.ai"}]
-readme = "README.md"
+readme = "docs/legacy-python/README.md"
 keywords = ["llm", "tool-calling", "agents", "guardrails", "millforge"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -72,7 +72,7 @@ packages = ["src/millforge"]
 [tool.hatch.build.targets.sdist]
 only-include = [
     "LICENSE",
-    "README.md",
+    "docs/legacy-python/README.md",
     "pyproject.toml",
     "src/millforge",
 ]
@@ -111,8 +111,15 @@ explicit_package_bases = true
 # repository runtime metadata under `millrace-agents/` is not package code, and
 # the private Forge subset is upstream-derived code covered by provenance tests
 # rather than Millforge's owned type surface.
-exclude = "^(ref-forge|millrace-agents|src/millforge/_forge|tests/fixtures/eval_workflow/workspace)/"
+# The optional R1 sidecar and Node PTY driver have separate verification.
+exclude = '''(?x)^(
+    (ref-forge|millrace-agents|src/millforge/_forge|optional)/ |
+    tests/fixtures/(eval_workflow/workspace/|python-r1/|tui-pty\.py$)
+)'''
 
 [[tool.mypy.overrides]]
 module = "millforge._forge.*"
 follow_imports = "skip"
+
+[tool.ruff]
+extend-exclude = ["optional", "tests/fixtures/python-r1", "tests/fixtures/tui-pty.py"]

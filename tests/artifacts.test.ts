@@ -35,6 +35,15 @@ async function resultData(f:Fixture,agent=false){
 async function save(f:Fixture,agent=false){const data=await resultData(f,agent);await publishResult(f.run,data.result);return data;}
 async function rewriteTrace(f:Fixture,result:Obj,trace:Trace[]){await fs.writeFile(path.join(f.run,'trace.jsonl'),trace.map(t=>JSON.stringify(t)+'\n').join(''));object(result.counts).trace_bytes=(await fs.stat(path.join(f.run,'trace.jsonl'))).size;result.artifacts=await artifactManifest(f.run,requiredArtifacts(f.loaded)) as unknown as Json;await fs.writeFile(path.join(f.run,'result.json'),JSON.stringify(result));}
 describe('immutable capture and pure inspect',()=>{
+  it.each([false, true])('reads exact saved capture versions for the legacy profile (v2=%s)', async v2=>{
+    const f = await fixture(false, {v2});
+    for (const millforge of ['0.2.0', '0.2.1']) {
+      const capture = {...f.capture, versions: {...f.capture.versions, millforge}};
+      expect(validateCapture(capture, f.p, f.request, f.loaded.digest).versions).toEqual(capture.versions);
+    }
+    const unknown = {...f.capture, versions: {...f.capture.versions, millforge: '0.2.2'}};
+    expect(()=>validateCapture(unknown, f.p, f.request, f.loaded.digest)).toThrow('unsupported captured version');
+  });
   it('round-trips saved data and stays independent of later authored changes',async()=>{const f=await fixture();await save(f);const inspected=await inspectRun(f.run);expect(inspected.result.status).toBe('completed');expect(inspected.result.counts.usage).toBeNull();f.p.instructions='later authored change';await fs.writeFile(path.join(f.dir,'profile.json'),JSON.stringify(f.p));expect((await inspectRun(f.run)).capture.system_prompt).toBe('Follow the supplied task.');await expect(createCapture(f.run,f.loaded,f.request,f.capture)).rejects.toThrow();let output='';expect(await main(['inspect','--run',f.run],{},s=>output+=s,()=>{})).toBe(0);expect(JSON.parse(output).result.request_id).toBe(f.request.request_id);});
   it.each([{task:'\0'.repeat(262144)},{systemPrompt:'\0'.repeat(2097152),contextBytes:2097152}])('round-trips maximum escaped admitted input/capture text',async(options)=>{const f=await fixture(false,options);await save(f);expect((await inspectRun(f.run)).result.status).toBe('completed');});
   it('never replaces an existing final result',async()=>{const f=await fixture();const {result}=await save(f);const before=await fs.readFile(path.join(f.run,'result.json'));await expect(publishResult(f.run,result)).rejects.toThrow();expect(await fs.readFile(path.join(f.run,'result.json'))).toEqual(before);});

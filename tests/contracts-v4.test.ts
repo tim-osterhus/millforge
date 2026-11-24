@@ -27,6 +27,15 @@ async function saved(change?:(events:Trace[],f:Awaited<ReturnType<typeof fixture
   await publishResult(dir,result);return inspectRun(dir);
 }
 describe('strict profile-v3 and capture-v4',()=>{
+  it('preserves the exact base versions through the v3 validation projection', async ()=>{
+    const {capture, p, request} = await fixture();
+    for (const millforge of ['0.2.0', '0.2.1']) {
+      const candidate = {...capture, versions: {...capture.versions, millforge}};
+      expect(validateCapture(candidate, p, request, sha).versions).toEqual(candidate.versions);
+    }
+    const unknown = {...capture, versions: {...capture.versions, millforge: '0.2.2'}};
+    expect(()=>validateCapture(unknown, p, request, sha)).toThrow('unsupported captured version');
+  });
   it('accepts the exact opt-in tuple and leaves authored JSON unchanged',async()=>{const f=await fixture(),before=canonical(f.p as unknown as Obj);expect(validateProfile(f.p)).toEqual(f.p);expect(canonical(f.p as unknown as Obj)).toBe(before);});
   it.each(['empty','unknown','package','codemode-tool','empty-tools','generate','extra'])('refuses profile %s drift',async kind=>{const f=await fixture(),p=f.p;if(kind==='empty')p.capabilities.extensions=[];if(kind==='unknown')p.capabilities.extensions=['other'];if(kind==='package')p.capabilities.packages=['npm:other'];if(kind==='codemode-tool')p.tools=['codemode'];if(kind==='empty-tools')p.tools=[];if(kind==='generate')(p as unknown as Obj).mode='generate';if(kind==='extra')(p as unknown as Obj).codemode={};expect(()=>validateProfile(p)).toThrow();});
   it.each(['v1','v2'])('keeps %s nonempty capability rejection',async version=>{const f=await fixture();if(version==='v2')expect(()=>validateProfile({...f.p,schema:'millforge-profile/v2'})).toThrow('capabilities must be empty');else{const legacy=JSON.parse(await fs.readFile(new URL('../profiles/agent/profile.json',import.meta.url),'utf8'));legacy.capabilities=f.p.capabilities;expect(()=>validateProfile(legacy)).toThrow('capabilities must be empty');}});

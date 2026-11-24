@@ -1,12 +1,20 @@
 {
   "name": "@millrace-ai/millforge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Portable Millforge profiles and offline invocation records",
   "type": "module",
   "license": "Apache-2.0",
   "engines": { "node": ">=22.19.0" },
   "bin": { "millforge": "dist/node/src/cli.js" },
-  "files": ["dist/node/src/", "profiles/", "docs/pi-runtime.md", "THIRD_PARTY_NOTICES.md", "LICENSE", "README.md"],
+  "files": [
+    "dist/node/src/",
+    "profiles/",
+    "docs/pi-runtime.md",
+    "bundles/millrace-ai-millforge-optimization-0.1.1.tgz",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

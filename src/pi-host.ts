@@ -10,7 +10,10 @@ import {finishCapture,prepareCapture,publishPreparedInputs,TraceWriter} from './
 import {hash,loadProfile,publicError,regularFile} from './profile.js';
 import {type WorkerInput,type WorkerReply,verifyExecutables} from './lifecycle.js';
 import {createBinding} from './bindings.js';
+import {millforgeVersion,piVersion} from './versions.js';
 import {CodemodeGuard,assertCodemodeRoots,codemodeDeclarations,materializeCodemode} from './codemode-host.js';
+import {pythonObservationLimit,pythonToolName,pythonToolSchema,validatePythonArguments} from './contracts-v5.js';
+import {loadPythonAdmission,PythonActionObserver,PythonBridge} from './python-r1-host.js';
 const delay=(ms:number):Promise<void>=>new Promise(resolve=>setTimeout(resolve,ms));
 function alive(pid:number):boolean{try{process.kill(-pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw error;}}
 function signalGroup(child:ChildProcess,signal:NodeJS.Signals):void{if(child.pid)try{process.kill(-child.pid,signal);}catch(error){if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}}
@@ -64,16 +67,38 @@ async function temporaryFiles(root:string):Promise<string[]>{
 }
 export async function executeWorker(input:WorkerInput,signal:AbortSignal,getCredential?:()=>Promise<string|undefined>):Promise<WorkerReply>{
   const started=performance.now(),deadline=started+Number(BigInt(input.deadlineNs)-process.hrtime.bigint())/1e6,loaded=await loadProfile(input.profileDir),limits=tightenLimits(loaded.profile,input.request.limits);
+  const python=loaded.profile.schema==='millforge-profile/v4'?await loadPythonAdmission(input.python?.manifest):undefined;
+  if(python){
+    if(!input.python||input.python.sha256!==python.capture.admission_sha256)refuse('Python R1 admission changed before capture','UNSUPPORTED_CAPABILITY');
+    const scratch=input.python.scratch,stat=await fs.lstat(scratch);
+    if(!/^\/tmp\/mfpy-[A-Za-z0-9]+$/.test(scratch)||await fs.realpath(scratch)!==scratch||!stat.isDirectory()||
+       (stat.mode&0o777)!==0o700||stat.uid!==process.getuid?.())refuse('Python R1 scratch directory changed','UNSUPPORTED_CAPABILITY');
+  }
   const codemode=loaded.profile.schema==='millforge-profile/v3',successor=loaded.profile.schema!=='millforge-profile/v1';let run=await prepareCapture(input.dir,loaded,input.request,successor);await fs.mkdir(path.join(input.dir,'pi','bin'),{recursive:true,mode:0o700});await fs.mkdir(path.join(input.dir,'tmp'),{mode:0o700});if(codemode)await fs.mkdir(path.join(input.dir,'pi','codemode-loader'),{mode:0o700});
   if(process.env.PI_OFFLINE!=='1'||process.env.PI_CODING_AGENT_DIR!==path.join(input.dir,'pi')||process.env.TMPDIR!==path.join(input.dir,'tmp'))refuse('worker environment was not prepared','UNSUPPORTED_CAPABILITY');
   if(codemode&&(process.env.PI_CODEMODE_MAX_WORKERS!=='1'||process.env.HOME!==path.join(input.dir,'pi')||process.env.TMP!==process.env.TMPDIR||process.env.TEMP!==process.env.TMPDIR))refuse('codemode worker environment was not prepared','UNSUPPORTED_CAPABILITY');
   await verifyExecutables(input.tools,process.env.PATH??'');if(signal.aborted)refuse('cancelled before Pi load','CANCELLED');
-  const controller=new AbortController();const cancel=():void=>{if(codemode)problem??=new MillforgeError('CANCELLED','invocation cancelled');controller.abort();};signal.addEventListener('abort',cancel,{once:true});
-  const deadlineTimer=setTimeout(()=>{if(codemode)problem??=new MillforgeError('TIMEOUT','work deadline expired');controller.abort();},Math.max(0,deadline-performance.now()));
+  const controller=new AbortController();const cancel=():void=>{if(codemode||python)problem??=new MillforgeError('CANCELLED','invocation cancelled');controller.abort();};signal.addEventListener('abort',cancel,{once:true});
+  const deadlineTimer=setTimeout(()=>{if(codemode||python)problem??=new MillforgeError('TIMEOUT','work deadline expired');controller.abort();},Math.max(0,deadline-performance.now()));
   let trace:TraceWriter|undefined,session:AgentSession|undefined,processes:OwnedProcesses|undefined,problem:MillforgeError|undefined,output:Json=null,domain:string|null=null,tools=0,outputBytes=0,toolBytes=0,settled=false,idle=true,toolClosed=true;
   let guard:CodemodeGuard|undefined;let declarations:Obj={};
+  const pythonObserver=python?new PythonActionObserver():undefined;
+  const pythonBridge=python?new PythonBridge(python,input.request.workspace!,input.python!.scratch,controller.signal):undefined;
+  let authorizedPython:{id:string;code:string}|undefined;
+  let finishedPythonCall:string|undefined;
   const pending=new Set<string>(),seen=new Set<string>(),toolTimers=new Map<string,{deadline:number;timer:NodeJS.Timeout}>();let cleanup:Promise<void>|undefined;
-  const clean=():Promise<void>=>cleanup??=(async()=>{for(const call of toolTimers.values())clearTimeout(call.timer);toolTimers.clear();if(session){idle=false;await Promise.race([session.abort().then(()=>session!.waitForIdle()).then(()=>{idle=true;}),delay(1500)]);session.dispose();}if(processes)toolClosed=await processes.close();guard?.dispose();})();
+  const clean=():Promise<void>=>cleanup??=(async()=>{
+    const closingPython=pythonBridge?.close();
+    try{
+      for(const call of toolTimers.values())clearTimeout(call.timer);
+      toolTimers.clear();
+      if(session){idle=false;await Promise.race([session.abort().then(()=>session!.waitForIdle()).then(()=>{idle=true;}),delay(1500)]);session.dispose();}
+      if(processes)toolClosed=await processes.close();
+    }finally{
+      if(closingPython)toolClosed=(await closingPython)&&toolClosed;
+      guard?.dispose();
+    }
+  })();
   let binding:Awaited<ReturnType<typeof createBinding>>|undefined;
   const redact=(value:Json):Json=>{if(typeof value==='string'){for(const secret of [binding?.oauthLease?.credential.access,binding?.oauthLease?.credential.refresh,input.credential].filter((x):x is string=>!!x).sort((a,b)=>b.length-a.length))value=value.split(secret).join('[redacted]');return value;}return Array.isArray(value)?value.map(redact):value!==null&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,v])=>[key,redact(v)])):value;};
   const emit=(kind:string,payload:Obj):void=>{payload=redact(payload) as Obj;if(!trace)refuse('effect before capture','IO_ERROR');if(problem&&!['model_end','tool_end',...(codemode?['nested_join']:[])].includes(kind))throw problem;if(kind==='tool_end'){const size=bytes(String(payload.text));if(toolBytes+size>limits.tool_output_bytes)refuse('retained tool output ceiling reached','OUTPUT_LIMIT');toolBytes+=size;processes?.retainText(toolBytes);}if(kind==='output_partial'){const size=bytes(String(payload.text));if(outputBytes+size>limits.output_bytes)refuse('assistant output exceeds ceiling','OUTPUT_LIMIT');outputBytes+=size;}trace.append(kind,payload);};
@@ -82,8 +107,32 @@ export async function executeWorker(input:WorkerInput,signal:AbortSignal,getCred
     const size=bytes(String(payload.text));if(toolBytes+size>limits.tool_output_bytes)refuse('retained tool output ceiling reached','OUTPUT_LIMIT');
     trace.appendToolEnd(payload,join);toolBytes+=size;processes?.retainText(toolBytes);
   };
+  const runPython=async(callId:string,value:unknown)=>{
+    try{
+      if(problem)throw problem;
+      const authorized=authorizedPython;authorizedPython=undefined;
+      if(!authorized||authorized.id!==callId||authorized.code!==validatePythonArguments(value).code||pending.size||seen.has(callId)){
+        refuse('Python execute lacks one matching native permit','INVALID_FINISH');
+      }
+      if(controller.signal.aborted||performance.now()>=deadline)refuse('Python cell admission closed','TIMEOUT');
+      if(tools>=limits.tool_calls)refuse('Python cell call limit reached','LIMIT_EXHAUSTED');
+      if(!trace)refuse('Python cell before capture','IO_ERROR');
+      const display=Math.min(pythonObservationLimit,limits.tool_output_bytes-toolBytes);
+      // Six encoded JSON bytes per UTF-8 byte plus room for the end record metadata.
+      trace.append('tool_start',{call_id:callId,name:pythonToolName,arguments:{code:authorized.code}},1024+6*display);
+      tools++;seen.add(callId);pending.add(callId);
+      const result=await pythonBridge!.run(callId,authorized.code,display,Math.min(deadline,performance.now()+limits.tool_timeout_seconds*1000));
+      const {problem:bridgeProblem,...details}=result;
+      // The work timer can assign the problem while the bridge is settling.
+      const stopCode=(problem as MillforgeError|undefined)?.code;
+      const status=stopCode==='TIMEOUT'&&details.status==='cancelled'?'timeout':details.status;
+      emitEnd({call_id:callId,...details,status});pending.delete(callId);finishedPythonCall=callId;
+      if(bridgeProblem)refuse('Python bridge stopped before cell settlement',bridgeProblem);
+      return {content:[{type:'text' as const,text:details.text}],details:{},isError:status==='failed'};
+    }catch(error){problem??=publicError(error);controller.abort();throw problem;}
+  };
   try{
-    binding=await createBinding({profile:loaded.profile,limits,signal:controller.signal,deadline,onTrace:emit,profileDigest:loaded.digest,...(getCredential?{getCredential:async()=>{const value=await getCredential();if(value===undefined)delete input.credential;else input.credential=value;return value;}}:{}),...(input.authHome?{authHome:input.authHome}:{}),...(input.credential===undefined?{}:{credential:input.credential})});
+    binding=await createBinding({profile:loaded.profile,limits,signal:controller.signal,deadline,onTrace:emit,profileDigest:loaded.digest,...(pythonObserver?{pythonObserver}:{}),...(getCredential?{getCredential:async()=>{const value=await getCredential();if(value===undefined)delete input.credential;else input.credential=value;return value;}}:{}),...(input.authHome?{authHome:input.authHome}:{}),...(input.credential===undefined?{}:{credential:input.credential})});
     if(successor)run=await publishPreparedInputs(run);
     let prompt=loaded.profile.instructions,schemas:{name:string;sha256:string}[]=[],names:string[]=[];
     if(loaded.profile.mode==='agent'){
@@ -99,16 +148,35 @@ export async function executeWorker(input:WorkerInput,signal:AbortSignal,getCred
         guard=new CodemodeGuard({profile:loaded.profile,limits,deadline,signal:controller.signal,emit,emitEnd,problem:()=>problem,stop:error=>{if(error.code==='CLOSURE_UNCERTAIN')problem=error;else problem??=error;controller.abort();},verify:async()=>{await verifyExecutables(input.tools,process.env.PATH??'');await emptyOwnedBin(path.join(input.dir,'pi'));},truncated:nativeTruncated});
         const materializer=await materializeCodemode(pi,path.join(input.dir,'pi'),guard);resources.getExtensions=()=>materializer.getExtensions();resources.reload=async()=>{await assertCodemodeRoots(path.join(input.dir,'pi'));await materializer.reload();await assertCodemodeRoots(path.join(input.dir,'pi'));};
       }
-      const customTools=loaded.profile.tools.includes('bash')?[pi.createBashToolDefinition(input.request.workspace!,{operations:processes.operations(),exposeSessionEnvironment:false}) as unknown as ToolDefinition]:[]; // SDK customTools erases the native schema generic; native definition/data remain unchanged.
-      ({session}=await pi.createAgentSession({cwd:input.request.workspace!,agentDir:path.join(input.dir,'pi'),modelRuntime:runtime,model:binding.model,thinkingLevel:binding.thinkingLevel??'off',scopedModels:[{model:binding.model,thinkingLevel:binding.thinkingLevel??'off'}],tools:codemode?[...loaded.profile.tools,'codemode']:loaded.profile.tools,customTools,resourceLoader:resources,sessionManager:pi.SessionManager.inMemory(input.request.workspace!),settingsManager:pi.SettingsManager.inMemory({retry:{enabled:false,maxRetries:0,provider:{maxRetries:0}},compaction:{enabled:false},cacheWarming:'off'},codemode?{projectTrusted:false}:{})}));
+      const customTools:ToolDefinition[]=loaded.profile.tools.includes('bash')?[pi.createBashToolDefinition(input.request.workspace!,{operations:processes.operations(),exposeSessionEnvironment:false}) as unknown as ToolDefinition]:[]; // SDK customTools erases the native schema generic; native definition/data remain unchanged.
+      if(python)customTools.push({name:pythonToolName,label:'Python',description:'Run Python in the invocation kernel. Print a small text observation.',parameters:pythonToolSchema as unknown as ToolDefinition['parameters'],execute:runPython});
+      ({session}=await pi.createAgentSession({cwd:input.request.workspace!,agentDir:path.join(input.dir,'pi'),modelRuntime:runtime,model:binding.model,thinkingLevel:binding.thinkingLevel??'off',scopedModels:[{model:binding.model,thinkingLevel:binding.thinkingLevel??'off'}],tools:codemode?[...loaded.profile.tools,'codemode']:loaded.profile.tools,customTools,resourceLoader:resources,sessionManager:pi.SessionManager.inMemory(input.request.workspace!),settingsManager:pi.SettingsManager.inMemory({retry:{enabled:false,maxRetries:0,provider:{maxRetries:0}},compaction:{enabled:false},cacheWarming:'off'},codemode||python?{projectTrusted:false}:{})}));
       const scoped=session.scopedModels[0];if(successor&&(session.thinkingLevel!==binding.thinkingLevel||session.scopedModels.length!==1||!scoped||scoped.thinkingLevel!==binding.thinkingLevel||canonical(scoped.model as unknown as Obj)!==canonical(binding.model as unknown as Obj)))refuse('native session reasoning/model differs from admission','UNSUPPORTED_CAPABILITY');
       session.agent.toolExecution='sequential';names=session.getActiveToolNames();schemas=names.map(name=>({name,sha256:hash(canonical(session!.getToolDefinition(name)!.parameters as Json))}));prompt=session.systemPrompt;if(loaded.profile.schema==='millforge-profile/v3')declarations=codemodeDeclarations(session,loaded.profile);
       const nativeBefore=session.agent.beforeToolCall,nativeAfter=session.agent.afterToolCall;
-      if(!codemode)session.agent.beforeToolCall=async(ctx,s)=>{try{if(problem)throw problem;if(controller.signal.aborted||performance.now()>=deadline)refuse('tool deadline reached','TIMEOUT');await verifyExecutables(input.tools,process.env.PATH??'');if(ctx.toolCall.name==='find'||ctx.toolCall.name==='grep')await emptyOwnedBin(path.join(input.dir,'pi'));const result=await nativeBefore?.(ctx,s);const call=toolTimers.get(ctx.toolCall.id);if(call&&performance.now()>=call.deadline)refuse('native tool deadline expired','TIMEOUT');return result;}catch(error){problem=publicError(error);controller.abort();throw problem;}};
+      if(pythonObserver)session.agent.beforeToolCall=async(ctx,s)=>{
+        try{
+          if(problem)throw problem;
+          if(controller.signal.aborted||performance.now()>=deadline)refuse('tool deadline reached','TIMEOUT');
+          const result=await nativeBefore?.(ctx,s);
+          if(result?.block)return result;
+          if(authorizedPython||pending.size)refuse('another Python cell is pending','TOOL_ERROR');
+          authorizedPython={id:ctx.toolCall.id,...pythonObserver.consume(ctx.assistantMessage,ctx.toolCall)};
+          return result;
+        }catch(error){problem??=publicError(error);controller.abort();throw problem;}
+      };
+      else if(!codemode)session.agent.beforeToolCall=async(ctx,s)=>{try{if(problem)throw problem;if(controller.signal.aborted||performance.now()>=deadline)refuse('tool deadline reached','TIMEOUT');await verifyExecutables(input.tools,process.env.PATH??'');if(ctx.toolCall.name==='find'||ctx.toolCall.name==='grep')await emptyOwnedBin(path.join(input.dir,'pi'));const result=await nativeBefore?.(ctx,s);const call=toolTimers.get(ctx.toolCall.id);if(call&&performance.now()>=call.deadline)refuse('native tool deadline expired','TIMEOUT');return result;}catch(error){problem=publicError(error);controller.abort();throw problem;}};
       session.agent.afterToolCall=async(ctx,s)=>nativeAfter?.(ctx,s);
       session.subscribe(event=>{try{
         if(event.type==='agent_settled')settled=true;
         if(codemode&&(event.type==='tool_execution_start'||event.type==='tool_execution_end')){guard!.event(event);return;}
+        if(python&&(event.type==='tool_execution_start'||event.type==='tool_execution_end')){
+          if(event.type==='tool_execution_end'){
+            if(finishedPythonCall!==event.toolCallId&&!problem)refuse('Python native action was not admitted','INVALID_FINISH');
+            finishedPythonCall=undefined;
+          }
+          return;
+        }
         if(event.type==='tool_execution_start'){
           if(pending.size||seen.has(event.toolCallId))refuse('duplicate or parallel tool identity','TOOL_ERROR');if(tools>=limits.tool_calls)refuse('tool call ceiling reached','LIMIT_EXHAUSTED');
           emit('tool_start',{call_id:event.toolCallId,name:event.toolName,arguments:object(event.args)});seen.add(event.toolCallId);pending.add(event.toolCallId);tools++;const callId=event.toolCallId,callDeadline=Math.min(deadline,performance.now()+limits.tool_timeout_seconds*1000);toolTimers.set(callId,{deadline:callDeadline,timer:setTimeout(()=>{if(pending.has(callId)){problem??=new MillforgeError('TIMEOUT','native tool deadline expired');controller.abort();}},Math.max(1,callDeadline-performance.now()))});
@@ -118,9 +186,9 @@ export async function executeWorker(input:WorkerInput,signal:AbortSignal,getCred
           const content=(event.result as {content?:{type:string;text?:string}[]}).content??[];const text=content.filter(c=>c.type==='text').map(c=>c.text??'').join('\n');
           emit('tool_end',{call_id:event.toolCallId,status:problem?.code==='TIMEOUT'?'timeout':event.isError?'failed':'completed',text,truncated:nativeTruncated(event.toolName,event.result)});pending.delete(event.toolCallId);
         }
-      }catch(error){if(codemode)problem??=publicError(error);else problem=publicError(error);controller.abort();}});
+      }catch(error){if(codemode||python)problem??=publicError(error);else problem=publicError(error);controller.abort();}});
     }else{prompt=[prompt,...loaded.profile.assets.map(a=>loaded.assets.get(a.path)!.toString('utf8'))].filter(Boolean).join('\n\n');}
-    const boundary=await finishCapture(run,{schema:codemode?'millforge-capture/v4':successor?'millforge-capture/v3':'millforge-capture/v2',request_id:input.request.request_id,profile_digest:loaded.digest,limits,cwd:input.request.workspace,resources:loaded.resources,system_prompt:prompt,tool_names:names,tool_schemas:schemas,...declarations,binding:binding.binding,...(loaded.profile.schema==='millforge-profile/v1'?{credential_env:loaded.profile.model.credential_env}:{runtime_guards:currentRuntimeGuards}),versions:{millforge:'0.2.0',pi:'1.4.0',node:process.versions.node,platform:process.platform},external_tools:input.tools});
+    const boundary=await finishCapture(run,{schema:python?'millforge-capture/v5':codemode?'millforge-capture/v4':successor?'millforge-capture/v3':'millforge-capture/v2',request_id:input.request.request_id,profile_digest:loaded.digest,limits,cwd:input.request.workspace,resources:loaded.resources,system_prompt:prompt,tool_names:names,tool_schemas:schemas,...declarations,...(python?{python:python.capture}:{}),binding:binding.binding,...(loaded.profile.schema==='millforge-profile/v1'?{credential_env:loaded.profile.model.credential_env}:{runtime_guards:currentRuntimeGuards}),versions:{millforge:millforgeVersion,pi:piVersion,node:process.versions.node,platform:process.platform},external_tools:input.tools});
     trace=new TraceWriter(input.dir,boundary,started);emit('capture',{profile_digest:loaded.digest});
     const abortCleanup=():void=>{void clean();};controller.signal.addEventListener('abort',abortCleanup,{once:true});
     if(controller.signal.aborted||performance.now()>=deadline)refuse(signal.aborted?'invocation cancelled':'work deadline expired',signal.aborted?'CANCELLED':'TIMEOUT');
@@ -133,16 +201,16 @@ export async function executeWorker(input:WorkerInput,signal:AbortSignal,getCred
     if(problem)throw problem;if(controller.signal.aborted)refuse(signal.aborted?'invocation cancelled':'work deadline expired',signal.aborted?'CANCELLED':'TIMEOUT');
     if(!finalText.trim()||bytes(finalText)>limits.output_bytes)refuse('invalid terminal text','INVALID_TERMINAL');outputBytes=Math.max(outputBytes,bytes(finalText));
     try{output=loaded.profile.terminal.format==='text'?finalText:parseJson(finalText);domain=validateTerminal(output,{...loaded.profile,limits});}catch{refuse('terminal shape did not match','INVALID_TERMINAL');}
-  }catch(error){problem=problem??publicError(error);if(signal.aborted&&!codemode)problem=new MillforgeError('CANCELLED','invocation cancelled');else if(!codemode&&performance.now()>=deadline&&['IO_ERROR','CANCELLED','TIMEOUT','PROVIDER_ERROR'].includes(problem.code))problem=new MillforgeError('TIMEOUT','work deadline expired');controller.abort();}
+  }catch(error){problem=problem??publicError(error);if(signal.aborted&&!codemode&&!python)problem=new MillforgeError('CANCELLED','invocation cancelled');else if(!codemode&&!python&&performance.now()>=deadline&&['IO_ERROR','CANCELLED','TIMEOUT','PROVIDER_ERROR'].includes(problem.code))problem=new MillforgeError('TIMEOUT','work deadline expired');controller.abort();}
   finally{clearTimeout(deadlineTimer);signal.removeEventListener('abort',cancel);await clean();}
   if(!trace||!binding){const failure=problem??new MillforgeError('IO_ERROR','capture was not established');if(successor){await fs.rm(path.join(input.dir,'profile'),{recursive:true,force:true});await fs.rm(path.join(input.dir,'request.json'),{force:true});await fs.writeFile(path.join(input.dir,'diagnostic.json'),JSON.stringify({schema:'millforge-admission-diagnostic/v1',request_id:input.request.request_id,code:failure.code,message:failure.message})+'\n',{flag:'wx',mode:0o600});}throw failure;}
-  let spills:string[]=[];try{spills=await temporaryFiles(path.join(input.dir,'tmp'));let retained=toolBytes;for(const rel of spills){const file=path.join(input.dir,rel);if(codemode&&retained+(await fs.lstat(file)).size>limits.tool_output_bytes)refuse('retained spills exceed aggregate ceiling','OUTPUT_LIMIT');retained+=(await regularFile(file,limits.tool_output_bytes)).length;}if(retained>limits.tool_output_bytes)refuse('retained spills exceed aggregate ceiling','OUTPUT_LIMIT');}catch(error){if(codemode){problem??=publicError(error);if(publicError(error).code==='CLOSURE_UNCERTAIN')toolClosed=false;}else{problem=publicError(error);toolClosed=false;}}
+  let spills:string[]=[];try{spills=await temporaryFiles(path.join(input.dir,'tmp'));if(python&&spills.length)refuse('Python run has unowned temporary files','CLOSURE_UNCERTAIN');let retained=toolBytes;for(const rel of spills){const file=path.join(input.dir,rel);if(codemode&&retained+(await fs.lstat(file)).size>limits.tool_output_bytes)refuse('retained spills exceed aggregate ceiling','OUTPUT_LIMIT');retained+=(await regularFile(file,limits.tool_output_bytes)).length;}if(retained>limits.tool_output_bytes)refuse('retained spills exceed aggregate ceiling','OUTPUT_LIMIT');}catch(error){if(codemode||python){problem??=publicError(error);if(publicError(error).code==='CLOSURE_UNCERTAIN')toolClosed=false;if(python)spills=[];}else{problem=publicError(error);toolClosed=false;}}
   if(guard&&!guard.closed)toolClosed=false;
   const closure:Closure={worker:'closed',tools:toolClosed&&pending.size===0&&(!guard||guard.recordsClosed)?'closed':'may_live',writers:'closed',inference:binding.inferenceReturned()?'response_returned':'disconnected_unknown',detached_effects:toolClosed?'none_observed':'unknown'};
   if(!idle||!toolClosed||pending.size){problem=new MillforgeError('CLOSURE_UNCERTAIN','owned session or tool closure is uncertain');}
   const status=problem?(problem.code==='CANCELLED'?'cancelled':problem.code==='TIMEOUT'?'timeout':'failed'):'completed';
   try{trace.append('terminal',{status,code:problem?.code??null});trace.append('closure',closure as unknown as Obj);}finally{trace.close();}
-  const draft:Result={schema:codemode?'millforge-result/v4':successor?'millforge-result/v3':'millforge-result/v2',request_id:input.request.request_id,profile_id:loaded.profile.profile_id,profile_digest:loaded.digest,mode:loaded.profile.mode,status,domain_outcome:problem?null:domain,output:problem?null:output,diagnostic:problem?{code:problem.code as Exclude<Code,'OPTIMIZER_UNAVAILABLE'>,message:problem.message}:null,counts:{model_requests:trace.modelStarts,tool_calls:guard?.toolCalls??tools,...(guard?{nested_tool_calls:guard.nestedCalls}:{}),input_bytes:bytes(input.request.task)+input.request.context.reduce((sum,v)=>sum+bytes(v),0),output_bytes:outputBytes,trace_bytes:trace.size,usage:binding.usage() as unknown as Json,backend_requests:null,cost:null},timing:{started_at:input.startedAt,ended_at:new Date().toISOString(),elapsed_ms:performance.now()-started},closure,artifacts:[]};
+  const draft:Result={schema:python?'millforge-result/v5':codemode?'millforge-result/v4':successor?'millforge-result/v3':'millforge-result/v2',request_id:input.request.request_id,profile_id:loaded.profile.profile_id,profile_digest:loaded.digest,mode:loaded.profile.mode,status,domain_outcome:problem?null:domain,output:problem?null:output,diagnostic:problem?{code:problem.code as Exclude<Code,'OPTIMIZER_UNAVAILABLE'>,message:problem.message}:null,counts:{model_requests:trace.modelStarts,tool_calls:guard?.toolCalls??tools,...(guard?{nested_tool_calls:guard.nestedCalls}:{}),input_bytes:bytes(input.request.task)+input.request.context.reduce((sum,v)=>sum+bytes(v),0),output_bytes:outputBytes,trace_bytes:trace.size,usage:binding.usage() as unknown as Json,backend_requests:null,cost:null},timing:{started_at:input.startedAt,ended_at:new Date().toISOString(),elapsed_ms:performance.now()-started},closure,artifacts:[]};
   return {draft,spills};
 }
 if(process.env.MILLFORGE_WORKER==='1'&&process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){

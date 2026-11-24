@@ -1,5 +1,5 @@
 /** Pure successor schemas. No Pi, model catalog, credentials or host discovery. */
-import {type Obj,type ProfileV1,type Capture,type Request,type Limits,type Mode,object,exact,text,integer,number,choice,refuse,validateProfile,validateCompatCapture,canonical,limitKeys,sourcePin,digest,absolute,list,uniqueStrings,tools} from './contracts.js';
+import {type Obj,type ProfileV1,type Capture,type Request,type Limits,type Mode,object,exact,text,integer,number,choice,refuse,validateProfile,validateCompatCapture,canonical,limitKeys,sourcePin,digest,absolute,list,uniqueStrings,tools,validateCaptureVersions} from './contracts.js';
 export const thinkingLevels=['off','minimal','low','medium','high','xhigh','max'] as const;
 export type ThinkingLevel=typeof thinkingLevels[number];
 export const currentRuntimeGuards={encoded_request_bytes:33554432,encoded_response_bytes:33554432,encoded_record_bytes:33554432} as const;
@@ -88,7 +88,7 @@ export function validateCaptureV3(value:unknown,p:ProfileV2,r:Request,profileDig
   if(mapped===null||(!selected.reasoning&&level!=='off')||mapped===undefined&&['xhigh','max'].includes(level))refuse('unsupported captured reasoning');
   const expected=mapped??(level==='off'?null:level);if(resolved.mapped_effort!==expected)refuse('mapped effort mismatch');
   if(p.model.context_tokens>Number(selected.contextWindow)||p.model.max_output_tokens!==null&&p.model.max_output_tokens>Number(selected.maxTokens))refuse('captured model capacity mismatch');choice(resolved.cache_retention,['none','short','long']);if(resolved.cache_source!==(p.cache===undefined?'pi_default':'profile')||p.cache!==undefined&&resolved.cache_retention!==p.cache.retention)refuse('cache source mismatch');
-  const versions=exact(c.versions,['millforge','pi','node','platform']);if(versions.millforge!=='0.2.0'||versions.pi!=='1.4.0')refuse('unsupported captured versions','UNSUPPORTED_VERSION');text(versions.node,128,'node',false);text(versions.platform,128,'platform',false);
+  validateCaptureVersions(c.versions);
   const bins=list(c.external_tools,2),wanted=p.tools.filter(n=>n==='find'||n==='grep').map(n=>n==='find'?'fd':'rg').sort();const actual:string[]=[];for(const v of bins){const e=exact(v,['name','path','sha256','size','stat']);actual.push(choice(e.name,['fd','rg']));absolute(e.path);digest(e.sha256);integer(e.size);const st=exact(e.stat,['dev','ino','mode','mtime_ms']);for(const x of Object.values(st))number(x,0,Number.MAX_SAFE_INTEGER);}same(actual.sort(),wanted,'external tools');
   return c as unknown as CaptureV3;
 }

@@ -13,8 +13,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / "tests" / "fixtures" / "spec04_conformance_matrix.json"
-README_PATH = ROOT / "README.md"
-ROADMAP_PATH = ROOT / "ROADMAP.md"
+README_PATH = ROOT / "docs" / "legacy-python" / "README.md"
+ROADMAP_PATH = ROOT / "docs" / "legacy-python" / "ROADMAP.md"
 
 
 def _isolated_git_environment(root: Path) -> dict[str, str]:
@@ -315,7 +315,7 @@ def test_package_build_policy_excludes_private_state_and_test_trees() -> None:
     ]
     assert pyproject["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"] == [
         "LICENSE",
-        "README.md",
+        "docs/legacy-python/README.md",
         "pyproject.toml",
         "src/millforge",
     ]

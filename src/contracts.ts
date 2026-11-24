@@ -1,7 +1,10 @@
+import {millforgeVersion,piVersion} from './versions.js';
 import {validateProfileV3,validateCaptureV4,validateTraceV4,validateResultV4,type ProfileV3,type CaptureV4} from './contracts-v4.js';
 export {type ProfileV3,type CaptureV4,type TraceV4,type ResultV4,codemodeConstants,codemodeLoader,codemodeOptions} from './contracts-v4.js';
 import {validateProfileV2,validateCaptureV3,validateObservationV3,validateUsageV3,validateModelEndV3,validateLimitsV2,type ProfileV2} from './contracts-v2.js';
 export {type ProfileV2,type ThinkingLevel,type CaptureV3,type RuntimeGuards,type UsageV3,currentRuntimeGuards} from './contracts-v2.js';
+import {validateProfileV4,validateCaptureV5,validateTraceV5,validateResultV5,type ProfileV4,type CaptureV5,type PythonCapture} from './contracts-v5.js';
+export {type ProfileV4,type CaptureV5,type TraceV5,type ResultV5} from './contracts-v5.js';
 /** Pure versioned data contracts. This module never loads Pi, credentials or host resources. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Obj = { [key: string]: Json };
@@ -94,9 +97,9 @@ export interface ProfileV1 {
   capabilities: {extensions:Json[];packages:Json[]}; limits: Limits;
   terminal: {format:'text'|'json-object';required_keys:string[];outcome_key:string|null;outcomes:string[]}; description?: string;
 }
-export type Profile = ProfileV1 | ProfileV2 | ProfileV3;
+export type Profile = ProfileV1 | ProfileV2 | ProfileV3 | ProfileV4;
 export function validateLimits(value: unknown, mode: Mode, schema?:string): Limits {
-  if((schema==='millforge-profile/v2'||schema==='millforge-profile/v3'))return validateLimitsV2(value,mode);
+  if(schema==='millforge-profile/v2'||schema==='millforge-profile/v3'||schema==='millforge-profile/v4')return validateLimitsV2(value,mode);
   const obj=exact(value,limitKeys,[],'limits');
   const max: Limits={model_requests:mode==='generate'?1:64,tool_calls:mode==='generate'?0:256,elapsed_seconds:1800,model_timeout_seconds:1800,tool_timeout_seconds:1800,input_bytes:1048576,context_bytes:2097152,output_bytes:262144,tool_output_bytes:262144,trace_bytes:8388608};
   for (const key of limitKeys) integer(obj[key],key==='tool_calls'?0:1,max[key],key);
@@ -121,6 +124,7 @@ function requestEndpoint(value:unknown,api:string):string{
 }
 function credential(value: unknown): string|null { if (value===null) return null; const v=text(value,256,'credential environment name',false); if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) refuse('credential must be an environment variable reference'); return v; }
 export function validateProfile(value: unknown): Profile {
+  if(object(value).schema==='millforge-profile/v4')return validateProfileV4(value);
   if(object(value).schema==='millforge-profile/v3')return validateProfileV3(value);
   if(object(value).schema==='millforge-profile/v2')return validateProfileV2(value);
   const p=exact(value,['schema','profile_id','revision','mode','runtime','model','instructions','sampling','tools','assets','capabilities','limits','terminal'],['description'],'profile'); version(p,'millforge-profile/v1'); id(p.profile_id); integer(p.revision,1); const mode=choice(p.mode,['generate','agent']);
@@ -160,10 +164,12 @@ export function tightenLimits(profile: Profile, value: unknown): Limits {
 }
 export interface Resource extends Asset {size:number}
 export interface Capture {
-  schema:'millforge-capture/v1'|'millforge-capture/v2'|'millforge-capture/v3'|'millforge-capture/v4';request_id:string;profile_digest:string;limits:Limits;cwd:string|null;resources:Resource[];system_prompt:string;tool_names:string[];tool_schemas:{name:string;sha256:string}[];binding:Obj;credential_env?:string|null;runtime_guards?:Obj;declared_tools?:{name:string;description_sha256:string}[];callable_tool_names?:string[];capability?:Obj;versions:{millforge:string;pi:string;node:string;platform:string};external_tools:Obj[];
+  schema:'millforge-capture/v1'|'millforge-capture/v2'|'millforge-capture/v3'|'millforge-capture/v4'|'millforge-capture/v5';request_id:string;profile_digest:string;limits:Limits;cwd:string|null;resources:Resource[];system_prompt:string;tool_names:string[];tool_schemas:{name:string;sha256:string}[];binding:Obj;credential_env?:string|null;runtime_guards?:Obj;declared_tools?:{name:string;description_sha256:string}[];callable_tool_names?:string[];capability?:Obj;python?:PythonCapture;versions:{millforge:string;pi:string;node:string;platform:string};external_tools:Obj[];
 }
 export const sourcePin='4a080252f06caf63a525d7873c5d94d3c23887e0';
 export function validateCapture(value: unknown, profile: Profile, request: Request, profileDigest: string): Capture {
+  if(profile.schema==='millforge-profile/v4')return validateCaptureV5(value,profile,request,profileDigest);
+  if(object(value).schema==='millforge-capture/v5')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if(profile.schema==='millforge-profile/v3')return validateCaptureV4(value,profile,request,profileDigest);
   if(object(value).schema==='millforge-capture/v4')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if(profile.schema==='millforge-profile/v2')return validateCaptureV3(value,profile,request,profileDigest);
@@ -184,10 +190,18 @@ export function validateCapture(value: unknown, profile: Profile, request: Reque
     if(compat.internal_resolution!=='unknown'||canonical(object(compat.authored_overrides))!==canonical(profile.model.compat))refuse('authored compatibility or unknown marker mismatch');
   }else validateCompatCapture(b.compat,profile);
   const options=exact(v2?b.requested_options:b.options,['temperature','top_p','thinking','max_retries']); if (options.temperature!==profile.sampling.temperature || options.top_p!==profile.sampling.top_p || options.thinking!=='off' || options.max_retries!==0) refuse(v2?'requested binding options mismatch':'effective binding options mismatch');
-  const versions=exact(c.versions,['millforge','pi','node','platform']); if (versions.millforge!=='0.2.0' || versions.pi!=='1.4.0') refuse('unsupported captured version','UNSUPPORTED_VERSION'); text(versions.node,128,'Node version',false); text(versions.platform,128,'platform',false);
+  validateCaptureVersions(c.versions);
   const binaries=list(c.external_tools,2); const wanted=names.filter(n=>n==='find'||n==='grep').map(n=>n==='find'?'fd':'rg').sort(); const actual:string[]=[];
   for (const entry of binaries) { const e=exact(entry,['name','path','sha256','size','stat']);actual.push(choice(e.name,['fd','rg']));absolute(e.path);digest(e.sha256);integer(e.size);const st=exact(e.stat,['dev','ino','mode','mtime_ms']);integer(st.dev);integer(st.ino);integer(st.mode,0,0o177777);number(st.mtime_ms,0,Number.MAX_SAFE_INTEGER); }
   if (canonical(actual.sort())!==canonical(wanted)) refuse('external tool capture mismatch'); return c as unknown as Capture;
+}
+export function validateCaptureVersions(value: unknown): void {
+  const versions = exact(value, ['millforge', 'pi', 'node', 'platform']);
+  if ((versions.millforge !== '0.2.0' && versions.millforge !== millforgeVersion) || versions.pi !== piVersion) {
+    refuse('unsupported captured version', 'UNSUPPORTED_VERSION');
+  }
+  text(versions.node, 128, 'Node version', false);
+  text(versions.platform, 128, 'platform', false);
 }
 export function validateCompatCapture(value: unknown, profile: Profile,requireFinish=true): void {
   // Public Pi 1.4.0 compatibility declaration shapes, never provider defaults.
@@ -223,7 +237,7 @@ export function validateClosure(value: unknown, completed=false): Closure {
 }
 export interface Artifact {path:string;size:number;sha256:string;media_type:string}
 export interface Result {
-  schema:'millforge-result/v1'|'millforge-result/v2'|'millforge-result/v3'|'millforge-result/v4';request_id:string;profile_id:string;profile_digest:string;mode:Mode;status:Status;domain_outcome:string|null;output:Json;diagnostic:{code:typeof codes[number];message:string}|null;counts:Obj;timing:Obj;closure:Closure;artifacts:Artifact[];
+  schema:'millforge-result/v1'|'millforge-result/v2'|'millforge-result/v3'|'millforge-result/v4'|'millforge-result/v5';request_id:string;profile_id:string;profile_digest:string;mode:Mode;status:Status;domain_outcome:string|null;output:Json;diagnostic:{code:typeof codes[number];message:string}|null;counts:Obj;timing:Obj;closure:Closure;artifacts:Artifact[];
 }
 export function validateTerminal(value: Json, profile: Profile): string|null {
   const t=profile.terminal;
@@ -233,6 +247,11 @@ export function validateTerminal(value: Json, profile: Profile): string|null {
 }
 function timestamp(value: unknown): number { const v=text(value,64,'timestamp',false);if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(v)||!Number.isFinite(Date.parse(v)))refuse('RFC3339 UTC timestamp required');return Date.parse(v); }
 export function validateResult(value: unknown, profile: Profile, request: Request, capture: Capture): Result {
+  if(profile.schema==='millforge-profile/v4'){
+    if(capture.schema!=='millforge-capture/v5')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
+    return validateResultV5(value,profile,request,capture as CaptureV5);
+  }
+  if(capture.schema==='millforge-capture/v5'||object(value).schema==='millforge-result/v5')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if(profile.schema==='millforge-profile/v3'){if(capture.schema!=='millforge-capture/v4')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');return validateResultV4(value,profile,request,capture as CaptureV4);}
   if(capture.schema==='millforge-capture/v4'||object(value).schema==='millforge-result/v4')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if((profile.schema==='millforge-profile/v2')!==(capture.schema==='millforge-capture/v3'))refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
@@ -247,8 +266,13 @@ export function validateResult(value: unknown, profile: Profile, request: Reques
   const artifacts=list(r.artifacts,1024);let previous='';for(const entry of artifacts){const a=exact(entry,['path','size','sha256','media_type']);const path=relative(a.path);if(path==='result.json'||path<=previous)refuse('artifact list must be unique, sorted and exclude result');previous=path;integer(a.size);digest(a.sha256);if(!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(text(a.media_type,128)))refuse('invalid media type');}
   return r as unknown as Result;
 }
-export interface Trace {schema:'millforge-trace/v1'|'millforge-trace/v2'|'millforge-trace/v3'|'millforge-trace/v4';request_id:string;sequence:number;elapsed_ms:number;kind:string;payload:Obj}
+export interface Trace {schema:'millforge-trace/v1'|'millforge-trace/v2'|'millforge-trace/v3'|'millforge-trace/v4'|'millforge-trace/v5';request_id:string;sequence:number;elapsed_ms:number;kind:string;payload:Obj}
 export function validateTrace(value: unknown, profile: Profile, request: Request, capture?:Capture): Trace {
+  if(profile.schema==='millforge-profile/v4'){
+    if(capture?.schema!=='millforge-capture/v5')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
+    return validateTraceV5(value,profile,request,capture as CaptureV5);
+  }
+  if(capture?.schema==='millforge-capture/v5'||object(value).schema==='millforge-trace/v5')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if(profile.schema==='millforge-profile/v3'){if(capture?.schema!=='millforge-capture/v4')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');return validateTraceV4(value,profile,request,capture as CaptureV4);}
   if(capture?.schema==='millforge-capture/v4'||object(value).schema==='millforge-trace/v4')refuse('record/profile family mismatch','UNSUPPORTED_VERSION');
   if((profile.schema==='millforge-profile/v2')!==(capture?.schema==='millforge-capture/v3'))refuse('record/profile family mismatch','UNSUPPORTED_VERSION');

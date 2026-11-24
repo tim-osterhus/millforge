@@ -1,17 +1,52 @@
 # Millforge: portable profiles and finite Pi runs
 
-The Node source candidate includes native profile v2 and records v3, plus optional codemode profile v3 and records v4. Native reasoning choices and public Luna OAuth retain their existing contracts. M3 accepted the exact V7 Linux artifact on the selected Luna OAuth route. That receipt does not qualify changed artifact bytes, other routes, macOS, in-run refresh or release. M2 evidence applies only to its earlier accepted candidate. The separate `@millrace-ai/millforge-optimization` package handles Harness² campaigns.
+Millforge 0.2.1 supports native profiles, opt-in Pi Codemode and optional Python
+R1. Native reasoning choices and public Luna OAuth retain their existing
+contracts. The M3 Luna OAuth proof covers its exact Linux artifact and route.
+Automatic in-run OAuth refresh remains unqualified.
 
-## Install the candidate
+## Install
 
-The package requires Node 22.19.0 or newer and pins both public Pi packages to 1.4.0. Install the tarball in an explicit npm prefix and invoke its absolute binary path. The historical `millforge` Python package is distributed separately on PyPI.
+The npm package requires Node 22.19.0 or newer and pins both Pi packages to
+1.4.0. The historical `millforge` Python package is distributed separately on
+PyPI.
 
 ```sh
-npm install --prefix /absolute/millforge-prefix /absolute/millrace-ai-millforge-0.2.0.tgz
-/absolute/millforge-prefix/node_modules/.bin/millforge profile validate /absolute/millforge-prefix/node_modules/@millrace-ai/millforge/profiles/generate
+prefix="$HOME/.local/millforge"
+npm install --prefix "$prefix" @millrace-ai/millforge@0.2.1
+"$prefix/node_modules/.bin/millforge" profile validate "$prefix/node_modules/@millrace-ai/millforge/profiles/generate"
 ```
 
+To install from a release tarball, pass its absolute path in place of the npm
+package name.
+
 From a built source tree, use `node /absolute/millforge/dist/node/src/cli.js`. Pure commands do not load Pi. Owned run and auth-command children load public Pi only after their environments exist.
+
+## Terminal UI
+
+Launch Millforge from a Linux or macOS terminal with `millforge` or
+`millforge tui`. Both standard input and output must be terminals. Use
+`millforge tui --profile DIR` to select a directory for that session. Otherwise,
+the launcher uses the saved selection. With no selection, Millforge prints the
+command to select the installed agent example. Configure its endpoint before
+relaunching.
+
+Pi provides the editor, transcript, streaming and turn controls. The launcher
+admits ordinary profile-v1 and profile-v2 agents with no authentication or a
+named environment credential. Interactive OAuth is unavailable. Use finite
+`millforge run` for OAuth and profile-v3 Codemode. The TUI refuses Python R1
+profiles.
+
+Use `/millforge profile` to display the selected profile, current model and active
+tools. It also shows the commands to validate a profile and inspect a saved run.
+Use `/millforge harness2` for the optimizer commands and approval steps.
+The slash command only displays guidance. The external CLI checks optimizer
+availability and compatibility when you invoke an optimizer command.
+
+The TUI keeps session history in memory and produces no finite invocation
+records. Finite run budgets and settlement apply to `millforge run`. The installed
+PTY proof covers Linux with a scripted loopback endpoint. The macOS terminal
+path has no installed PTY proof.
 
 ## Profile v2: reasoning and Luna OAuth
 
@@ -82,7 +117,7 @@ These finite budgets are example operator choices. Omitted `reasoning` selects M
 
 Null sampling and token ceiling are required on this sign-in route because the pinned adapter drops those fields. No server output-token cap is claimed. Actual count/time/byte guards remain. `context_tokens` is a reported-input stop threshold, unknown when native usage is absent. Omitted cache preference retains native short hints; explicit `none` suppresses supported hints. OAuth `long` refuses. No warming inference is added.
 
-Prefix these commands with the absolute candidate Node CLI:
+Prefix these commands with the absolute Millforge CLI path.
 
 ```text
 auth login --provider openai --auth-home /absolute/millforge-auth
@@ -147,11 +182,103 @@ For a v3 Responses profile, select the existing public compatibility values `sup
 
 Profile v1 keeps records v1/v2. Profile v2 keeps records v3. Profile v3 uses only capture/trace/result v4, with `parent_call_id`, `nested_join`, the provider declaration projection and `counts.nested_tool_calls`. Crossed families refuse `UNSUPPORTED_VERSION`. Older nonempty capability manifests still refuse. No saved records migrate.
 
-Offline Linux tests use actual Pi and QuickJS with synthetic credentials or local fake peers. Codemode native providers, deployed containment and performance require separate qualification.
+Offline Linux tests use actual Pi and QuickJS with synthetic credentials or
+scripted loopback peers. Native providers and performance require separate
+evidence. See [protected optimizer deployment](#protected-codemode-deployment)
+for the scripted baseline scope.
 
-O3-C2 separately accepts the optional optimizer mapping for bounded offline Linux use with fake peers. The production optimizer CLI refuses Codemode `run`. Task-specific offline adoption produces a profile the base CLI can validate and run independently.
+## Optional optimizer
 
-The remaining sections preserve legacy record details and M2 evidence. Canonical specification section 9 defines exact v2/v3 schemas and boundaries.
+The base package includes `bundles/millrace-ai-millforge-optimization-0.1.1.tgz`.
+Installing Millforge leaves that archive inert. The optimizer has no runtime
+npm dependencies. Install it into a separate prefix to use `millforge optimize`.
+
+On Linux, set `prefix` to the installed base prefix. The optimizer installs
+under `$HOME/.local/millforge-optimizer` by default. For protected Codemode,
+set `D` to the admitted private deployment directory described below.
+
+```sh
+if [ -n "${D:-}" ]; then
+  optimizer_prefix="$D/optimizer"
+else
+  optimizer_prefix="${HOME:?Set HOME to your home directory}/.local/millforge-optimizer"
+fi
+optimizer_archive="$prefix/node_modules/@millrace-ai/millforge/bundles/millrace-ai-millforge-optimization-0.1.1.tgz"
+optimizer_bin="$optimizer_prefix/node_modules/.bin/millforge-optimize"
+printf '%s  %s\n' '160c6cb8919f75b24c75a9baa9f502802b715f259cdc5a01ae124d5d872d4f44' "$optimizer_archive" |
+  sha256sum --check --strict - &&
+  npm install --prefix "$optimizer_prefix" --offline --ignore-scripts --no-audit --no-fund "$optimizer_archive" &&
+  "$optimizer_bin" protocol
+```
+
+Use the base CLI with `millforge optimize COMMAND --optimizer-bin "$optimizer_bin"`
+to select the installation explicitly. Omit `--optimizer-bin` to select
+`millforge-optimize` from `PATH`. The base checks protocol compatibility before
+delegating. The `protocol` command checks the add-on identity only.
+
+### Protected Codemode deployment
+
+A trusted non-root Linux operator owns the private, canonical directory `D` and
+its protected paths. Use restrictive permissions such as mode `0700` on `D`.
+Keep other writers, including unrelated processes with the operator's UID,
+outside this authority boundary. Use the optimizer installation layout above.
+The canonical executable determines `D`.
+
+| Purpose | Path inside `D` |
+| --- | --- |
+| Optimizer entry point | `optimizer/node_modules/@millrace-ai/millforge-optimization/dist/src/cli.js` |
+| Operator authority | `authority/authority.json` |
+| Captured and retained campaign | `campaign` |
+
+1. Measure all five protection predicates for the exact installation. The
+   qualification receipt binds rootless networking, broker policy and request
+   counts, evaluator isolation, writer closure, and host credential exclusion.
+2. Use `millforge optimize prepare` to capture the exact bounded campaign. The
+   operator grants launch authority for the captured digest, execution root,
+   budget and expiry at the fixed authority path.
+3. Pass that authority path to `millforge optimize run --approval`. Missing or
+   mismatched qualification or authority refuses before campaign execution.
+4. Use `millforge optimize inspect` and `millforge optimize assess` on retained
+   records. The deployed reads verify the retained authority and qualification
+   and work offline after the run stops.
+
+The bundled archive preserves its original README. Use this deployment guide
+for the 0.2.1 protected layout and admission procedure.
+
+The protected proof used a Debian 13 Linux guest on Hyper-V and a scripted
+loopback peer. It covered one baseline, refusal of unauthorized and duplicate
+runs, offline inspection and assessment, accounting, and owned cleanup.
+An ordinary optimizer install can handle offline preparation and supported
+retained reads. It cannot authorize protected dispatch. Historical test-scope
+records retain their original scope.
+
+## Profile v4: optional Python R1
+
+Profile v4 selects agent mode, `tools: ["python_exec"]` and
+`capabilities: {"extensions":["python-exec/v1"],"packages":[]}`. Profile
+validation requires operator model metadata and a keyless
+`openai-completions` route at `http://127.0.0.1:PORT/v1`. The v5 contract
+defines Python capture, trace and result records.
+
+The selected execution contract calls for one lazy kernel per finite invocation.
+Cells in that invocation share variables. Each subsequent invocation starts
+with an empty kernel. The tool returns bounded text and exposes no model subcall
+API. Python code runs with the run actor's OS permissions.
+
+Execution requires a separately admitted Linux x86-64 environment with
+CPython 3.12.14 and a restricted run actor who cannot modify it. The runtime
+checks admission before model or cell effects. The installed proof exercised
+state reuse, fresh invocation isolation, output limits, cancellation and owned
+process closure with a scripted loopback peer. Ordinary base runs require no
+Python installation.
+
+Download `millforge-python-r1-0.2.1.tar.gz` and `SHA256SUMS` from the
+[GitHub release](https://github.com/tim-osterhus/millforge/releases/tag/v0.2.1).
+Verify the archive against the checksum list and follow its `README.md` to
+install the pinned wheels and admit the interpreter and bridge.
+
+The remaining sections preserve legacy record details and M2 evidence.
+Canonical specification section 9 defines exact v2/v3 schemas and boundaries.
 
 ## Profile commands
 
@@ -200,7 +327,7 @@ The source contract names capture facts without fixing all nested serialization.
 - `schema`, `request_id`, `profile_digest`, `limits`, `cwd`, `resources`, `system_prompt`, `tool_names`, `tool_schemas`, `binding`, `credential_env`, `versions`, `external_tools`.
 - Each resource is `{path,sha256,kind,size}` in authored order. Each tool schema is `{name,sha256}` in exact captured tool order.
 - Legacy v1 `binding` is `{api,version,provider_id,base_url,source_pin,compat,options}`. Version is 1 and source pin is Pi `4a080252f06caf63a525d7873c5d94d3c23887e0`. Options are exactly `{temperature,top_p,thinking,max_retries}`, matching the profile with thinking `off` and retries 0.
-- `versions` is `{millforge,pi,node,platform}`, with candidate Millforge `0.2.0` and Pi `1.4.0`.
+- `versions` is `{millforge,pi,node,platform}`, with Millforge `0.2.1` and Pi `1.4.0` in new captures. Inspection also accepts valid `0.2.0` captures and preserves the recorded version.
 - External executable entries are `{name,path,sha256,size,stat}`; stat is `{dev,ino,mode,mtime_ms}`. Entries match only selected find/fd and grep/rg; no filesystem probe occurs during inspect.
 
 Compatibility data accepts only fields and nested types from the pinned public Pi OpenAICompletionsCompat or AnthropicMessagesCompat declarations. OpenAI authored controls remain required and must match. This validates explicitly supplied compatibility data; it does not resolve defaults. Pi's actual `getCompat`/`detectCompat` are private at this pin. That private resolved object cannot be observed through the pinned public seams. The selected v2 amendment below instead records authored intent, bounded public observations and explicit unknown internal resolution. M1 imports neither private Pi modules nor a copied compatibility resolver. Offline fixtures deliberately use fake provider/schema facts and are not runtime evidence.

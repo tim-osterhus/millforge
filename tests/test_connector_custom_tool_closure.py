@@ -685,8 +685,9 @@ def test_public_package_exports_are_explicit_offline_contract_surfaces() -> None
 
 
 def test_readme_and_roadmap_keep_05d_claims_offline_and_future_scope_explicit() -> None:
-    readme = _normalized_text((ROOT / "README.md").read_text(encoding="utf-8"))
-    roadmap = _normalized_text((ROOT / "ROADMAP.md").read_text(encoding="utf-8"))
+    legacy_docs = ROOT / "docs" / "legacy-python"
+    readme = _normalized_text((legacy_docs / "README.md").read_text(encoding="utf-8"))
+    roadmap = _normalized_text((legacy_docs / "ROADMAP.md").read_text(encoding="utf-8"))
 
     for phrase in (
         "05D adds deterministic offline closure evidence",

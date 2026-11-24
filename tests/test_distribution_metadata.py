@@ -384,9 +384,10 @@ def test_version_module_is_the_only_project_version_source() -> None:
 
 
 def test_readme_and_license_files_state_exact_license_boundaries() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    root_license = (ROOT / "LICENSE").read_text(encoding="utf-8")
     project = _project_config()["project"]
+    assert project["readme"] == "docs/legacy-python/README.md"
+    readme = (ROOT / project["readme"]).read_text(encoding="utf-8")
+    root_license = (ROOT / "LICENSE").read_text(encoding="utf-8")
 
     assert readme.splitlines()[2] == project["description"]
     assert "Millforge is currently pre-alpha" in readme
@@ -407,7 +408,6 @@ def test_readme_and_license_files_state_exact_license_boundaries() -> None:
         .read_text(encoding="utf-8")
         .startswith("MIT License\n")
     )
-    assert not (ROOT / "THIRD_PARTY_NOTICES.md").exists()
 
 
 def test_built_metadata_agrees_with_project_contract(
@@ -444,6 +444,7 @@ def test_built_archives_contain_only_intended_license_and_package_surfaces(
 
     assert any(name.endswith(".dist-info/licenses/LICENSE") for name in wheel_names)
     assert "LICENSE" in sdist_names
+    assert _project_config()["project"]["readme"] in sdist_names
     for path in UPSTREAM_NOTICE_PATHS:
         assert path in wheel_names
         assert f"src/{path}" in sdist_names

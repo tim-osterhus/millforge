@@ -1,6 +1,7 @@
 /** Selected public Pi AI bindings. No provider discovery, private resolver or persisted raw payload. */
 import type {Api,AssistantMessage,AssistantMessageEventStream,Context,Model,Provider,SimpleStreamOptions,StreamFunction,TranscriptContext} from '@earendil-works/pi-ai';
-import {type Capture,type Json,type Limits,type Obj,type Profile,type ProfileV1,type ProfileV2,type ProfileV3,type ThinkingLevel,type Usage,type UsageV3,currentRuntimeGuards,MillforgeError,bytes,canonical,exact,integer,limitKeys,object,parseJson,refuse,sourcePin,validateLimits,validateProfile} from './contracts.js';
+import {type Capture,type Json,type Limits,type Obj,type Profile,type ProfileV1,type ProfileV2,type ProfileV3,type ProfileV4,type ThinkingLevel,type Usage,type UsageV3,currentRuntimeGuards,MillforgeError,bytes,canonical,exact,integer,limitKeys,object,parseJson,refuse,sourcePin,validateLimits,validateProfile} from './contracts.js';
+import type {PythonActionObserver} from './python-r1-host.js';
 import {type OAuthLease,oauthBase,oauthOnly,resolveOAuthLease} from './auth.js';
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
@@ -11,6 +12,7 @@ export interface BindingOptions {
   profile:Profile;limits:Limits;signal:AbortSignal;deadline:number;
   onTrace:(kind:string,payload:Obj)=>void;onPartial?:(text:string)=>void;
   credential?:string;fetch?:typeof globalThis.fetch;authHome?:string;profileDigest?:string;getCredential?:()=>Promise<string|undefined>;
+  pythonObserver?:Pick<PythonActionObserver,'begin'|'observe'|'complete'>;
 }
 export interface BindingCompletion {message:AssistantMessage;text:string;usage:Usage|null}
 export interface Binding {
@@ -180,8 +182,10 @@ async function createLegacyBinding(options:BindingOptions&{profile:ProfileV1}):P
 }
 
 /** The successor keeps native models/continuations intact and projects only public request facts. */
-async function createSuccessorBinding(options:BindingOptions&{profile:ProfileV2|ProfileV3}):Promise<Binding>{
+async function createSuccessorBinding(options:BindingOptions&{profile:ProfileV2|ProfileV3|ProfileV4}):Promise<Binding>{
   const profile=options.profile,limits=validateLimits({...options.limits},profile.mode,profile.schema);
+  const pythonObserver=profile.schema==='millforge-profile/v4'?options.pythonObserver:undefined;
+  if(profile.schema==='millforge-profile/v4'&&!pythonObserver)refuse('Python action observer is required','UNSUPPORTED_CAPABILITY');
   for(const key of limitKeys)if(limits[key]>profile.limits[key])refuse('binding limits widen profile');
   const api=await import('@earendil-works/pi-ai'),pi=await import('@earendil-works/pi-coding-agent');
   const empty=new api.InMemoryCredentialStore();
@@ -278,6 +282,7 @@ async function createSuccessorBinding(options:BindingOptions&{profile:ProfileV2|
         // Measure the whole native representation privately; never trim opaque continuation to fit.
         if(bytes(JSON.stringify(context))>limits.context_bytes)fail('CONTEXT_LIMIT','native context representation exceeds byte ceiling');
         if(active||attempts>=limits.model_requests)fail('LIMIT_EXHAUSTED','model request admission refused');active=true;attempt=++attempts;returned=false;usages.push(observed);options.onTrace('model_start',{attempt});
+        pythonObserver?.begin();
         const remaining=Math.min(limits.model_timeout_seconds*1000,options.deadline-performance.now());
         const signal=AbortSignal.any([abort.signal,options.signal,AbortSignal.timeout(Math.max(1,Math.floor(remaining))),...(caller?.signal?[caller.signal]:[])]);
         const countedFetch:typeof fetch=async(input,init)=>{
@@ -296,7 +301,7 @@ async function createSuccessorBinding(options:BindingOptions&{profile:ProfileV2|
         };
         const nativeOptions:SimpleStreamOptions={signal,timeoutMs:Math.max(1,Math.floor(remaining)),apiKey:credential??'millforge-no-auth',...(profile.model.auth.kind==='none'?{headers:{authorization:null,'x-api-key':null}}:lease?.auth.auth.headers?{headers:lease.auth.auth.headers}:{}),env:{},fetch:countedFetch,maxRetries:0,maxRetryDelayMs:1,...(profile.sampling.temperature===null?{}:{temperature:profile.sampling.temperature}),...(profile.sampling.top_p===null?{}:{samplingParams:{top_p:profile.sampling.top_p}}),...(profile.model.max_output_tokens===null?{}:{maxTokens:profile.model.max_output_tokens}),...(thinking==='off'?{}:{reasoning:thinking}),...(profile.cache?{cacheRetention:cache}:{}),...(caller?.sessionId?{sessionId:caller.sessionId}:{}),
           onPayload(value,actual){check();identity(actual);if(payload)fail('LIMIT_EXHAUSTED','duplicate payload refused');payload=controls(value);if(profile.schema==='millforge-profile/v3'){try{declaration=codemodeDeclaration(value,profile.model.api);}catch{fail('INCOMPATIBLE_ROUTE','unsupported or missing codemode declaration');}}options.onTrace('provider_payload',{attempt,source:'pi_onPayload',api:model.api,provider_id:model.provider,model_id:model.id,base_url:model.baseUrl,controls:payload,...(declaration?{codemode_declaration:declaration}:{})});return undefined;},
-          onProviderStreamEvent(value,actual){identity(actual);const raw=record(value);if(!raw)return;
+          onProviderStreamEvent(value,actual){identity(actual);pythonObserver?.observe(value);const raw=record(value);if(!raw)return;
             if(profile.model.api==='openai-responses'){
               if(raw.type==='response.output_item.added'||raw.type==='response.output_item.done'){const item=record(raw.item);if(item)observeMessage(raw.output_index,item,raw.type==='response.output_item.added'?'added':'done');}
               if(raw.type==='response.output_text.delta'||raw.type==='response.refusal.delta'){const index=raw.output_index,slot=typeof index==='number'?messageItems.get(index):undefined;if(slot&&!slot.done){if(typeof raw.delta!=='string')return fail('INVALID_FINISH','malformed native text delta');const size=bytes(raw.delta);if(messageBytes+size>limits.output_bytes)return fail('OUTPUT_LIMIT','native message text exceeds byte ceiling');slot.text+=raw.delta;slot.size+=size;messageBytes+=size;}}
@@ -336,7 +341,7 @@ async function createSuccessorBinding(options:BindingOptions&{profile:ProfileV2|
         if(!ended)fail('PROVIDER_ERROR','native stream ended without result');
       }catch(error){const problem=error instanceof MillforgeError?error:new MillforgeError(options.signal.aborted?'CANCELLED':'PROVIDER_ERROR','native request failed');fault??=problem;abort.abort();if(attempt&&!emitted)try{options.onTrace('model_end',{attempt,stop:'error',usage:Object.values(observed).every(v=>v===null)?null:observed as unknown as Obj,response_model:responseModel,native_status:nativeStatus,native_terminal:nativeTerminal});}catch{/* Keep original failure. */}const message:AssistantMessage={role:'assistant',content:[],api:model.api,provider:model.provider,model:model.id,usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'error',errorMessage:problem.message,timestamp:Date.now()};terminal={type:'error',reason:'error',error:message};}
       // A terminal push resolves result(); publish only after native iteration has settled.
-      finally{active=false;if(terminal)output.push(terminal);output.end();}
+      finally{active=false;if(terminal?.type==='done')pythonObserver?.complete(terminal.message);else pythonObserver?.begin();if(terminal)output.push(terminal);output.end();}
     })();return output;
   }
   const provider=api.createProvider({id:model.provider,name:catalogProvider?.name??model.provider,baseUrl:model.baseUrl,models:[model],auth:lease?oauthOnly(catalogProvider!).auth:{apiKey:{name:'Explicit launch auth',resolve:async()=>({auth:{apiKey:credential??'millforge-no-auth'},source:'explicit launch'})}},api:{stream:(m,c,o)=>start(m,c,o),streamSimple:start}});

@@ -31,6 +31,10 @@ export async function main(args:string[],env:SelectionEnv,write:(value:string)=>
         case'export':case'import':arity(p,2);output={digest:(await copyProfile(p[0]!,p[1]!)).digest};break;
         case'restore':{arity(p,1);const value=required(o,'--revision');if(!/^[1-9]\d*$/.test(value))refuse('revision must be a positive integer');output={digest:(await restoreProfile(p[0]!,integer(Number(value),1))).digest};break;}
       }
+    }else if(command==='tui'||(command===undefined&&process.stdin.isTTY&&process.stdout.isTTY)){
+      const {positional,options}=argumentsFor(args.slice(1),['--profile']);arity(positional,0);
+      const {launchInteractive}=await import('./interactive-launcher.js');
+      return await launchInteractive(options['--profile'],env,writeError);
     }else if(command==='inspect'){
       const {positional,options}=argumentsFor(args.slice(1),['--run']);arity(positional,0);output=await inspectRun(required(options,'--run'));
     }else if(command==='run'){

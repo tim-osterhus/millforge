@@ -6,7 +6,7 @@ import {access,readFile,realpath,stat} from 'node:fs/promises';
 import {delimiter,isAbsolute,join} from 'node:path';
 import {StringDecoder} from 'node:string_decoder';
 
-const protocol={protocol:'millforge-optimization/v1',package:'@millrace-ai/millforge-optimization',version:'0.1.0'};
+import {optimizerIdentity} from './versions.js';
 interface Identity {path:string;sha256:string}
 async function identity(file:string,executable=true):Promise<Identity>{
   const resolved=await realpath(file);if(executable)await access(resolved,constants.X_OK);
@@ -29,7 +29,7 @@ function compatible(stdout:Buffer):boolean{
     const record=parsed as Record<string,unknown>;
     // All identity values are strings, so this also detects duplicate/escaped keys.
     const keys=[...text.matchAll(/("(?:[^"\\]|\\.)*")\s*:/g)].map(match=>JSON.parse(match[1]!));
-    return keys.length===3&&new Set(keys).size===3&&Object.keys(record).length===3&&Object.entries(protocol).every(([key,value])=>record[key]===value);
+    return keys.length===3&&new Set(keys).size===3&&Object.keys(record).length===3&&Object.entries(optimizerIdentity).every(([key,value])=>record[key]===value);
   }catch{return false;}
 }
 function groupExists(pid:number):boolean{

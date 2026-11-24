@@ -1,0 +1,1979 @@
+{
+  "status": "Proposed R1 runtime inputs, verified statically only",
+  "scope": "Optional Python kernel environment for the single nonrecursive Millforge R1 capability",
+  "target": {
+    "platform": "Linux x86_64",
+    "libc": "glibc",
+    "minimum_glibc_from_wheel_tags": "2.26",
+    "interpreter": "CPython 3.12.14",
+    "interpreter_abi": "cp312, conventional GIL build",
+    "interpreter_version_evidence": {
+      "path": "lab/tasks/millforge-npm-m4-compat/2026-11-23/verification/attempt-1/one-case-receipt.json",
+      "sha256": "9428f82786458fed37e3d59fda29e630c69a36ee6f389a97e2f1b98d69c2580f"
+    },
+    "admission_gate": "On the selected host, verify the approved executable and digest, exact CPython version and ABI, x86_64 Linux and glibc version, wheel compatibility and loadability, and the hash-checked offline environment before R1 execution. The retained receipt reports the Python version but does not bind the executable digest, ABI, or glibc.",
+    "marker_environment": {
+      "implementation_name": "cpython",
+      "implementation_version": "3.12.14",
+      "os_name": "posix",
+      "platform_machine": "x86_64",
+      "platform_python_implementation": "CPython",
+      "platform_release": "",
+      "platform_system": "Linux",
+      "platform_version": "",
+      "python_full_version": "3.12.14",
+      "python_version": "3.12",
+      "sys_platform": "linux",
+      "extra": ""
+    },
+    "uv_resolution_marker": "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'win32'"
+  },
+  "reference": {
+    "project": "Nano RLM",
+    "commit": "8f228311267cc694ecb25f63be2f14ca87a344ca",
+    "files": {
+      "uv.lock": {
+        "url": "https://raw.githubusercontent.com/PrimeIntellect-ai/nano-rlm/8f228311267cc694ecb25f63be2f14ca87a344ca/uv.lock",
+        "sha256": "109cc40d1b3e9c023684e9fa51fd52deb54bc0d796ac19b56475c229f41062d1"
+      },
+      "src/rlm/tools/output.py": {
+        "url": "https://raw.githubusercontent.com/PrimeIntellect-ai/nano-rlm/8f228311267cc694ecb25f63be2f14ca87a344ca/src/rlm/tools/output.py",
+        "sha256": "a83521bc1f186e213d947a945713fcd3f23c2a4322cf15df35646d741f07fb8c"
+      },
+      "LICENSE": {
+        "url": "https://raw.githubusercontent.com/PrimeIntellect-ai/nano-rlm/8f228311267cc694ecb25f63be2f14ca87a344ca/LICENSE",
+        "sha256": "bf446b52c755dc80e8661ad171edbdec85d2df1307349fbf2dd2e91405166fd9"
+      }
+    },
+    "output_collector_license": "MIT, copyright 2026 Prime Intellect",
+    "output_collector_scope": "Source review only. Preserve its MIT notice if a later approved implementation copies the collector slice."
+  },
+  "root_pins": {
+    "jupyter-client": "8.8.0",
+    "ipykernel": "7.2.0"
+  },
+  "excluded": [
+    "Nano RLM package",
+    "Prime Agent runtime",
+    "extras",
+    "development and test dependencies",
+    "build-only inputs",
+    "sdists",
+    "alternate Python versions and platforms"
+  ],
+  "verification": {
+    "method": "Anonymous HTTPS reads. Verified the Nano lock and reference file digests. For each active pinned dependency, matched one compatible locked wheel against PyPI release URL, filename, size, SHA-256, and yanked status, verified archive bytes in memory, and checked WHEEL and METADATA. Active dependency names matched the lock for each wheel and each specifier admitted the exact pinned version. Walked the lock and wheel graphs independently from both roots.",
+    "wheel_selection": "Choose one official locked non-yanked universal wheel or the compatible manylinux x86_64 wheel with the lowest glibc floor, preferring more specific CPython ABI tags at the same floor. Filename breaks remaining ties.",
+    "license_scope": "Package license expressions, classifiers and notice paths come from the exact wheel. An absent expression means the wheel lacks that metadata field. This does not classify each bundled native component or approve redistribution.",
+    "static_limit": "No target interpreter or kernel launch, dependency installation, offline installer resolution, shared-library load or host proof took place. Wheel tags describe compatibility claims. The tag floor covers only the platform-tagged wheels, and universal wheel tags do not assure absence of vendored binaries.",
+    "closure_size": 29,
+    "direct_pins": 2,
+    "transitive_pins": 27,
+    "all_wheels_bytes": 11762870,
+    "platform_tagged_wheels": [
+      "psutil",
+      "pyzmq",
+      "tornado"
+    ],
+    "debugpy_payload": "The universal-tagged debugpy wheel required by ipykernel includes vendored attach binaries for Linux, macOS and Windows. Debugging and process attachment are outside the selected R1 tool contract."
+  },
+  "wheels": [
+    {
+      "name": "asttokens",
+      "version": "3.0.1",
+      "filename": "asttokens-3.0.1-py3-none-any.whl",
+      "bytes": 27047,
+      "sha256": "15a3ebc0f43c2d0a50eeafea25e19046c68398e487b9f1f5b517f7c0f40f976a",
+      "release_metadata_url": "https://pypi.org/pypi/asttokens/3.0.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/d2/39/e7eaf1799466a4aef85b6a4fe7bd175ad2b1c6345066aa33f1f58d4b18d0/asttokens-3.0.1-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "6ad77bc2b1289f0d9232027e1877cc37fa6ddc4af5cac8bd2d29641a733e6888",
+      "wheel_metadata_sha256": "ff309ddcdd65ebd02bc724dbf2bcc4a0ff53a5b61792a44548d383e4ebb19d3b",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "astroid<5,>=2; extra == \"astroid\"",
+          "active": false
+        },
+        {
+          "requirement": "astroid<5,>=2; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest<9.0; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest-xdist; extra == \"test\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "asttokens-3.0.1.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "comm",
+      "version": "0.2.3",
+      "filename": "comm-0.2.3-py3-none-any.whl",
+      "bytes": 7294,
+      "sha256": "c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417",
+      "release_metadata_url": "https://pypi.org/pypi/comm/0.2.3/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/60/97/891a0971e1e4a8c5d2b20bbe0e524dc04548d2307fee33cdeba148fd4fc7/comm-0.2.3-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "e475291f8fdedbecbbfd788a2c5de9c912424d23574aba7b9fc51985d7158878",
+      "wheel_metadata_sha256": "aad0b0a12256807936d52d4a6f88a1773236ae527564a688bab4e3fe780e8724",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "pytest; extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "comm-0.2.3.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "debugpy",
+      "version": "1.8.20",
+      "filename": "debugpy-1.8.20-py2.py3-none-any.whl",
+      "bytes": 5337658,
+      "sha256": "5be9bed9ae3be00665a06acaa48f8329d2b9632f15fd09f6a9a8c8d9907e54d7",
+      "release_metadata_url": "https://pypi.org/pypi/debugpy/1.8.20/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/e0/c3/7f67dea8ccf8fdcb9c99033bbe3e90b9e7395415843accb81428c441be2d/debugpy-1.8.20-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "5e3222f5a661207cc6c0c848a5740af114ec0c853e54ec784a2933d6a94ae31a",
+      "wheel_metadata_sha256": "324d524f9803cc43b98a5e64611122067cf3338ebd9b9b08f0448f97b4d18496",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "debugpy-1.8.20.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "decorator",
+      "version": "5.2.1",
+      "filename": "decorator-5.2.1-py3-none-any.whl",
+      "bytes": 9190,
+      "sha256": "d316bb415a2d9e2d2b3abcc4084c6502fc09240e292cd76a76afc106a1c8e04a",
+      "release_metadata_url": "https://pypi.org/pypi/decorator/5.2.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/4e/8c/f3147f5c4b73e7550fe5f9352eaa956ae838d5c51eb58e7a25b9f3e2643b/decorator-5.2.1-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "8bbe9fa7b94da3441b8a75f73412634aefc6855a7d03c8ae69bfbe9bef26281e",
+      "wheel_metadata_sha256": "227f454cdc5e3fad0a9d3906c3bc24ea624f61dfdd4128c46665dd05d30223ef",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE.txt"
+        ],
+        "wheel_notice_paths": [
+          "decorator-5.2.1.dist-info/LICENSE.txt"
+        ]
+      }
+    },
+    {
+      "name": "executing",
+      "version": "2.2.1",
+      "filename": "executing-2.2.1-py2.py3-none-any.whl",
+      "bytes": 28317,
+      "sha256": "760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017",
+      "release_metadata_url": "https://pypi.org/pypi/executing/2.2.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "d7586d1ae225bee126c4237eb0c4d7699a8580b81eb558cc500c263d29a633ff",
+      "wheel_metadata_sha256": "2e5ef68b2aadb7a45bc69f90ec549a7d80352de46ff7c5f5e71719591b051266",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "asttokens>=2.1.0; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "ipython; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "coverage; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "coverage-enable-subprocess; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "littleutils; extra == \"tests\"",
+          "active": false
+        },
+        {
+          "requirement": "rich; python_version >= \"3.11\" and extra == \"tests\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE.txt"
+        ],
+        "wheel_notice_paths": [
+          "executing-2.2.1.dist-info/LICENSE.txt"
+        ]
+      }
+    },
+    {
+      "name": "ipykernel",
+      "version": "7.2.0",
+      "filename": "ipykernel-7.2.0-py3-none-any.whl",
+      "bytes": 118788,
+      "sha256": "3bbd4420d2b3cc105cbdf3756bfc04500b1e52f090a90716851f3916c62e1661",
+      "release_metadata_url": "https://pypi.org/pypi/ipykernel/7.2.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/82/b9/e73d5d9f405cba7706c539aa8b311b49d4c2f3d698d9c12f815231169c71/ipykernel-7.2.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "da4e111318b796e1d7e739f93894bb02517804094f6a82ad1a5ec40c0dc0fb9e",
+      "wheel_metadata_sha256": "58b82a17209f9bf2804afe161f2632d0fde933f9bb2792fd936b2474a2e2ac2f",
+      "requires_python": ">=3.10",
+      "active_dependencies": [
+        "comm",
+        "debugpy",
+        "ipython",
+        "jupyter-client",
+        "jupyter-core",
+        "matplotlib-inline",
+        "nest-asyncio",
+        "packaging",
+        "psutil",
+        "pyzmq",
+        "tornado",
+        "traitlets"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "appnope>=0.1.2; platform_system == 'Darwin'",
+          "active": false
+        },
+        {
+          "requirement": "comm>=0.1.1",
+          "active": true
+        },
+        {
+          "requirement": "debugpy>=1.6.5",
+          "active": true
+        },
+        {
+          "requirement": "ipython>=7.23.1",
+          "active": true
+        },
+        {
+          "requirement": "jupyter-client>=8.8.0",
+          "active": true
+        },
+        {
+          "requirement": "jupyter-core!=6.0.*,>=5.1",
+          "active": true
+        },
+        {
+          "requirement": "matplotlib-inline>=0.1",
+          "active": true
+        },
+        {
+          "requirement": "nest-asyncio>=1.4",
+          "active": true
+        },
+        {
+          "requirement": "packaging>=22",
+          "active": true
+        },
+        {
+          "requirement": "psutil>=5.7",
+          "active": true
+        },
+        {
+          "requirement": "pyzmq>=25",
+          "active": true
+        },
+        {
+          "requirement": "tornado>=6.4.1",
+          "active": true
+        },
+        {
+          "requirement": "traitlets>=5.4.0",
+          "active": true
+        },
+        {
+          "requirement": "coverage[toml]; extra == 'cov'",
+          "active": false
+        },
+        {
+          "requirement": "matplotlib; extra == 'cov'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov; extra == 'cov'",
+          "active": false
+        },
+        {
+          "requirement": "trio; extra == 'cov'",
+          "active": false
+        },
+        {
+          "requirement": "intersphinx-registry; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "myst-parser; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pydata-sphinx-theme; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-autodoc-typehints; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx<8.2.0; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-github-alt; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-spelling; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "trio; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pyqt5; extra == 'pyqt5'",
+          "active": false
+        },
+        {
+          "requirement": "pyside6; extra == 'pyside6'",
+          "active": false
+        },
+        {
+          "requirement": "flaky; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "ipyparallel; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pre-commit; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-asyncio>=0.23.5; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-timeout; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest<10,>=7.0; extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": "BSD-3-Clause",
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "ipykernel-7.2.0.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "ipython",
+      "version": "9.12.0",
+      "filename": "ipython-9.12.0-py3-none-any.whl",
+      "bytes": 625661,
+      "sha256": "0f2701e8ee86e117e37f50563205d36feaa259d2e08d4a6bc6b6d74b18ce128d",
+      "release_metadata_url": "https://pypi.org/pypi/ipython/9.12.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/59/22/906c8108974c673ebef6356c506cebb6870d48cedea3c41e949e2dd556bb/ipython-9.12.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "da894eddb5d40218c6a1ae4429f86ebb3cdd29927fa6da6c02d36e0c8e5b6c17",
+      "wheel_metadata_sha256": "571ff50684789d09357291db093a1e63472d8ca9e821b2b3fc0aa20f26500cf3",
+      "requires_python": ">=3.12",
+      "active_dependencies": [
+        "decorator",
+        "ipython-pygments-lexers",
+        "jedi",
+        "matplotlib-inline",
+        "pexpect",
+        "prompt-toolkit",
+        "pygments",
+        "stack-data",
+        "traitlets"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "colorama>=0.4.4; sys_platform == \"win32\"",
+          "active": false
+        },
+        {
+          "requirement": "decorator>=5.1.0",
+          "active": true
+        },
+        {
+          "requirement": "ipython-pygments-lexers>=1.0.0",
+          "active": true
+        },
+        {
+          "requirement": "jedi>=0.18.2",
+          "active": true
+        },
+        {
+          "requirement": "matplotlib-inline>=0.1.6",
+          "active": true
+        },
+        {
+          "requirement": "pexpect>4.6; sys_platform != \"win32\" and sys_platform != \"emscripten\"",
+          "active": true
+        },
+        {
+          "requirement": "prompt_toolkit<3.1.0,>=3.0.41",
+          "active": true
+        },
+        {
+          "requirement": "pygments>=2.14.0",
+          "active": true
+        },
+        {
+          "requirement": "stack_data>=0.6.0",
+          "active": true
+        },
+        {
+          "requirement": "traitlets>=5.13.0",
+          "active": true
+        },
+        {
+          "requirement": "black; extra == \"black\"",
+          "active": false
+        },
+        {
+          "requirement": "docrepr; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "exceptiongroup; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "intersphinx_registry; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "ipykernel; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "ipython[matplotlib,test]; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "setuptools>=80.0; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "sphinx_toml==0.0.4; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-rtd-theme>=0.1.8; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "sphinx>=8.0; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "typing_extensions; extra == \"doc\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest>=7.0.0; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest-asyncio>=1.0.0; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "testpath>=0.2; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "packaging>=23.0.0; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "setuptools>=80.0; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "ipython[test]; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "curio; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "jupyter_ai; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "ipython[matplotlib]; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "nbformat; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "nbclient; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "ipykernel>6.30; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "numpy>=2.0; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "pandas>2.1; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "trio>=0.22.0; extra == \"test-extra\"",
+          "active": false
+        },
+        {
+          "requirement": "matplotlib>3.9; extra == \"matplotlib\"",
+          "active": false
+        },
+        {
+          "requirement": "ipython[doc,matplotlib,terminal,test,test_extra]; extra == \"all\"",
+          "active": false
+        },
+        {
+          "requirement": "argcomplete>=3.0; extra == \"all\"",
+          "active": false
+        },
+        {
+          "requirement": "types-decorator; extra == \"all\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": "BSD-3-Clause",
+        "classifiers": [],
+        "declared_files": [
+          "COPYING.rst",
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "ipython-9.12.0.dist-info/licenses/COPYING.rst",
+          "ipython-9.12.0.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "ipython-pygments-lexers",
+      "version": "1.1.1",
+      "filename": "ipython_pygments_lexers-1.1.1-py3-none-any.whl",
+      "bytes": 8074,
+      "sha256": "a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c",
+      "release_metadata_url": "https://pypi.org/pypi/ipython-pygments-lexers/1.1.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/d9/33/1f075bf72b0b747cb3288d011319aaf64083cf2efef8354174e3ed4540e2/ipython_pygments_lexers-1.1.1-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "6b38c0946bdbc4778f4e38e2298547cbd7d13aeba9979ec4e4a412eabfbdfadb",
+      "wheel_metadata_sha256": "0a950253178741b44de54191407611268acee407fe432fdf1cc72d710f034862",
+      "requires_python": ">=3.8",
+      "active_dependencies": [
+        "pygments"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "pygments",
+          "active": true
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [],
+        "wheel_notice_paths": [
+          "ipython_pygments_lexers-1.1.1.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "jedi",
+      "version": "0.19.2",
+      "filename": "jedi-0.19.2-py2.py3-none-any.whl",
+      "bytes": 1572278,
+      "sha256": "a8ef22bde8490f57fe5c7681a3c83cb58874daf72b4784de3cce5b6ef6edb5b9",
+      "release_metadata_url": "https://pypi.org/pypi/jedi/0.19.2/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/c0/5a/9cac0c82afec3d09ccd97c8b6502d48f165f9124db81b4bcb90b4af974ee/jedi-0.19.2-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "34154330a5f5f3462ac080460e640ccb1e3b2fb145c416161bd32b09b0987ffb",
+      "wheel_metadata_sha256": "9064fbe0b5b245466b2f85602e1ebf835d8879597ff6ef5956169dae05d95046",
+      "requires_python": ">=3.6",
+      "active_dependencies": [
+        "parso"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "parso (<0.9.0,>=0.8.4)",
+          "active": true
+        },
+        {
+          "requirement": "Jinja2 (==2.11.3) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "MarkupSafe (==1.1.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "Pygments (==2.8.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "alabaster (==0.7.12) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "babel (==2.9.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "chardet (==4.0.0) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "commonmark (==0.8.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "docutils (==0.17.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "future (==0.18.2) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "idna (==2.10) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "imagesize (==1.2.0) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "mock (==1.0.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "packaging (==20.9) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pyparsing (==2.4.7) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pytz (==2021.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "readthedocs-sphinx-ext (==2.1.4) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "recommonmark (==0.5.0) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "requests (==2.25.1) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "six (==1.15.0) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "snowballstemmer (==2.1.0) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-rtd-theme (==0.4.3) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx (==1.8.5) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-serializinghtml (==1.1.4) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-websupport (==1.2.4) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "urllib3 (==1.26.4) ; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "flake8 (==5.0.4) ; extra == 'qa'",
+          "active": false
+        },
+        {
+          "requirement": "mypy (==0.971) ; extra == 'qa'",
+          "active": false
+        },
+        {
+          "requirement": "types-setuptools (==67.2.0.1) ; extra == 'qa'",
+          "active": false
+        },
+        {
+          "requirement": "Django ; extra == 'testing'",
+          "active": false
+        },
+        {
+          "requirement": "attrs ; extra == 'testing'",
+          "active": false
+        },
+        {
+          "requirement": "colorama ; extra == 'testing'",
+          "active": false
+        },
+        {
+          "requirement": "docopt ; extra == 'testing'",
+          "active": false
+        },
+        {
+          "requirement": "pytest (<9.0.0) ; extra == 'testing'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [],
+        "wheel_notice_paths": [
+          "jedi-0.19.2.dist-info/LICENSE.txt",
+          "jedi/third_party/django-stubs/LICENSE.txt",
+          "jedi/third_party/typeshed/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "jupyter-client",
+      "version": "8.8.0",
+      "filename": "jupyter_client-8.8.0-py3-none-any.whl",
+      "bytes": 107371,
+      "sha256": "f93a5b99c5e23a507b773d3a1136bd6e16c67883ccdbd9a829b0bbdb98cd7d7a",
+      "release_metadata_url": "https://pypi.org/pypi/jupyter-client/8.8.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/2d/0b/ceb7694d864abc0a047649aec263878acb9f792e1fec3e676f22dc9015e3/jupyter_client-8.8.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "6fb377c0135e168b294762a1227d18aa009a54765cdff5a75ee1a85b11f56e0a",
+      "wheel_metadata_sha256": "58b82a17209f9bf2804afe161f2632d0fde933f9bb2792fd936b2474a2e2ac2f",
+      "requires_python": ">=3.10",
+      "active_dependencies": [
+        "jupyter-core",
+        "python-dateutil",
+        "pyzmq",
+        "tornado",
+        "traitlets"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "jupyter-core>=5.1",
+          "active": true
+        },
+        {
+          "requirement": "python-dateutil>=2.8.2",
+          "active": true
+        },
+        {
+          "requirement": "pyzmq>=25.0",
+          "active": true
+        },
+        {
+          "requirement": "tornado>=6.4.1",
+          "active": true
+        },
+        {
+          "requirement": "traitlets>=5.3",
+          "active": true
+        },
+        {
+          "requirement": "ipykernel; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "myst-parser; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pydata-sphinx-theme; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-autodoc-typehints; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx>=4; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-github-alt; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-spelling; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "orjson; extra == 'orjson'",
+          "active": false
+        },
+        {
+          "requirement": "anyio; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "coverage; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "ipykernel>=6.14; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "msgpack; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "mypy; (platform_python_implementation != 'PyPy') and extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "paramiko; (sys_platform == 'win32') and extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pre-commit; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-jupyter[client]>=0.6.2; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-timeout; extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "jupyter_client-8.8.0.dist-info/licenses/LICENSE"
+        ],
+        "notice_review": "The bundled LICENSE contains the three-clause BSD redistribution, disclaimer and no-endorsement terms. The wheel supplies a BSD classifier and omits an SPDX expression."
+      }
+    },
+    {
+      "name": "jupyter-core",
+      "version": "5.9.1",
+      "filename": "jupyter_core-5.9.1-py3-none-any.whl",
+      "bytes": 29032,
+      "sha256": "ebf87fdc6073d142e114c72c9e29a9d7ca03fad818c5d300ce2adc1fb0743407",
+      "release_metadata_url": "https://pypi.org/pypi/jupyter-core/5.9.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/e7/e7/80988e32bf6f73919a113473a604f5a8f09094de312b9d52b79c2df7612b/jupyter_core-5.9.1-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "68a656d7e2ebe45d40becf6032998192790d8a7536942f72167d79b8559e5ded",
+      "wheel_metadata_sha256": "aad0b0a12256807936d52d4a6f88a1773236ae527564a688bab4e3fe780e8724",
+      "requires_python": ">=3.10",
+      "active_dependencies": [
+        "platformdirs",
+        "traitlets"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "platformdirs>=2.5",
+          "active": true
+        },
+        {
+          "requirement": "traitlets>=5.3",
+          "active": true
+        },
+        {
+          "requirement": "intersphinx-registry; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "myst-parser; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pydata-sphinx-theme; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-autodoc-typehints; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinxcontrib-spelling; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "traitlets; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "ipykernel; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pre-commit; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-timeout; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest<9; extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": "BSD-3-Clause",
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "jupyter_core-5.9.1.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "matplotlib-inline",
+      "version": "0.2.1",
+      "filename": "matplotlib_inline-0.2.1-py3-none-any.whl",
+      "bytes": 9516,
+      "sha256": "d56ce5156ba6085e00a9d54fead6ed29a9c47e215cd1bba2e976ef39f5710a76",
+      "release_metadata_url": "https://pypi.org/pypi/matplotlib-inline/0.2.1/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/af/33/ee4519fa02ed11a94aef9559552f3b17bb863f2ecfe1a35dc7f548cde231/matplotlib_inline-0.2.1-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "801c03fa93d34b68b35ea067c1448822691b09358b8032cde208ed6c3ee0b6b4",
+      "wheel_metadata_sha256": "1b68144734c4b66791f27add5d425f3620775585718a03d0f9b110ba3a4d88db",
+      "requires_python": ">=3.9",
+      "active_dependencies": [
+        "traitlets"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "traitlets",
+          "active": true
+        },
+        {
+          "requirement": "flake8 ; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "nbdime ; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "nbval ; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "notebook ; extra == \"test\"",
+          "active": false
+        },
+        {
+          "requirement": "pytest ; extra == \"test\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "matplotlib_inline-0.2.1.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "nest-asyncio",
+      "version": "1.6.0",
+      "filename": "nest_asyncio-1.6.0-py3-none-any.whl",
+      "bytes": 5195,
+      "sha256": "87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c",
+      "release_metadata_url": "https://pypi.org/pypi/nest-asyncio/1.6.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "7f7b98f9e1a28a9597d70df9158175a22d05446ce4b328908d920e7293d35bd2",
+      "wheel_metadata_sha256": "a6472d658cd44b8018567e9d27eef7ebb389662bc5d9ef1103d6ff6418e27f5f",
+      "requires_python": ">=3.5",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "nest_asyncio-1.6.0.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "filename": "packaging-26.3-py3-none-any.whl",
+      "bytes": 129956,
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "release_metadata_url": "https://pypi.org/pypi/packaging/26.3/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "70fdb89fc4d4a9a043bf7372b8972bcc883fddff34ab55e9cf80d73875384763",
+      "wheel_metadata_sha256": "1b68144734c4b66791f27add5d425f3620775585718a03d0f9b110ba3a4d88db",
+      "requires_python": ">=3.9",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": "Apache-2.0 OR BSD-2-Clause",
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE",
+          "LICENSE.APACHE",
+          "LICENSE.BSD"
+        ],
+        "wheel_notice_paths": [
+          "packaging-26.3.dist-info/licenses/LICENSE",
+          "packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+          "packaging-26.3.dist-info/licenses/LICENSE.BSD"
+        ]
+      }
+    },
+    {
+      "name": "parso",
+      "version": "0.8.6",
+      "filename": "parso-0.8.6-py2.py3-none-any.whl",
+      "bytes": 106894,
+      "sha256": "2c549f800b70a5c4952197248825584cb00f033b29c692671d3bf08bf380baff",
+      "release_metadata_url": "https://pypi.org/pypi/parso/0.8.6/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/b6/61/fae042894f4296ec49e3f193aff5d7c18440da9e48102c3315e1bc4519a7/parso-0.8.6-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "1cf87450f332621f8307fea30d566df899e7bde7ccfff6507e278e0f5ec81319",
+      "wheel_metadata_sha256": "b82ec39d78eda0acb6dc23545d1abaa212ec9bc15b4b60bf1027d8633a991d56",
+      "requires_python": ">=3.6",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "pytest; extra == \"testing\"",
+          "active": false
+        },
+        {
+          "requirement": "docopt; extra == \"testing\"",
+          "active": false
+        },
+        {
+          "requirement": "flake8==5.0.4; extra == \"qa\"",
+          "active": false
+        },
+        {
+          "requirement": "zuban==0.5.1; extra == \"qa\"",
+          "active": false
+        },
+        {
+          "requirement": "types-setuptools==67.2.0.1; extra == \"qa\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "AUTHORS.txt",
+          "LICENSE.txt"
+        ],
+        "wheel_notice_paths": [
+          "parso-0.8.6.dist-info/licenses/AUTHORS.txt",
+          "parso-0.8.6.dist-info/licenses/LICENSE.txt"
+        ]
+      }
+    },
+    {
+      "name": "pexpect",
+      "version": "4.9.0",
+      "filename": "pexpect-4.9.0-py2.py3-none-any.whl",
+      "bytes": 63772,
+      "sha256": "7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523",
+      "release_metadata_url": "https://pypi.org/pypi/pexpect/4.9.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "2d7c5ac5fdefde4a0194ec522fbcc0ca70e99e1a2a956eea444168f8591650aa",
+      "wheel_metadata_sha256": "6dbd8eb7db1c7251ca30e2c310763a076b227163a0ba08c529a26c4fbbf0310a",
+      "requires_python": null,
+      "active_dependencies": [
+        "ptyprocess"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "ptyprocess (>=0.5)",
+          "active": true
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: ISC License (ISCL)"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "pexpect-4.9.0.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.9.6",
+      "filename": "platformdirs-4.9.6-py3-none-any.whl",
+      "bytes": 21348,
+      "sha256": "e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917",
+      "release_metadata_url": "https://pypi.org/pypi/platformdirs/4.9.6/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/75/a6/a0a304dc33b49145b21f4808d763822111e67d1c3a32b524a1baf947b6e1/platformdirs-4.9.6-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "7dc437d6904fab5d1b6527ac1bdfe03044e9ad53649dadc143471a6f2472927c",
+      "wheel_metadata_sha256": "41c708c5adba6e097513ab8ccb9f1d7865a2fb469e22491a9e01dcc64da459fc",
+      "requires_python": ">=3.10",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": "MIT",
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "platformdirs-4.9.6.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "prompt-toolkit",
+      "version": "3.0.52",
+      "filename": "prompt_toolkit-3.0.52-py3-none-any.whl",
+      "bytes": 391431,
+      "sha256": "9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955",
+      "release_metadata_url": "https://pypi.org/pypi/prompt-toolkit/3.0.52/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "80d4bd40a6a171dfd25c332baebee1fd8722342f133db5385e2d5719a5da2e29",
+      "wheel_metadata_sha256": "ff309ddcdd65ebd02bc724dbf2bcc4a0ff53a5b61792a44548d383e4ebb19d3b",
+      "requires_python": ">=3.8",
+      "active_dependencies": [
+        "wcwidth"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "wcwidth",
+          "active": true
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "AUTHORS.rst",
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "prompt_toolkit-3.0.52.dist-info/licenses/AUTHORS.rst",
+          "prompt_toolkit-3.0.52.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "psutil",
+      "version": "7.2.2",
+      "filename": "psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+      "bytes": 155560,
+      "sha256": "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9",
+      "release_metadata_url": "https://pypi.org/pypi/psutil/7.2.2/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+      "tags": [
+        "cp36-abi3-manylinux2010_x86_64",
+        "cp36-abi3-manylinux_2_12_x86_64",
+        "cp36-abi3-manylinux_2_28_x86_64"
+      ],
+      "root_is_purelib": false,
+      "minimum_glibc": "2.12",
+      "metadata_sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f",
+      "wheel_metadata_sha256": "aca9cca3026cd7b9774535accd80fde13f5a55cf32141be943e4575a4e8835cd",
+      "requires_python": ">=3.6",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "psleak ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pytest ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-instafail ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-xdist ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "setuptools ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "abi3audit ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "black ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "check-manifest ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "coverage ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "packaging ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pylint ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pyperf ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pypinfo ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-cov ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "requests ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "rstcheck ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "ruff ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx-rtd-theme ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "toml-sort ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "twine ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "validate-pyproject[all] ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "virtualenv ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "vulture ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "wheel ; extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "colorama ; (os_name == \"nt\") and extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pyreadline3 ; (os_name == \"nt\") and extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "pywin32 ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "wheel ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "wmi ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "active": false
+        },
+        {
+          "requirement": "psleak ; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest ; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-instafail ; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-xdist ; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "setuptools ; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pywin32 ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "wheel ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "wmi ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "psutil-7.2.2.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "ptyprocess",
+      "version": "0.7.0",
+      "filename": "ptyprocess-0.7.0-py2.py3-none-any.whl",
+      "bytes": 13993,
+      "sha256": "4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35",
+      "release_metadata_url": "https://pypi.org/pypi/ptyprocess/0.7.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/22/a6/858897256d0deac81a172289110f31629fc4cee19b6f01283303e18c8db3/ptyprocess-0.7.0-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "c3c2b96b5d9a55da5958c34d08c18a0849f56609026cc46d5c95b8b77fcf3e0c",
+      "wheel_metadata_sha256": "34baa6b31f99159ea00dabd8821da81f465237e2919a971d1172190e7632f4f8",
+      "requires_python": null,
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: ISC License (ISCL)"
+        ],
+        "declared_files": [],
+        "wheel_notice_paths": [
+          "ptyprocess-0.7.0.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "pure-eval",
+      "version": "0.2.3",
+      "filename": "pure_eval-0.2.3-py3-none-any.whl",
+      "bytes": 11842,
+      "sha256": "1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0",
+      "release_metadata_url": "https://pypi.org/pypi/pure-eval/0.2.3/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "97cdad3355bf3083668e8a5e98ad2a958cd68839b369a35b171e372ab48ee986",
+      "wheel_metadata_sha256": "ad6c6606da7b84452a54b3a74da0ce3e947e719a420e4ce185c05c7be6727799",
+      "requires_python": null,
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "pytest ; extra == 'tests'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE.txt"
+        ],
+        "wheel_notice_paths": [
+          "pure_eval-0.2.3.dist-info/LICENSE.txt"
+        ]
+      }
+    },
+    {
+      "name": "pygments",
+      "version": "2.20.0",
+      "filename": "pygments-2.20.0-py3-none-any.whl",
+      "bytes": 1231151,
+      "sha256": "81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176",
+      "release_metadata_url": "https://pypi.org/pypi/pygments/2.20.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "e0528f51b30427fae94723662ba622f8d8db2a4d8d3f1365698d67a52450a845",
+      "wheel_metadata_sha256": "41c708c5adba6e097513ab8ccb9f1d7865a2fb469e22491a9e01dcc64da459fc",
+      "requires_python": ">=3.9",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "colorama>=0.4.6; extra == 'windows-terminal'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": "BSD-2-Clause",
+        "classifiers": [],
+        "declared_files": [
+          "AUTHORS",
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "pygments-2.20.0.dist-info/licenses/AUTHORS",
+          "pygments-2.20.0.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "bytes": 229892,
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "release_metadata_url": "https://pypi.org/pypi/python-dateutil/2.9.0.post0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "a9d436da322be808332f98d88325998e87cb693a678a9969feb4cfad729a6e93",
+      "wheel_metadata_sha256": "f86fedd281ae13b503d03ad2a55667ab584730157d0c3d97912e6fed7a664e79",
+      "requires_python": "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7",
+      "active_dependencies": [
+        "six"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "six >=1.5",
+          "active": true
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: Apache Software License",
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "python_dateutil-2.9.0.post0.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "pyzmq",
+      "version": "27.1.0",
+      "filename": "pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+      "bytes": 840995,
+      "sha256": "43ad9a73e3da1fab5b0e7e13402f0b2fb934ae1c876c51d0afff0e7c052eca31",
+      "release_metadata_url": "https://pypi.org/pypi/pyzmq/27.1.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/f8/9b/c108cdb55560eaf253f0cbdb61b29971e9fb34d9c3499b0e96e4e60ed8a5/pyzmq-27.1.0-cp312-abi3-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+      "tags": [
+        "cp312-abi3-manylinux_2_26_x86_64",
+        "cp312-abi3-manylinux_2_28_x86_64"
+      ],
+      "root_is_purelib": false,
+      "minimum_glibc": "2.26",
+      "metadata_sha256": "7e05c41b7e28dddfe8617d63b5691aff02b4cf737092842df9f4b2d59d9aef55",
+      "wheel_metadata_sha256": "56b34da2117c718bc07e13eb67ce63d4e7b545a9a2c0d35da4d58b276334336f",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "cffi; implementation_name == \"pypy\"",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [],
+        "wheel_notice_paths": [
+          "pyzmq-27.1.0.dist-info/licenses/LICENSE.md",
+          "pyzmq-27.1.0.dist-info/licenses/licenses/LICENSE.libsodium.txt",
+          "pyzmq-27.1.0.dist-info/licenses/licenses/LICENSE.tornado.txt",
+          "pyzmq-27.1.0.dist-info/licenses/licenses/LICENSE.zeromq.txt"
+        ]
+      }
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "bytes": 11050,
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "release_metadata_url": "https://pypi.org/pypi/six/1.17.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "562042078c2752549f6d8a7c86dbc5dd708088a7be6d80672ec7b07100b72468",
+      "wheel_metadata_sha256": "a7178d5f925db427b9f0f51260ff6ea6673b8dd44f82f4f41a6f646f5487955c",
+      "requires_python": ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "six-1.17.0.dist-info/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "stack-data",
+      "version": "0.6.3",
+      "filename": "stack_data-0.6.3-py3-none-any.whl",
+      "bytes": 24521,
+      "sha256": "d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695",
+      "release_metadata_url": "https://pypi.org/pypi/stack-data/0.6.3/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "f28a66f2adde54e7031355e09a166e437bc0d023a31c10c973ac494288ca4c6f",
+      "wheel_metadata_sha256": "c903798389a0e00c9b4639208bef72cb889010589b1909a5cfbf0f8a4e4eafe0",
+      "requires_python": null,
+      "active_dependencies": [
+        "asttokens",
+        "executing",
+        "pure-eval"
+      ],
+      "requires_dist": [
+        {
+          "requirement": "executing >=1.2.0",
+          "active": true
+        },
+        {
+          "requirement": "asttokens >=2.1.0",
+          "active": true
+        },
+        {
+          "requirement": "pure-eval",
+          "active": true
+        },
+        {
+          "requirement": "pytest ; extra == 'tests'",
+          "active": false
+        },
+        {
+          "requirement": "typeguard ; extra == 'tests'",
+          "active": false
+        },
+        {
+          "requirement": "pygments ; extra == 'tests'",
+          "active": false
+        },
+        {
+          "requirement": "littleutils ; extra == 'tests'",
+          "active": false
+        },
+        {
+          "requirement": "cython ; extra == 'tests'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declared_files": [
+          "LICENSE.txt"
+        ],
+        "wheel_notice_paths": [
+          "stack_data-0.6.3.dist-info/LICENSE.txt"
+        ]
+      }
+    },
+    {
+      "name": "tornado",
+      "version": "6.5.9",
+      "filename": "tornado-6.5.9-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "bytes": 465496,
+      "sha256": "0cc0876a58eee9143476f24901b1b8eb4d52443283ade2b6bca650dd1da04f84",
+      "release_metadata_url": "https://pypi.org/pypi/tornado/6.5.9/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/9e/0f/38f8d16011de3b1ce2babb4c3bcefb126d2dc47d04878ae3ad5c39a00caa/tornado-6.5.9-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+      "tags": [
+        "cp39-abi3-manylinux1_x86_64",
+        "cp39-abi3-manylinux_2_28_x86_64",
+        "cp39-abi3-manylinux_2_5_x86_64"
+      ],
+      "root_is_purelib": false,
+      "minimum_glibc": "2.5",
+      "metadata_sha256": "a8a0f8926795a30660f249fda476ee8767852be1191d5804f4a62e4e3bae8ed3",
+      "wheel_metadata_sha256": "3e551b29b4473328f28a39ad8adbdcf98c6161890b4feffb29e72ee8dddc161b",
+      "requires_python": ">= 3.9",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "tornado-6.5.9.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "traitlets",
+      "version": "5.14.3",
+      "filename": "traitlets-5.14.3-py3-none-any.whl",
+      "bytes": 85359,
+      "sha256": "b74e89e397b1ed28cc831db7aea759ba6640cb3de13090ca145426688ff1ac4f",
+      "release_metadata_url": "https://pypi.org/pypi/traitlets/5.14.3/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/00/c0/8f5d070730d7836adc9c9b6408dec68c6ced86b304a9b26a14df072a6e8c/traitlets-5.14.3-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "ca0707dd88c2f8bbfd99800813df0b2cd19b884921efce72dcc9bf604fee5d56",
+      "wheel_metadata_sha256": "a2ca21c68b212074c524554f86c8b552466e2d118c1d15d9cf01015b67b38eb7",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [
+        {
+          "requirement": "myst-parser; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "pydata-sphinx-theme; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "sphinx; extra == 'docs'",
+          "active": false
+        },
+        {
+          "requirement": "argcomplete>=3.0.3; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "mypy>=1.7.0; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pre-commit; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-mock; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest-mypy-testing; extra == 'test'",
+          "active": false
+        },
+        {
+          "requirement": "pytest<8.2,>=7.0; extra == 'test'",
+          "active": false
+        }
+      ],
+      "license": {
+        "expression": null,
+        "classifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "traitlets-5.14.3.dist-info/licenses/LICENSE"
+        ]
+      }
+    },
+    {
+      "name": "wcwidth",
+      "version": "0.6.0",
+      "filename": "wcwidth-0.6.0-py3-none-any.whl",
+      "bytes": 94189,
+      "sha256": "1a3a1e510b553315f8e146c54764f4fb6264ffad731b3d78088cdb1478ffbdad",
+      "release_metadata_url": "https://pypi.org/pypi/wcwidth/0.6.0/json",
+      "wheel_url": "https://files.pythonhosted.org/packages/68/5a/199c59e0a824a3db2b89c5d2dade7ab5f9624dbf6448dc291b46d5ec94d3/wcwidth-0.6.0-py3-none-any.whl",
+      "tags": [
+        "py3-none-any"
+      ],
+      "root_is_purelib": true,
+      "minimum_glibc": null,
+      "metadata_sha256": "dff3786b8fba955a83c5d3034ce029b8aac20e3389dadb6234d2548500d51e72",
+      "wheel_metadata_sha256": "58b82a17209f9bf2804afe161f2632d0fde933f9bb2792fd936b2474a2e2ac2f",
+      "requires_python": ">=3.8",
+      "active_dependencies": [],
+      "requires_dist": [],
+      "license": {
+        "expression": "MIT",
+        "classifiers": [],
+        "declared_files": [
+          "LICENSE"
+        ],
+        "wheel_notice_paths": [
+          "wcwidth-0.6.0.dist-info/licenses/LICENSE"
+        ]
+      }
+    }
+  ]
+}

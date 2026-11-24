@@ -109,7 +109,7 @@ PINNED_PROMPT_RECORDS = [
 
 
 def _read_base_readme_section() -> str:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs" / "legacy-python" / "README.md").read_text(encoding="utf-8")
     start = readme.index("## Millforge Base")
     end = readme.find("\n## ", start + 1)
     return readme[start:] if end == -1 else readme[start:end]

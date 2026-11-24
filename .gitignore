@@ -12,6 +12,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Node dependencies
+node_modules/
+
 # Build and package output
 /build/
 /dist/

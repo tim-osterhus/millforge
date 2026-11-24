@@ -1,8 +1,10 @@
-# Third-party notices: Node candidate
+# Third-party notices
 
-Millforge is Apache-2.0; see LICENSE. The historical Python vendored notices remain unchanged in their original source tree and are not included in the Node package.
+Millforge is Apache-2.0. The bundled optimizer archive includes its own
+Apache-2.0 license. The separate Python R1 sidecar carries its Nano RLM notice
+and license. The historical PyPI package retains its own vendored notices.
 
-The Node candidate declares `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` exactly 1.4.0, source `4a080252f06caf63a525d7873c5d94d3c23887e0` / tag v1.4.0. The M2 run worker imports their selected public APIs; pure profile/inspect commands do not load Pi. Their actual tarballs match the specification's SHA-512 integrities. The verified exact package-lock records transitive identities and integrities; the M0 evidence inventory records package license metadata and embedded notice-member hashes, including optional platform dependencies.
+The Node package declares `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` exactly 1.4.0, source `4a080252f06caf63a525d7873c5d94d3c23887e0` / tag v1.4.0. The M2 run worker imports their selected public APIs; pure profile/inspect commands do not load Pi. Their actual tarballs match the specification's SHA-512 integrities. The verified exact package-lock records transitive identities and integrities; the M0 evidence inventory records package license metadata and embedded notice-member hashes, including optional platform dependencies.
 
 The source/provenance association was checked from registry SLSA statement payloads; cryptographic signature verification was not performed. Both Pi archives omit an embedded LICENSE, so the exact upstream source LICENSE is preserved below (SHA-256 `0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48`). The complete frozen lock inventory records 67 entries without an embedded license/notice member across production, development and optional entries. The M3a non-dev metadata inventory narrows that observation to 13 production entries. An absent embedded member alone establishes neither a legal defect nor completeness of redistribution notices. This document records packaging evidence, not redistribution certification.
 

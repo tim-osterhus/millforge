@@ -419,7 +419,10 @@ def test_fresh_public_archives_exclude_private_runtime_and_large_temp_state(
         }
 
     for archive_names in (wheel_names, sdist_names):
-        assert "README.md" in archive_names or "millforge/__init__.py" in archive_names
+        assert (
+            "docs/legacy-python/README.md" in archive_names
+            or "millforge/__init__.py" in archive_names
+        )
         assert not any(
             name.startswith(FORBIDDEN_PUBLIC_ARCHIVE_PREFIXES) for name in archive_names
         )

@@ -5,7 +5,39 @@ on:
   pull_request:
 
 jobs:
-  posix:
+  node:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "26.7.0"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Pack and smoke the installed npm artifact
+        run: |
+          printf '%s  %s\n' \
+            '160c6cb8919f75b24c75a9baa9f502802b715f259cdc5a01ae124d5d872d4f44' \
+            'bundles/millrace-ai-millforge-optimization-0.1.1.tgz' |
+            sha256sum --check --strict -
+          artifact=$(npm pack --quiet --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          prefix="$RUNNER_TEMP/millforge-installed"
+          npm install --prefix "$prefix" --omit=dev --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP/$artifact"
+          package="$prefix/node_modules/@millrace-ai/millforge"
+          test -f "$package/bundles/millrace-ai-millforge-optimization-0.1.1.tgz"
+          test ! -e "$prefix/node_modules/.bin/millforge-optimize"
+          "$prefix/node_modules/.bin/millforge" profile validate "$package/profiles/generate"
+
+  legacy-python:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:

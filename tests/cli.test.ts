@@ -19,7 +19,7 @@ describe('standalone M1 CLI',()=>{
       for(const imported of imports){
         if(name==='cli'&&imported==='./optimization-dispatch.js')continue;
         expect(imported).not.toMatch(/@earendil|millrace-(?:plus|ai|os)|optimization/);
-        if(name==='optimization-dispatch')expect(imported.startsWith('node:')).toBe(true);
+        if(name==='optimization-dispatch')expect(imported==='./versions.js'||imported.startsWith('node:')).toBe(true);
       }
     }
     const config=await fs.readFile(new URL('../vitest.config.ts',import.meta.url),'utf8');
@@ -27,7 +27,7 @@ describe('standalone M1 CLI',()=>{
   });
 });
 
-const identity={protocol:'millforge-optimization/v1',package:'@millrace-ai/millforge-optimization',version:'0.1.0'};
+const identity={protocol:'millforge-optimization/v1',package:'@millrace-ai/millforge-optimization',version:'0.1.1'};
 async function fakeOptimizer(root:string,options:{response?:string;exit?:number;hangProtocol?:boolean;wait?:boolean;protocolExit?:number;mutate?:boolean;cleanupExit?:number;splitOutput?:boolean}={}){
   const bin=path.join(root,'millforge-optimize'),calls=path.join(root,'calls.jsonl'),ready=path.join(root,'ready');
   const marker=path.join(root,'cleanup-marker'),signals=path.join(root,'signals.jsonl');
@@ -91,7 +91,7 @@ describe('optional optimizer foreground boundary',()=>{
     const f=await setup(),fake=await fakeOptimizer(f.root);vi.stubEnv('PATH',f.root);
     const result=await invoke(['optimize','inspect',...flags],f.root);expect(result.exit).toBe(2);expect(JSON.parse(result.err).code).toBe('OPTIMIZER_INCOMPATIBLE');await expect(fs.stat(fake.calls)).rejects.toThrow();
   });
-  it.each([JSON.stringify({...identity,version:'0.2.0'}),JSON.stringify({...identity,extra:true}),'noise\n'+JSON.stringify(identity),'{}',JSON.stringify(identity).replace('{','{"protocol":"millforge-optimization/v1",')])('refuses incompatible or noisy identity %s without campaign dispatch',async response=>{
+  it.each([JSON.stringify({...identity,version:'0.1.0'}),JSON.stringify({...identity,version:'0.2.0'}),JSON.stringify({...identity,extra:true}),'noise\n'+JSON.stringify(identity),'{}',JSON.stringify(identity).replace('{','{"protocol":"millforge-optimization/v1",')])('refuses incompatible or noisy identity %s without campaign dispatch',async response=>{
     const f=await setup(),fake=await fakeOptimizer(f.root,{response:response+'\n'});const result=await invoke(['optimize','inspect','--optimizer-bin',fake.bin],f.root);
     expect(result.exit).toBe(2);expect(JSON.parse(result.err).code).toBe('OPTIMIZER_INCOMPATIBLE');expect(await callLog(fake.calls)).toEqual([['protocol']]);
   });
@@ -139,5 +139,5 @@ it('runs and inspects profile v3 through the public CLI and built worker with ex
   const f=await setup(),p=JSON.parse(await fs.readFile(new URL('./fixtures/codemode/profile.json',import.meta.url),'utf8'));let calls=0;
   const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls++;expect(body.tools.some((t:{custom?:{name:string}})=>t.custom?.name==='codemode')).toBe(true);res.writeHead(200,{'content-type':'text/event-stream'});const delta=calls===1?{tool_calls:[{index:0,id:'public_parent',type:'custom',custom:{name:'codemode',input:'await tools.write({path:"effect.txt",content:"kept"}); text(await tools.read({path:"effect.txt"}));'}}]}:{role:'assistant',content:'done'};for(const chunk of [{choices:[{index:0,delta,finish_reason:null}]},{choices:[{index:0,delta:{},finish_reason:calls===1?'tool_calls':'stop'}]}])res.write('data: '+JSON.stringify({id:'public',model:'codemode-fixture',...chunk})+'\n\n');res.end('data: [DONE]\n\n');});
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const address=server.address();if(!address||typeof address==='string')throw Error('address');p.model.base_url=`http://127.0.0.1:${address.port}/v1`;await fs.writeFile(f.manifest,JSON.stringify(p));expect((await invoke(['profile','create',f.dir,'--from',f.manifest],f.root)).exit).toBe(0);const shown=JSON.parse((await invoke(['profile','show',f.dir],f.root)).out),request=path.join(f.root,'request.json'),out=path.join(f.root,'run');await fs.writeFile(request,JSON.stringify({schema:'millforge-request/v1',request_id:'public-v3',profile_id:p.profile_id,profile_digest:shown.digest,expected_mode:'agent',task:'finish',context:[],workspace:f.root,limits:{},correlation:{}}));let result='',diagnostic='';
-  const runtimeEnv={HOME:f.root,PATH:process.env.PATH??''},built=await import(pathToFileURL(path.resolve('dist/node/src/cli.js')).href) as typeof import('../src/cli.js');try{const exit=await built.main(['run','--profile',f.dir,'--request',request,'--output-dir',out],runtimeEnv,s=>result+=s,s=>diagnostic+=s);expect(exit,diagnostic).toBe(0);expect(JSON.parse(result)).toMatchObject({schema:'millforge-result/v4',status:'completed',counts:{tool_calls:3,nested_tool_calls:2}});const inspected=await invoke(['inspect','--run',out],f.root);expect(inspected.exit).toBe(0);expect(JSON.parse(inspected.out).result.schema).toBe('millforge-result/v4');expect(calls).toBe(2);expect(await fs.readFile(path.join(f.root,'effect.txt'),'utf8')).toBe('kept');await expect(fs.lstat(path.join(out,'pi'))).rejects.toThrow();await expect(fs.lstat(path.join(out,'tmp'))).rejects.toThrow();}finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+  const runtimeEnv={HOME:f.root,PATH:process.env.PATH??''},built=await import(pathToFileURL(path.resolve('dist/node/src/cli.js')).href) as typeof import('../src/cli.js');try{const exit=await built.main(['run','--profile',f.dir,'--request',request,'--output-dir',out],runtimeEnv,s=>result+=s,s=>diagnostic+=s);expect(exit,diagnostic).toBe(0);expect(JSON.parse(result)).toMatchObject({schema:'millforge-result/v4',status:'completed',counts:{tool_calls:3,nested_tool_calls:2}});const inspected=await invoke(['inspect','--run',out],f.root);expect(inspected.exit).toBe(0);expect(JSON.parse(inspected.out)).toMatchObject({result:{schema:'millforge-result/v4'},capture:{versions:{millforge:'0.2.1',pi:'1.4.0'}}});expect(calls).toBe(2);expect(await fs.readFile(path.join(f.root,'effect.txt'),'utf8')).toBe('kept');await expect(fs.lstat(path.join(out,'pi'))).rejects.toThrow();await expect(fs.lstat(path.join(out,'tmp'))).rejects.toThrow();}finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 },15000);
