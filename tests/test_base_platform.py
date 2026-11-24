@@ -183,7 +183,9 @@ def test_execute_refuses_before_binding_artifacts_model_or_tools(
 
 def test_docs_and_classifiers_match_runtime_platform_contract() -> None:
     readme = (ROOT / "docs" / "legacy-python" / "README.md").read_text(encoding="utf-8")
-    roadmap = (ROOT / "docs" / "legacy-python" / "ROADMAP.md").read_text(encoding="utf-8")
+    roadmap = (ROOT / "docs" / "legacy-python" / "ROADMAP.md").read_text(
+        encoding="utf-8"
+    )
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]

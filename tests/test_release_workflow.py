@@ -122,7 +122,9 @@ def test_release_workflow_refuses_unsafe_publication_surfaces() -> None:
     assert "refs/tags/v0.1.1" in workflow
     assert re.search(r"tags:\s*\n\s*- v0\.1\.1\s*$", workflow, re.MULTILINE)
     for job in (build_job, publish_job):
-        assert "(github.event_name == 'push' && github.ref == 'refs/tags/v0.1.1')" in job
+        assert (
+            "(github.event_name == 'push' && github.ref == 'refs/tags/v0.1.1')" in job
+        )
         assert (
             "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')"
             in job
