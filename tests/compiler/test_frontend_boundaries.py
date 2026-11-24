@@ -160,7 +160,7 @@ def test_package_build_policy_excludes_repository_runtime_and_fixture_trees() ->
     assert wheel["packages"] == ["src/millforge"]
     assert set(sdist["only-include"]) == {
         "LICENSE",
-        "README.md",
+        "docs/legacy-python/README.md",
         "pyproject.toml",
         "src/millforge",
     }
