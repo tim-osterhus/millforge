@@ -36,23 +36,33 @@ async function setup(api:ProfileV1['model']['api'],plan:Record<string,unknown>[]
   const context={systemPrompt:p.instructions,messages:[{role:'user' as const,content:'fixed fake task',timestamp:Date.now()}]};
   return {root,p,trace,abort,requests,bind,context};
 }
+async function expectSingleRequest(requests: Record<string, unknown>[]) {
+  // The HTTP response can finish before the peer's separate IPC message arrives.
+  await vi.waitUntil(() => requests.length > 0, { timeout: 1_000 });
+  expect(requests).toHaveLength(1);
+  return requests[0]!;
+}
 const apis=['openai-completions','anthropic-messages'] as const;
 describe('generate::one_dispatch and controls through the real pinned public APIs',()=>{
   it.each(apis)('sends one selected native request without ambient authentication: %s',async api=>{
     const f=await setup(api);const binding=await f.bind();const result=await binding.generate(f.context);
     expect(result.text).toBe('done');expect(binding.httpAttempts()).toBe(1);expect(binding.inferenceReturned()).toBe(true);
-    expect(f.requests).toHaveLength(1);expect(f.requests[0]).toMatchObject({method:'POST',authorization:false,apiKey:false,path:api==='openai-completions'?'/v1/chat/completions':'/v1/messages?beta=true'});
-    expect(f.requests[0]!.controls).toMatchObject({model:f.p.model.id,stream:true,temperature:f.p.sampling.temperature});
+    const request = await expectSingleRequest(f.requests);
+    expect(request).toMatchObject({method:'POST',authorization:false,apiKey:false,path:api==='openai-completions'?'/v1/chat/completions':'/v1/messages?beta=true'});
+    expect(request.controls).toMatchObject({model:f.p.model.id,stream:true,temperature:f.p.sampling.temperature});
     expect(f.trace.filter(t=>t.kind==='provider_payload')).toHaveLength(1);expect(f.trace.filter(t=>t.kind==='http_attempt')).toHaveLength(1);
     expect(result.usage).toMatchObject({input_tokens:7,output_tokens:3,cache_read_tokens:0});
     await expect(binding.generate(f.context)).rejects.toThrow();expect(f.requests).toHaveLength(1);expect(binding.httpAttempts()).toBe(1);
   });
   it('uses public OpenAI samplingParams for explicit top-p',async()=>{
-    const f=await setup('openai-completions');f.p.sampling.top_p=0.75;const binding=await f.bind();await binding.generate(f.context);expect(f.requests[0]!.controls).toMatchObject({top_p:0.75});
+    const f=await setup('openai-completions');f.p.sampling.top_p=0.75;const binding=await f.bind();await binding.generate(f.context);
+    const request = await expectSingleRequest(f.requests);
+    expect(request.controls).toMatchObject({top_p:0.75});
   });
   it.each(apis)('retains a lower positive native context-clamped ceiling: %s',async api=>{
     const f=await setup(api);f.p.model.context_tokens=4097;const binding=await f.bind();await binding.generate(f.context);
-    const controls=f.requests[0]!.controls as Record<string,number>;const field=api==='anthropic-messages'?'max_tokens':String(f.p.model.compat.maxTokensField);
+    const request = await expectSingleRequest(f.requests);
+    const controls=request.controls as Record<string,number>;const field=api==='anthropic-messages'?'max_tokens':String(f.p.model.compat.maxTokensField);
     expect(controls[field]).toBeGreaterThan(0);expect(controls[field]).toBeLessThan(f.p.model.max_output_tokens);
     expect(f.trace.find(t=>t.kind==='provider_payload')!.payload.controls).toMatchObject({[field]:controls[field]});
   });
@@ -83,16 +93,20 @@ describe('generate::one_dispatch and controls through the real pinned public API
 });
 describe('generate::finish_rejections and finite transport',()=>{
   it.each(apis.flatMap(api=>['empty','missing-finish','length','unknown-finish','tool','malformed','disconnect'].map(kind=>({api,kind}))))('refuses $api $kind without a repair call',async({api,kind})=>{
-    const f=await setup(api,[{kind}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();expect(f.requests).toHaveLength(1);expect(binding.httpAttempts()).toBe(1);expect(f.trace.filter(t=>t.kind==='model_end')).toHaveLength(1);
+    const f=await setup(api,[{kind}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();
+    await expectSingleRequest(f.requests);expect(binding.httpAttempts()).toBe(1);expect(f.trace.filter(t=>t.kind==='model_end')).toHaveLength(1);
   });
   it.each(['pause_turn','stop_sequence'])('refuses Anthropic native %s even when normalized to stop',async reason=>{
-    const f=await setup('anthropic-messages',[{kind:'normal',reason}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();expect(f.requests).toHaveLength(1);expect(f.trace.find(t=>t.kind==='model_end')!.payload.stop).not.toBe('normal');
+    const f=await setup('anthropic-messages',[{kind:'normal',reason}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();
+    await expectSingleRequest(f.requests);expect(f.trace.find(t=>t.kind==='model_end')!.payload.stop).not.toBe('normal');
   });
   it.each(apis.flatMap(api=>[429,500].map(status=>({api,status}))))('does not retry $api HTTP $status',async({api,status})=>{
-    const f=await setup(api,[{kind:'status',status},{kind:'normal'}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();expect(f.requests).toHaveLength(1);expect(binding.httpAttempts()).toBe(1);expect(JSON.stringify(f.trace)).not.toContain('SECRET_SENTINEL');
+    const f=await setup(api,[{kind:'status',status},{kind:'normal'}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();
+    await expectSingleRequest(f.requests);expect(binding.httpAttempts()).toBe(1);expect(JSON.stringify(f.trace)).not.toContain('SECRET_SENTINEL');
   });
   it.each(apis)('refuses redirects instead of dispatching to another route: %s',async api=>{
-    const f=await setup(api,[{kind:'redirect'},{kind:'normal'}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();expect(f.requests).toHaveLength(1);expect(binding.httpAttempts()).toBe(1);
+    const f=await setup(api,[{kind:'redirect'},{kind:'normal'}]);const binding=await f.bind();await expect(binding.generate(f.context)).rejects.toThrow();
+    await expectSingleRequest(f.requests);expect(binding.httpAttempts()).toBe(1);
   });
   it.each(apis)('aborts an in-flight request under the original deadline: %s',async api=>{
     const f=await setup(api,[{kind:'delay',delayMs:500}]);const binding=await createBinding({profile:f.p,limits:f.p.limits,signal:f.abort.signal,deadline:performance.now()+100,onTrace:(kind,payload)=>f.trace.push({kind,payload})});
