@@ -1,0 +1,58 @@
+{
+  "schema": "millforge-profile/v1",
+  "profile_id": "agent",
+  "revision": 1,
+  "mode": "agent",
+  "runtime": {
+    "pi_version": "1.4.0",
+    "binding_version": 1
+  },
+  "model": {
+    "api": "openai-completions",
+    "id": "operator-model",
+    "base_url": "http://127.0.0.1:8080/v1",
+    "credential_env": null,
+    "context_tokens": 32768,
+    "max_output_tokens": 4096,
+    "compat": {
+      "supportsDeveloperRole": false,
+      "supportsReasoningEffort": false,
+      "supportsFinishReason": true,
+      "maxTokensField": "max_tokens"
+    }
+  },
+  "instructions": "Follow the supplied task.",
+  "sampling": {
+    "temperature": 0,
+    "top_p": null
+  },
+  "tools": [
+    "read",
+    "bash",
+    "edit",
+    "write"
+  ],
+  "assets": [],
+  "capabilities": {
+    "extensions": [],
+    "packages": []
+  },
+  "limits": {
+    "model_requests": 8,
+    "tool_calls": 24,
+    "elapsed_seconds": 180,
+    "model_timeout_seconds": 60,
+    "tool_timeout_seconds": 30,
+    "input_bytes": 262144,
+    "context_bytes": 524288,
+    "output_bytes": 65536,
+    "tool_output_bytes": 32768,
+    "trace_bytes": 1048576
+  },
+  "terminal": {
+    "format": "text",
+    "required_keys": [],
+    "outcome_key": null,
+    "outcomes": []
+  }
+}

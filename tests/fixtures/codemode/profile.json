@@ -1,0 +1,9 @@
+{
+  "schema":"millforge-profile/v3","profile_id":"codemode-offline","revision":1,"mode":"agent",
+  "runtime":{"pi_version":"1.4.0","binding_version":2},
+  "model":{"provider":"local","api":"openai-completions","id":"codemode-fixture","base_url":"http://127.0.0.1:1/v1","auth":{"kind":"none"},"context_tokens":1000000,"max_output_tokens":1000,"metadata":{"source":"operator","overrides":{"name":"Offline codemode fixture","input":["text","image"],"cost":null,"reasoning":false,"thinkingLevelMap":{},"contextWindow":1000000,"maxTokens":1000}},"compat":{"supportsFinishReason":true,"supportsOpenAIGrammarTools":true,"maxTokensField":"max_tokens"}},
+  "instructions":"Complete the finite offline fixture.","sampling":{"temperature":null,"top_p":null},"reasoning":"off","cache":{"retention":"none"},
+  "tools":["read","write","bash"],"assets":[],"capabilities":{"extensions":["pi-codemode/v1"],"packages":[]},
+  "limits":{"model_requests":16,"tool_calls":64,"elapsed_seconds":12,"model_timeout_seconds":7,"tool_timeout_seconds":3,"input_bytes":1048576,"context_bytes":4194304,"output_bytes":1048576,"tool_output_bytes":1048576,"trace_bytes":4194304},
+  "terminal":{"format":"text","required_keys":[],"outcome_key":null,"outcomes":[]}
+}
